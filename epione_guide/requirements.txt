@@ -1,0 +1,9 @@
+sphinx>=5
+furo>=2022.09.29
+myst-parser
+myst-nb
+sphinx-copybutton
+sphinx-design
+sphinx-autodoc-typehints
+linkify-it-py
+

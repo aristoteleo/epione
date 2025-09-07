@@ -1,4 +1,4 @@
-import pyBigWig
+
 import numpy as np
 import os
 import sys
@@ -54,6 +54,7 @@ def countFragmentsInRegions_worker(chrom, start, end,
     array([[1. , 1.5, 2. ],
            [1. , 1. , 2. ]])
     """
+    import pyBigWig
     assert start < end, "start {} bigger that end {}".format(start, end)
 
     # array to keep the scores for the regions
@@ -148,6 +149,7 @@ def getChromSizes(bigwigFilesList):
     Chromosome name(s) and size(s).
     >>> assert getChromSizes([test.bwFile1, test.bwFile2]) == ([('3R', 200)], set([]))
     """
+    import pyBigWig
     def print_chr_names_and_size(chr_set):
         sys.stderr.write("chromosome\tlength\n")
         for name, size in chr_set:

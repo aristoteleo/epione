@@ -20,3 +20,5 @@ epione_guide/site
 *bin
 *sqlite3
 *log
+_build*
+.claude*

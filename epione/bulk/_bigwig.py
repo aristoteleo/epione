@@ -1,8 +1,8 @@
-import pyBigWig
+
 import numpy as np
 import matplotlib.pyplot as plt
 import scanpy as sc
-import omicverse as ov
+
 import pandas as pd
 from tqdm import tqdm
 import re
@@ -46,6 +46,7 @@ class bigwig(object):
         Read bigwig file from bw_path_dict.
         
         """
+        import pyBigWig
         self.bw_dict={}
         for bw_name in self.bw_names:
             print('......Loading {}'.format(bw_name))
@@ -59,7 +60,7 @@ class bigwig(object):
         Arguments:
             gtf_path: the path of gtf file.
         """
-
+        import omicverse as ov
 
         print('......Loading gtf file')
         features=ov.utils.read_gtf(gtf_path)
@@ -68,7 +69,7 @@ class bigwig(object):
             key: val for key, val in pattern.findall(x)
         })(features["attribute"]), index=features.index)
         if set(features.columns).intersection(splitted.columns):
-            self.logger.warning(
+            print(
                 "Splitted attribute names overlap standard GTF fields! "
                 "The standard fields are overwritten!"
             )
