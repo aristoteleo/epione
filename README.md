@@ -1,6 +1,6 @@
 <!-- Banner -->
 <p align="center">
-  <img src="epione_guide/_static/logo.png" alt="Epione Logo" width="400"/>
+  <img src="https://github.com/aristoteleo/epione/blob/main/epione_guide/_static/logo.png" alt="Epione Logo" width="400"/>
 </p>
 
 <div align="center">
