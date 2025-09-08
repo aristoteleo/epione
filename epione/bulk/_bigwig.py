@@ -10,6 +10,7 @@ import os
 from scipy.sparse import csr_matrix
 import anndata
 from ._getScorePerBigWigBin import getScorePerBin
+from ..utils import console
 
 
 sc_color=['#7CBB5F','#368650','#A499CC','#5E4D9A','#78C2ED','#866017', '#9F987F','#E0DFED',
@@ -48,9 +49,10 @@ class bigwig(object):
         """
         import pyBigWig
         self.bw_dict={}
-        for bw_name in self.bw_names:
-            print('......Loading {}'.format(bw_name))
-            self.bw_dict[bw_name]=pyBigWig.open(self.bw_path_dict[bw_name])
+        with console.group_node("Load bigWig files", last=True, level=1):
+            for i, bw_name in enumerate(self.bw_names):
+                console.node(f"Loading {bw_name}...", last=(i == len(self.bw_names) - 1), level=2)
+                self.bw_dict[bw_name]=pyBigWig.open(self.bw_path_dict[bw_name])
             
     
     def load_gtf(self,gtf_path:str):
@@ -62,19 +64,21 @@ class bigwig(object):
         """
         import omicverse as ov
 
-        print('......Loading gtf file')
-        features=ov.utils.read_gtf(gtf_path)
-        pattern = re.compile(r'([^\s]+) "([^"]+)";')
-        splitted = pd.DataFrame.from_records(np.vectorize(lambda x: {
-            key: val for key, val in pattern.findall(x)
-        })(features["attribute"]), index=features.index)
-        if set(features.columns).intersection(splitted.columns):
-            print(
-                "Splitted attribute names overlap standard GTF fields! "
-                "The standard fields are overwritten!"
-            )
-        features=features.assign(**splitted)
-        self.gtf=features
+        with console.group_node('Load GTF file', last=True, level=1):
+            console.node('Reading GTF...', last=False, level=2)
+            features=ov.utils.read_gtf(gtf_path)
+            pattern = re.compile(r'([^\s]+) "([^"]+)";')
+            splitted = pd.DataFrame.from_records(np.vectorize(lambda x: {
+                key: val for key, val in pattern.findall(x)
+            })(features["attribute"]), index=features.index)
+            if set(features.columns).intersection(splitted.columns):
+                console.warn(
+                    "Splitted attribute names overlap standard GTF fields! The standard fields are overwritten!",
+                    level=2
+                )
+            features=features.assign(**splitted)
+            self.gtf=features
+            console.success('GTF loaded', level=2)
 
     def save_bw_result(self,save_path:str):
         """
@@ -85,25 +89,25 @@ class bigwig(object):
         
         """
         for bw_name in self.bw_tss_scores_dict.keys():
-            print(f"Saving {bw_name} results...")
+            console.level2(f"Saving {bw_name} results...")
             if not os.path.exists(save_path+'/'+bw_name):
                 os.mkdir(save_path+'/'+bw_name)
-                print(f"Folder '{save_path+'/'+bw_name}' created.")
+                console.success(f"Folder '{save_path+'/'+bw_name}' created.", level=2)
             else:
                 pass
             
             if self.bw_tss_scores_dict[bw_name] is None:
-                print("You need to run the compute_matrix function first!")
+                console.warn("You need to run the compute_matrix function first!")
             else:
                 self.bw_tss_scores_dict[bw_name].write_h5ad(save_path+'/'+bw_name+'/tss_scores.h5ad')
             
             if self.bw_tes_scores_dict[bw_name] is None:
-                print("You need to run the compute_matrix function first!")
+                console.warn("You need to run the compute_matrix function first!")
             else:
                 self.bw_tes_scores_dict[bw_name].write_h5ad(save_path+'/'+bw_name+'/tes_scores.h5ad')
 
             if self.bw_body_scores_dict[bw_name] is None:
-                print("You need to run the compute_matrix function first!")
+                console.warn("You need to run the compute_matrix function first!")
             else:
                 self.bw_body_scores_dict[bw_name].write_h5ad(save_path+'/'+bw_name+'/body_scores.h5ad')
     
@@ -116,22 +120,23 @@ class bigwig(object):
             load_path: the path of loading results.
 
         """
-        for bw_name in self.bw_names:
-            print(f"Loading {bw_name} results...")
-            if not os.path.exists(load_path+'/'+bw_name+'/tss_scores.h5ad'):
-                print("You need to run the compute_matrix function first for {}!".format(bw_name))
-            else:
-                self.bw_tss_scores_dict[bw_name]=anndata.read_h5ad(load_path+'/'+bw_name+'/tss_scores.h5ad')
-            
-            if not os.path.exists(load_path+'/'+bw_name+'/tes_scores.h5ad'):
-                print("You need to run the compute_matrix function first for {}!".format(bw_name))
-            else:
-                self.bw_tes_scores_dict[bw_name]=anndata.read_h5ad(load_path+'/'+bw_name+'/tes_scores.h5ad')
+        with console.group_node('Load computed matrices', last=True, level=1):
+            for j, bw_name in enumerate(self.bw_names):
+                console.node(f"Loading {bw_name} results...", last=(j == len(self.bw_names) - 1), level=2)
+                if not os.path.exists(load_path+'/'+bw_name+'/tss_scores.h5ad'):
+                    console.warn("You need to run the compute_matrix function first for {}!".format(bw_name), level=3)
+                else:
+                    self.bw_tss_scores_dict[bw_name]=anndata.read_h5ad(load_path+'/'+bw_name+'/tss_scores.h5ad')
+                
+                if not os.path.exists(load_path+'/'+bw_name+'/tes_scores.h5ad'):
+                    console.warn("You need to run the compute_matrix function first for {}!".format(bw_name), level=3)
+                else:
+                    self.bw_tes_scores_dict[bw_name]=anndata.read_h5ad(load_path+'/'+bw_name+'/tes_scores.h5ad')
 
-            if not os.path.exists(load_path+'/'+bw_name+'/body_scores.h5ad'):
-                print("You need to run the compute_matrix function first for {}!".format(bw_name))
-            else:
-                self.bw_body_scores_dict[bw_name]=anndata.read_h5ad(load_path+'/'+bw_name+'/body_scores.h5ad')
+                if not os.path.exists(load_path+'/'+bw_name+'/body_scores.h5ad'):
+                    console.warn("You need to run the compute_matrix function first for {}!".format(bw_name), level=3)
+                else:
+                    self.bw_body_scores_dict[bw_name]=anndata.read_h5ad(load_path+'/'+bw_name+'/body_scores.h5ad')
 
 
     def compute_matrix(self,bw_name:str,nbins:int=100,
@@ -147,129 +152,132 @@ class bigwig(object):
 
         """
         if bw_name not in self.bw_tss_scores_dict.keys():
-            print('......Computing {} matrix'.format(bw_name))
-            #nbins=100
-            features=self.gtf.loc[(self.gtf['feature']=='transcript')&(self.gtf['seqname'].str.contains('chr'))]
-            gene_list=features['gene_id'].unique()
+            with console.group_node('Compute matrix: {}'.format(bw_name), last=True, level=1):
+                console.node('Prepare features', last=False, level=2)
+                #nbins=100
+                features=self.gtf.loc[(self.gtf['feature']=='transcript')&(self.gtf['seqname'].str.contains('chr'))]
+                gene_list=features['gene_id'].unique()
 
-            tss_array=pd.DataFrame(columns=[i for i in range(nbins)])
-            tes_array=pd.DataFrame(columns=[i for i in range(nbins)])
-            body_array=pd.DataFrame(columns=[i for i in range(nbins)])
+                tss_array=pd.DataFrame(columns=[i for i in range(nbins)])
+                tes_array=pd.DataFrame(columns=[i for i in range(nbins)])
+                body_array=pd.DataFrame(columns=[i for i in range(nbins)])
 
-            tss_region_start_li=[]
-            tss_region_end_li=[]
+                tss_region_start_li=[]
+                tss_region_end_li=[]
 
-            tes_region_start_li=[]
-            tes_region_end_li=[]
+                tes_region_start_li=[]
+                tes_region_end_li=[]
 
-            body_region_start_li=[]
-            body_region_end_li=[]
+                body_region_start_li=[]
+                body_region_end_li=[]
 
-            for g in tqdm(gene_list, desc='Processing genes', unit='gene'):
-                test_f=features.loc[(features['gene_id']==g)&(features['feature']=='transcript')].iloc[0]
-                chrom=test_f.seqname
-                if test_f.strand=='-':
-                    tss_loc=test_f.end
-                    tes_loc=test_f.start
-                else:
-                    tss_loc=test_f.start
-                    tes_loc=test_f.end
-                
-                tss_region_start=tss_loc-upstream
-                tss_region_end=tss_loc+downstream
+                console.node('Build matrices', last=False, level=2)
+                for g in tqdm(gene_list, desc='Processing genes', unit='gene'):
+                    test_f=features.loc[(features['gene_id']==g)&(features['feature']=='transcript')].iloc[0]
+                    chrom=test_f.seqname
+                    if test_f.strand=='-':
+                        tss_loc=test_f.end
+                        tes_loc=test_f.start
+                    else:
+                        tss_loc=test_f.start
+                        tes_loc=test_f.end
+                    
+                    tss_region_start=tss_loc-upstream
+                    tss_region_end=tss_loc+downstream
 
-                tes_region_start=tes_loc-upstream
-                tes_region_end=tes_loc+downstream
+                    tes_region_start=tes_loc-upstream
+                    tes_region_end=tes_loc+downstream
 
-                body_region_start=test_f.start
-                body_region_end=test_f.end
-                
-                if tss_region_start<0:
-                    tss_region_start=0
-                if tss_region_end>self.bw_dict[bw_name].chroms()[chrom]:
-                    tss_region_end=self.bw_dict[bw_name].chroms()[chrom]
+                    body_region_start=test_f.start
+                    body_region_end=test_f.end
+                    
+                    if tss_region_start<0:
+                        tss_region_start=0
+                    if tss_region_end>self.bw_dict[bw_name].chroms()[chrom]:
+                        tss_region_end=self.bw_dict[bw_name].chroms()[chrom]
 
-                if tes_region_start<0:
-                    tes_region_start=0
-                if tes_region_end>self.bw_dict[bw_name].chroms()[chrom]:
-                    tes_region_end=self.bw_dict[bw_name].chroms()[chrom]
-                
-                
+                    if tes_region_start<0:
+                        tes_region_start=0
+                    if tes_region_end>self.bw_dict[bw_name].chroms()[chrom]:
+                        tes_region_end=self.bw_dict[bw_name].chroms()[chrom]
+                    
+                    
 
-                if test_f.strand=='-':
-                    tss_array.loc[g]=np.array(self.bw_dict[bw_name].stats(chrom, 
-                                        tss_region_start,
-                                        tss_region_end, nBins=nbins,
-                                        type='mean')).astype(float)[::-1]
-                    tes_array.loc[g]=np.array(self.bw_dict[bw_name].stats(chrom,
-                                                                          tes_region_start,
-                                                                            tes_region_end, nBins=nbins,
-                                                                            type='mean')).astype(float)[::-1]
-                    body_array.loc[g]=np.array(self.bw_dict[bw_name].stats(chrom,
-                                                                            body_region_start,
-                                                                                body_region_end, nBins=nbins,
-                                                                                type='mean')).astype(float)[::-1]
-                    tss_region_start_li.append(tss_region_start)
-                    tss_region_end_li.append(tss_region_end)
-                    tes_region_end_li.append(tes_region_end)
-                    tes_region_start_li.append(tes_region_start)
-                    body_region_start_li.append(body_region_start)
-                    body_region_end_li.append(body_region_end)
-                                                                          
-                                                                    
-                else:
-                    tss_array.loc[g]=np.array(self.bw_dict[bw_name].stats(chrom, 
-                                        tss_region_start,
-                                        tss_region_end, nBins=nbins,
-                                        type='mean')).astype(float)
-                    tes_array.loc[g]=np.array(self.bw_dict[bw_name].stats(chrom,
-                                                                            tes_region_start,
+                    if test_f.strand=='-':
+                        tss_array.loc[g]=np.array(self.bw_dict[bw_name].stats(chrom, 
+                                            tss_region_start,
+                                            tss_region_end, nBins=nbins,
+                                            type='mean')).astype(float)[::-1]
+                        tes_array.loc[g]=np.array(self.bw_dict[bw_name].stats(chrom,
+                                                                              tes_region_start,
                                                                                 tes_region_end, nBins=nbins,
-                                                                                type='mean')).astype(float)
-                    body_array.loc[g]=np.array(self.bw_dict[bw_name].stats(chrom,
-                                                                            body_region_start,
-                                                                                body_region_end, nBins=nbins,
-                                                                                type='mean')).astype(float)
-                    tss_region_start_li.append(tss_region_start)
-                    tss_region_end_li.append(tss_region_end)
-                    tes_region_end_li.append(tes_region_end)
-                    tes_region_start_li.append(tes_region_start)
-                    body_region_start_li.append(body_region_start)
-                    body_region_end_li.append(body_region_end)
+                                                                                type='mean')).astype(float)[::-1]
+                        body_array.loc[g]=np.array(self.bw_dict[bw_name].stats(chrom,
+                                                                                body_region_start,
+                                                                                    body_region_end, nBins=nbins,
+                                                                                    type='mean')).astype(float)[::-1]
+                        tss_region_start_li.append(tss_region_start)
+                        tss_region_end_li.append(tss_region_end)
+                        tes_region_end_li.append(tes_region_end)
+                        tes_region_start_li.append(tes_region_start)
+                        body_region_start_li.append(body_region_start)
+                        body_region_end_li.append(body_region_end)
+                                                                              
+                                                                        
+                    else:
+                        tss_array.loc[g]=np.array(self.bw_dict[bw_name].stats(chrom, 
+                                            tss_region_start,
+                                            tss_region_end, nBins=nbins,
+                                            type='mean')).astype(float)
+                        tes_array.loc[g]=np.array(self.bw_dict[bw_name].stats(chrom,
+                                                                                tes_region_start,
+                                                                                    tes_region_end, nBins=nbins,
+                                                                                    type='mean')).astype(float)
+                        body_array.loc[g]=np.array(self.bw_dict[bw_name].stats(chrom,
+                                                                                body_region_start,
+                                                                                    body_region_end, nBins=nbins,
+                                                                                    type='mean')).astype(float)
+                        tss_region_start_li.append(tss_region_start)
+                        tss_region_end_li.append(tss_region_end)
+                        tes_region_end_li.append(tes_region_end)
+                        tes_region_start_li.append(tes_region_start)
+                        body_region_start_li.append(body_region_start)
+                        body_region_end_li.append(body_region_end)
 
-            tss_csr=csr_matrix(tss_array.fillna(0).loc[tss_array.fillna(0).mean(axis=1).sort_values(ascending=False).index].values)
-            tes_csr=csr_matrix(tes_array.fillna(0).loc[tes_array.fillna(0).mean(axis=1).sort_values(ascending=False).index].values)
-            body_csr=csr_matrix(body_array.fillna(0).loc[body_array.fillna(0).mean(axis=1).sort_values(ascending=False).index].values)
+                console.node('Finalize', last=True, level=2)
+                tss_csr=csr_matrix(tss_array.fillna(0).loc[tss_array.fillna(0).mean(axis=1).sort_values(ascending=False).index].values)
+                tes_csr=csr_matrix(tes_array.fillna(0).loc[tes_array.fillna(0).mean(axis=1).sort_values(ascending=False).index].values)
+                body_csr=csr_matrix(body_array.fillna(0).loc[body_array.fillna(0).mean(axis=1).sort_values(ascending=False).index].values)
 
-            tss_adata=anndata.AnnData(tss_csr)
-            tss_adata.obs.index=tss_array.fillna(0).mean(axis=1).sort_values(ascending=False).index
-            tss_adata.uns['range']=[0-downstream,upstream]
-            tss_adata.uns['bins']=nbins
-            tss_adata.obs['region_start']=tss_region_start_li
-            tss_adata.obs['region_end']=tss_region_end_li
+                tss_adata=anndata.AnnData(tss_csr)
+                tss_adata.obs.index=tss_array.fillna(0).mean(axis=1).sort_values(ascending=False).index
+                tss_adata.uns['range']=[0-downstream,upstream]
+                tss_adata.uns['bins']=nbins
+                tss_adata.obs['region_start']=tss_region_start_li
+                tss_adata.obs['region_end']=tss_region_end_li
 
-            tes_adata=anndata.AnnData(tes_csr)
-            tes_adata.obs.index=tes_array.fillna(0).mean(axis=1).sort_values(ascending=False).index
-            tes_adata.uns['range']=[0-downstream,upstream]
-            tes_adata.uns['bins']=nbins
-            tes_adata.obs['region_start']=tes_region_start_li
-            tes_adata.obs['region_end']=tes_region_end_li
+                tes_adata=anndata.AnnData(tes_csr)
+                tes_adata.obs.index=tes_array.fillna(0).mean(axis=1).sort_values(ascending=False).index
+                tes_adata.uns['range']=[0-downstream,upstream]
+                tes_adata.uns['bins']=nbins
+                tes_adata.obs['region_start']=tes_region_start_li
+                tes_adata.obs['region_end']=tes_region_end_li
 
-            body_adata=anndata.AnnData(body_csr)
-            body_adata.obs.index=body_array.fillna(0).mean(axis=1).sort_values(ascending=False).index
-            body_adata.uns['range']=[0,upstream+downstream]
-            body_adata.uns['bins']=nbins
-            body_adata.obs['region_start']=body_region_start_li
-            body_adata.obs['region_end']=body_region_end_li
+                body_adata=anndata.AnnData(body_csr)
+                body_adata.obs.index=body_array.fillna(0).mean(axis=1).sort_values(ascending=False).index
+                body_adata.uns['range']=[0,upstream+downstream]
+                body_adata.uns['bins']=nbins
+                body_adata.obs['region_start']=body_region_start_li
+                body_adata.obs['region_end']=body_region_end_li
 
 
-            self.bw_tss_scores_dict[bw_name]=tss_adata
-            self.bw_tes_scores_dict[bw_name]=tes_adata
-            self.bw_body_scores_dict[bw_name]=body_adata
-            print('......{} matrix finished'.format(bw_name))
-            print('......{} tss matrix can be found in bw_tss_scores_dict[{}]'.format(bw_name,bw_name))
-            print('......{} tes matrix can be found in bw_tes_scores_dict[{}]'.format(bw_name,bw_name))
-            print('......{} body matrix can be found in bw_body_scores_dict[{}]'.format(bw_name,bw_name))
+                self.bw_tss_scores_dict[bw_name]=tss_adata
+                self.bw_tes_scores_dict[bw_name]=tes_adata
+                self.bw_body_scores_dict[bw_name]=body_adata
+                console.success('{} matrix finished'.format(bw_name), level=2)
+                console.level2('{} tss matrix in bw_tss_scores_dict[{}]'.format(bw_name,bw_name))
+                console.level2('{} tes matrix in bw_tes_scores_dict[{}]'.format(bw_name,bw_name))
+                console.level2('{} body matrix in bw_body_scores_dict[{}]'.format(bw_name,bw_name))
         else:
             pass
 
@@ -288,7 +296,7 @@ class bigwig(object):
             downstream: the downstream of TSS/TES.
 
         """
-        print('......Computing {} matrix'.format(bw_name))
+        console.level2('Computing {} matrix'.format(bw_name))
         #nbins=100
         features=self.gtf.loc[(self.gtf['feature']=='transcript')&(self.gtf['seqname'].str.contains('chr'))]
         gene_list=features['gene_id'].unique()
@@ -366,13 +374,13 @@ class bigwig(object):
         tss_adata.obs['region_start']=region_start_li
         tss_adata.obs['region_end']=region_end_li
 
-        print('......{} matrix finished'.format(bw_name))
+        console.success('{} matrix finished'.format(bw_name), level=2)
         return tss_adata
     
     def compute_matrix_region(self,bw_name:str,region:pd.DataFrame,nbins:int=100,
                               upstream:int=3000,downstream:int=3000):
         
-        print('......Computing {} matrix'.format(bw_name))
+        console.level2('Computing {} matrix'.format(bw_name))
         features=region
         gene_list=features['gene_id'].unique()
 
@@ -419,7 +427,7 @@ class bigwig(object):
         tss_adata.obs['region_start']=region_start_li
         tss_adata.obs['region_end']=region_end_li
 
-        print('......{} matrix finished'.format(bw_name))
+        console.success('{} matrix finished'.format(bw_name), level=2)
         return tss_adata
 
 
@@ -800,8 +808,8 @@ class bigwig(object):
         self.plot_z=z
         self.plot_bw_names=bw_names
         from scipy.stats import pearsonr
-        print('The correlation between {} and {} is {:.2}'.format(bw_names[0],bw_names[1],pearsonr(x,y)[0]))
-        print('Now you can use plot_correlation() to plot the correlation scatter plot')
+        console.level1('The correlation between {} and {} is {:.2}'.format(bw_names[0],bw_names[1],pearsonr(x,y)[0]))
+        console.level2('Now you can use plot_correlation() to plot the correlation scatter plot')
         return pearsonr(x,y)[0]
     
     def plot_correlation_bigwig(self,figsize=(3.5,3),
@@ -809,7 +817,7 @@ class bigwig(object):
                                 fontsize=14,title='')->tuple:
 
         if self.scoreperbindata is None:
-            print('......Please run getscoreperbin() first')
+            console.warn('Please run getscoreperbin() first')
             return None
         
         from scipy.stats import pearsonr
