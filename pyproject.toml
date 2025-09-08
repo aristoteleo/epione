@@ -30,6 +30,7 @@ dependencies = [
     'pyBigWig>=0.3',
     'loompy>=3.0.7',
     'pyrange',
+    'snapatac2',
 ]
 
 [project.optional-dependencies]
@@ -47,5 +48,5 @@ full = [
 Github = 'https://github.com/aristoteleo/epione'
 
 [tool.flit.sdist]
-exclude = [".*", "d*", "e*", "pa*", "s*", "t*"]
+exclude = [".*", "d*", "epione_guide*", "pa*", "s*", "t*"]
 

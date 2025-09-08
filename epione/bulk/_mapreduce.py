@@ -1,5 +1,6 @@
 import multiprocessing
 import random
+from ..utils import console
 
 debug = 0
 
@@ -70,7 +71,7 @@ def mapReduce(staticArgs, func, chromSize,
     genomeChunkLength = int(genomeChunkLength)
 
     if verbose:
-        print("genome partition size for multiprocessing: {0}".format(
+        console.level2("genome partition size for multiprocessing: {0}".format(
             genomeChunkLength))
 
     region_start = 0
@@ -82,7 +83,7 @@ def mapReduce(staticArgs, func, chromSize,
     if region:
         chromSize, region_start, region_end, genomeChunkLength = getUserRegion(chromSize, region)
         if verbose:
-            print("chrom size: {0}, region start: {1}, region end: {2}, "
+            console.level3("chrom size: {0}, region start: {1}, region end: {2}, "
                   "genome chunk length sent to each procesor: {3}".format(chromSize, region_start, region_end, genomeChunkLength))
 
     if bedFile:
@@ -141,8 +142,7 @@ def mapReduce(staticArgs, func, chromSize,
 
     if len(TASKS) > 1 and numberOfProcessors > 1:
         if verbose:
-            print(("using {} processors for {} "
-                   "number of tasks".format(numberOfProcessors,
+            console.level2(("using {} processors for {} number of tasks".format(numberOfProcessors,
                                             len(TASKS))))
         random.shuffle(TASKS)
         pool = multiprocessing.Pool(numberOfProcessors)

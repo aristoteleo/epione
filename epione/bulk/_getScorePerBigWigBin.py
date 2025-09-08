@@ -4,6 +4,7 @@ import os
 import sys
 import shutil
 import warnings
+from ..utils import console
 
 # deepTools packages
 from ._mapreduce import mapReduce
@@ -244,7 +245,7 @@ def getScorePerBin(bigWigFiles, binLength,
     # make chunkSize multiple of binLength
     chunkSize -= chunkSize % binLength
     if verbose:
-        print("step size is {}".format(stepSize))
+        console.level3("step size is {}".format(stepSize))
 
     if region:
         # in case a region is used, append the tilesize
