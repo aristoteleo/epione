@@ -39,7 +39,7 @@ full = [
   "pysam",
   "pynndescent",
   "pyjaspar",
-  "omicverse"
+  "omicverse","deeptoolsintervals"
 ]
 
 

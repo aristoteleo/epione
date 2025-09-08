@@ -11,6 +11,96 @@ from scipy.sparse import csr_matrix
 import anndata
 from ._getScorePerBigWigBin import getScorePerBin
 from ..utils import console
+import multiprocessing as mp
+
+
+def _compute_chrom_task(args):
+    """Worker: compute TSS/TES/Body arrays for a set of genes on one chromosome.
+
+    Args dict keys:
+      - bw_path: path to bigwig file
+      - nbins, upstream, downstream
+      - records: list of (gene_id, seqname, start, end, strand)
+    Returns dict with arrays and lists in the same order as records.
+    """
+    import pyBigWig
+    bw_path = args["bw_path"]
+    nbins = args["nbins"]
+    upstream = args["upstream"]
+    downstream = args["downstream"]
+    records = args["records"]
+
+    bwh = pyBigWig.open(bw_path)
+    chrom_lengths = bwh.chroms()
+
+    n = len(records)
+    tss_array = np.full((n, nbins), np.nan, dtype=np.float32)
+    tes_array = np.full((n, nbins), np.nan, dtype=np.float32)
+    body_array = np.full((n, nbins), np.nan, dtype=np.float32)
+
+    gene_ids = []
+    tss_region_start_li=[]; tss_region_end_li=[]
+    tes_region_start_li=[]; tes_region_end_li=[]
+    body_region_start_li=[]; body_region_end_li=[]
+
+    for idx, (gene_id, chrom, start, end, strand) in enumerate(records):
+        gene_ids.append(gene_id)
+        # normalize chrom name if needed
+        chrom_use = chrom
+        if chrom_use not in chrom_lengths:
+            if chrom_use.startswith('chr') and chrom_use[3:] in chrom_lengths:
+                chrom_use = chrom_use[3:]
+            elif ('chr' + chrom_use) in chrom_lengths:
+                chrom_use = 'chr' + chrom_use
+
+        if strand == '-':
+            tss_loc = end
+            tes_loc = start
+        else:
+            tss_loc = start
+            tes_loc = end
+
+        tss_region_start = max(0, int(tss_loc - upstream))
+        tss_region_end = int(tss_loc + downstream)
+        tes_region_start = max(0, int(tes_loc - upstream))
+        tes_region_end = int(tes_loc + downstream)
+        body_region_start = int(start)
+        body_region_end = int(end)
+
+        chrom_len = chrom_lengths.get(chrom_use, None)
+        if chrom_len is not None:
+            if tss_region_end > chrom_len:
+                tss_region_end = chrom_len
+            if tes_region_end > chrom_len:
+                tes_region_end = chrom_len
+
+        # fetch stats
+        tss_vals = np.array(bwh.stats(chrom_use, tss_region_start, tss_region_end, nBins=nbins, type='mean'), dtype=np.float32)
+        tes_vals = np.array(bwh.stats(chrom_use, tes_region_start, tes_region_end, nBins=nbins, type='mean'), dtype=np.float32)
+        body_vals = np.array(bwh.stats(chrom_use, body_region_start, body_region_end, nBins=nbins, type='mean'), dtype=np.float32)
+        if strand == '-':
+            tss_vals = tss_vals[::-1]
+            tes_vals = tes_vals[::-1]
+            body_vals = body_vals[::-1]
+
+        tss_array[idx, :] = tss_vals
+        tes_array[idx, :] = tes_vals
+        body_array[idx, :] = body_vals
+
+        tss_region_start_li.append(tss_region_start)
+        tss_region_end_li.append(tss_region_end)
+        tes_region_start_li.append(tes_region_start)
+        tes_region_end_li.append(tes_region_end)
+        body_region_start_li.append(body_region_start)
+        body_region_end_li.append(body_region_end)
+
+    return dict(
+        gene_ids=gene_ids,
+        tss=tss_array, tes=tes_array, body=body_array,
+        tss_rs=tss_region_start_li, tss_re=tss_region_end_li,
+        tes_rs=tes_region_start_li, tes_re=tes_region_end_li,
+        body_rs=body_region_start_li, body_re=body_region_end_li,
+    )
 
 
 sc_color=['#7CBB5F','#368650','#A499CC','#5E4D9A','#78C2ED','#866017', '#9F987F','#E0DFED',
@@ -140,7 +230,8 @@ class bigwig(object):
 
 
     def compute_matrix(self,bw_name:str,nbins:int=100,
-                          upstream:int=3000,downstream:int=3000):
+                          upstream:int=3000,downstream:int=3000,
+                          n_jobs:int=1):
         """
         Compute the enrichment matrix of TSS/TES/Body.
 
@@ -151,6 +242,9 @@ class bigwig(object):
             downstream: the downstream of TSS/TES.
 
         """
+        # Parallel path by chromosome when n_jobs > 1
+        if n_jobs and n_jobs > 1:
+            return self._compute_matrix_parallel_impl(bw_name, nbins, upstream, downstream, n_jobs)
         if bw_name not in self.bw_tss_scores_dict.keys():
             with console.group_node('Compute matrix: {}'.format(bw_name), last=True, level=1):
                 console.node('Prepare features', last=False, level=2)
@@ -158,9 +252,11 @@ class bigwig(object):
                 features=self.gtf.loc[(self.gtf['feature']=='transcript')&(self.gtf['seqname'].str.contains('chr'))]
                 gene_list=features['gene_id'].unique()
 
-                tss_array=pd.DataFrame(columns=[i for i in range(nbins)])
-                tes_array=pd.DataFrame(columns=[i for i in range(nbins)])
-                body_array=pd.DataFrame(columns=[i for i in range(nbins)])
+                # Preallocate dense arrays for speed (avoid per-row DataFrame writes)
+                n_genes = len(gene_list)
+                tss_array = np.full((n_genes, nbins), np.nan, dtype=np.float32)
+                tes_array = np.full((n_genes, nbins), np.nan, dtype=np.float32)
+                body_array = np.full((n_genes, nbins), np.nan, dtype=np.float32)
 
                 tss_region_start_li=[]
                 tss_region_end_li=[]
@@ -172,7 +268,9 @@ class bigwig(object):
                 body_region_end_li=[]
 
                 console.node('Build matrices', last=False, level=2)
-                for g in tqdm(gene_list, desc='Processing genes', unit='gene'):
+                bwh = self.bw_dict[bw_name]
+                chrom_lengths = bwh.chroms()
+                for idx, g in enumerate(tqdm(gene_list, desc='Processing genes', unit='gene')):
                     test_f=features.loc[(features['gene_id']==g)&(features['feature']=='transcript')].iloc[0]
                     chrom=test_f.seqname
                     if test_f.strand=='-':
@@ -193,29 +291,23 @@ class bigwig(object):
                     
                     if tss_region_start<0:
                         tss_region_start=0
-                    if tss_region_end>self.bw_dict[bw_name].chroms()[chrom]:
-                        tss_region_end=self.bw_dict[bw_name].chroms()[chrom]
+                    if tss_region_end>chrom_lengths[chrom]:
+                        tss_region_end=chrom_lengths[chrom]
 
                     if tes_region_start<0:
                         tes_region_start=0
-                    if tes_region_end>self.bw_dict[bw_name].chroms()[chrom]:
-                        tes_region_end=self.bw_dict[bw_name].chroms()[chrom]
+                    if tes_region_end>chrom_lengths[chrom]:
+                        tes_region_end=chrom_lengths[chrom]
                     
                     
 
                     if test_f.strand=='-':
-                        tss_array.loc[g]=np.array(self.bw_dict[bw_name].stats(chrom, 
-                                            tss_region_start,
-                                            tss_region_end, nBins=nbins,
-                                            type='mean')).astype(float)[::-1]
-                        tes_array.loc[g]=np.array(self.bw_dict[bw_name].stats(chrom,
-                                                                              tes_region_start,
-                                                                                tes_region_end, nBins=nbins,
-                                                                                type='mean')).astype(float)[::-1]
-                        body_array.loc[g]=np.array(self.bw_dict[bw_name].stats(chrom,
-                                                                                body_region_start,
-                                                                                    body_region_end, nBins=nbins,
-                                                                                    type='mean')).astype(float)[::-1]
+                        tss_vals = np.array(bwh.stats(chrom, tss_region_start, tss_region_end, nBins=nbins, type='mean'), dtype=np.float32)[::-1]
+                        tes_vals = np.array(bwh.stats(chrom, tes_region_start, tes_region_end, nBins=nbins, type='mean'), dtype=np.float32)[::-1]
+                        body_vals = np.array(bwh.stats(chrom, body_region_start, body_region_end, nBins=nbins, type='mean'), dtype=np.float32)[::-1]
+                        tss_array[idx,:] = tss_vals
+                        tes_array[idx,:] = tes_vals
+                        body_array[idx,:] = body_vals
                         tss_region_start_li.append(tss_region_start)
                         tss_region_end_li.append(tss_region_end)
                         tes_region_end_li.append(tes_region_end)
@@ -225,18 +317,12 @@ class bigwig(object):
                                                                               
                                                                         
                     else:
-                        tss_array.loc[g]=np.array(self.bw_dict[bw_name].stats(chrom, 
-                                            tss_region_start,
-                                            tss_region_end, nBins=nbins,
-                                            type='mean')).astype(float)
-                        tes_array.loc[g]=np.array(self.bw_dict[bw_name].stats(chrom,
-                                                                                tes_region_start,
-                                                                                    tes_region_end, nBins=nbins,
-                                                                                    type='mean')).astype(float)
-                        body_array.loc[g]=np.array(self.bw_dict[bw_name].stats(chrom,
-                                                                                body_region_start,
-                                                                                    body_region_end, nBins=nbins,
-                                                                                    type='mean')).astype(float)
+                        tss_vals = np.array(bwh.stats(chrom, tss_region_start, tss_region_end, nBins=nbins, type='mean'), dtype=np.float32)
+                        tes_vals = np.array(bwh.stats(chrom, tes_region_start, tes_region_end, nBins=nbins, type='mean'), dtype=np.float32)
+                        body_vals = np.array(bwh.stats(chrom, body_region_start, body_region_end, nBins=nbins, type='mean'), dtype=np.float32)
+                        tss_array[idx,:] = tss_vals
+                        tes_array[idx,:] = tes_vals
+                        body_array[idx,:] = body_vals
                         tss_region_start_li.append(tss_region_start)
                         tss_region_end_li.append(tss_region_end)
                         tes_region_end_li.append(tes_region_end)
@@ -245,26 +331,45 @@ class bigwig(object):
                         body_region_end_li.append(body_region_end)
 
                 console.node('Finalize', last=True, level=2)
-                tss_csr=csr_matrix(tss_array.fillna(0).loc[tss_array.fillna(0).mean(axis=1).sort_values(ascending=False).index].values)
-                tes_csr=csr_matrix(tes_array.fillna(0).loc[tes_array.fillna(0).mean(axis=1).sort_values(ascending=False).index].values)
-                body_csr=csr_matrix(body_array.fillna(0).loc[body_array.fillna(0).mean(axis=1).sort_values(ascending=False).index].values)
+                # Replace NaNs and reorder by mean descending (based on TSS array)
+                tss_array = np.nan_to_num(tss_array)
+                tes_array = np.nan_to_num(tes_array)
+                body_array = np.nan_to_num(body_array)
+                order = np.argsort(-np.mean(tss_array, axis=1))
+                tss_array = tss_array[order]
+                tes_array = tes_array[order]
+                body_array = body_array[order]
+                def _reorder(lst):
+                    return [lst[i] for i in order]
+                tss_region_start_li = _reorder(tss_region_start_li)
+                tss_region_end_li = _reorder(tss_region_end_li)
+                tes_region_start_li = _reorder(tes_region_start_li)
+                tes_region_end_li = _reorder(tes_region_end_li)
+                body_region_start_li = _reorder(body_region_start_li)
+                body_region_end_li = _reorder(body_region_end_li)
+
+                tss_csr=csr_matrix(tss_array)
+                tes_csr=csr_matrix(tes_array)
+                body_csr=csr_matrix(body_array)
 
                 tss_adata=anndata.AnnData(tss_csr)
-                tss_adata.obs.index=tss_array.fillna(0).mean(axis=1).sort_values(ascending=False).index
+                # Construct index from reordered gene_list
+                gene_list_ordered = [gene_list[i] for i in order]
+                tss_adata.obs.index=gene_list_ordered
                 tss_adata.uns['range']=[0-downstream,upstream]
                 tss_adata.uns['bins']=nbins
                 tss_adata.obs['region_start']=tss_region_start_li
                 tss_adata.obs['region_end']=tss_region_end_li
 
                 tes_adata=anndata.AnnData(tes_csr)
-                tes_adata.obs.index=tes_array.fillna(0).mean(axis=1).sort_values(ascending=False).index
+                tes_adata.obs.index=gene_list_ordered
                 tes_adata.uns['range']=[0-downstream,upstream]
                 tes_adata.uns['bins']=nbins
                 tes_adata.obs['region_start']=tes_region_start_li
                 tes_adata.obs['region_end']=tes_region_end_li
 
                 body_adata=anndata.AnnData(body_csr)
-                body_adata.obs.index=body_array.fillna(0).mean(axis=1).sort_values(ascending=False).index
+                body_adata.obs.index=gene_list_ordered
                 body_adata.uns['range']=[0,upstream+downstream]
                 body_adata.uns['bins']=nbins
                 body_adata.obs['region_start']=body_region_start_li
@@ -281,6 +386,108 @@ class bigwig(object):
         else:
             pass
 
+    def _compute_matrix_parallel_impl(self, bw_name: str, nbins: int, upstream: int, downstream: int, n_jobs: int):
+        with console.group_node('Compute matrix: {}'.format(bw_name), last=True, level=1):
+            console.node('Prepare features', last=False, level=2)
+            features = self.gtf
+            if 'feature' in features.columns:
+                features = features.loc[features['feature']=='transcript']
+            if 'seqname' in features.columns:
+                features = features.loc[features['seqname'].str.contains('chr')]
+            f_first = features.groupby('gene_id', sort=False).first().reset_index()
+            tasks = []
+            for chrom, sub in f_first.groupby('seqname', sort=False):
+                records = list(zip(sub['gene_id'].tolist(),
+                                   sub['seqname'].tolist(),
+                                   sub['start'].astype(int).tolist(),
+                                   sub['end'].astype(int).tolist(),
+                                   sub['strand'].tolist()))
+                if not records:
+                    continue
+                tasks.append(dict(bw_path=self.bw_path_dict[bw_name], nbins=nbins,
+                                  upstream=upstream, downstream=downstream,
+                                  records=records))
+
+            console.node('Build matrices', last=False, level=2)
+            if n_jobs and n_jobs > 1:
+                with mp.Pool(processes=n_jobs) as pool:
+                    results = []
+                    with tqdm(total=len(tasks), desc='Chromosomes', unit='chr') as pbar:
+                        for res in pool.imap_unordered(_compute_chrom_task, tasks):
+                            results.append(res)
+                            pbar.update(1)
+            else:
+                results = []
+                for t in tqdm(tasks, desc='Chromosomes', unit='chr'):
+                    results.append(_compute_chrom_task(t))
+
+            gene_ids = []
+            tss_list = []; tes_list = []; body_list = []
+            tss_rs=[]; tss_re=[]; tes_rs=[]; tes_re=[]; body_rs=[]; body_re=[]
+            for r in results:
+                gene_ids.extend(r['gene_ids'])
+                tss_list.append(r['tss']); tes_list.append(r['tes']); body_list.append(r['body'])
+                tss_rs.extend(r['tss_rs']); tss_re.extend(r['tss_re'])
+                tes_rs.extend(r['tes_rs']); tes_re.extend(r['tes_re'])
+                body_rs.extend(r['body_rs']); body_re.extend(r['body_re'])
+
+            tss_array = np.vstack(tss_list) if tss_list else np.zeros((0, nbins), dtype=np.float32)
+            tes_array = np.vstack(tes_list) if tes_list else np.zeros((0, nbins), dtype=np.float32)
+            body_array = np.vstack(body_list) if body_list else np.zeros((0, nbins), dtype=np.float32)
+
+            console.node('Finalize', last=True, level=2)
+            tss_array = np.nan_to_num(tss_array)
+            tes_array = np.nan_to_num(tes_array)
+            body_array = np.nan_to_num(body_array)
+            order = np.argsort(-np.mean(tss_array, axis=1)) if len(tss_array) else np.array([], dtype=int)
+            tss_array = tss_array[order]
+            tes_array = tes_array[order]
+            body_array = body_array[order]
+
+            def _reorder(lst):
+                return [lst[i] for i in order]
+
+            gene_list_ordered = _reorder(gene_ids)
+            tss_region_start_li = _reorder(tss_rs)
+            tss_region_end_li = _reorder(tss_re)
+            tes_region_start_li = _reorder(tes_rs)
+            tes_region_end_li = _reorder(tes_re)
+            body_region_start_li = _reorder(body_rs)
+            body_region_end_li = _reorder(body_re)
+
+            tss_csr=csr_matrix(tss_array)
+            tes_csr=csr_matrix(tes_array)
+            body_csr=csr_matrix(body_array)
+
+            tss_adata=anndata.AnnData(tss_csr)
+            tss_adata.obs.index=gene_list_ordered
+            tss_adata.uns['range']=[0-downstream,upstream]
+            tss_adata.uns['bins']=nbins
+            tss_adata.obs['region_start']=tss_region_start_li
+            tss_adata.obs['region_end']=tss_region_end_li
+
+            tes_adata=anndata.AnnData(tes_csr)
+            tes_adata.obs.index=gene_list_ordered
+            tes_adata.uns['range']=[0-downstream,upstream]
+            tes_adata.uns['bins']=nbins
+            tes_adata.obs['region_start']=tes_region_start_li
+            tes_adata.obs['region_end']=tes_region_end_li
+
+            body_adata=anndata.AnnData(body_csr)
+            body_adata.obs.index=gene_list_ordered
+            body_adata.uns['range']=[0,upstream+downstream]
+            body_adata.uns['bins']=nbins
+            body_adata.obs['region_start']=body_region_start_li
+            body_adata.obs['region_end']=body_region_end_li
+
+            self.bw_tss_scores_dict[bw_name]=tss_adata
+            self.bw_tes_scores_dict[bw_name]=tes_adata
+            self.bw_body_scores_dict[bw_name]=body_adata
+            console.success('{} matrix finished'.format(bw_name), level=2)
+            console.level2('{} tss matrix in bw_tss_scores_dict[{}]'.format(bw_name,bw_name))
+            console.level2('{} tes matrix in bw_tes_scores_dict[{}]'.format(bw_name,bw_name))
+            console.level2('{} body matrix in bw_body_scores_dict[{}]'.format(bw_name,bw_name))
+            return tss_adata, tes_adata, body_adata
     def compute_matrix_cis(self,bw_name:str,nbins:int=100,bw_type:str='TSS',
                            cis_distance:int=2000,
                           upstream:int=3000,downstream:int=3000):
