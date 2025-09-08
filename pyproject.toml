@@ -39,7 +39,7 @@ full = [
   "pysam",
   "pynndescent",
   "pyjaspar",
-  "omicverse","deeptoolsintervals"
+  "deeptoolsintervals"
 ]
 
 
@@ -49,4 +49,3 @@ Github = 'https://github.com/aristoteleo/epione'
 
 [tool.flit.sdist]
 exclude = [".*", "d*", "epione_guide*", "pa*", "s*", "t*"]
-

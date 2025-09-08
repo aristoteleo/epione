@@ -178,6 +178,7 @@ def plot_set(verbosity: int = 3, dpi: int = 80,
     # 6) print logo & version only once
     if not _has_printed_logo:
         #print(f"{EMOJI['logo']} OmicVerse Logo:")
+        console.node(logo, last=False, level=2)
         today = datetime.now()
         console.node(f"🔖 Version: {__version__}   📚 Tutorials: https://epione.readthedocs.io/", last=False, level=2)
         _has_printed_logo = True
@@ -280,3 +281,12 @@ purple_color=['#823d86','#825b94','#bb98c6','#c69bc6','#a69ac9',
 #more beautiful colors
 # 28-color palettes with distinct neighboring colors
 palette_28 = sc_color[:28]
+
+logo="""
+___________      .__                      
+\_   _____/_____ |__| ____   ____   ____  
+ |    __)_\____ \|  |/  _ \ /    \_/ __ \ 
+ |        \  |_> >  (  <_> )   |  \  ___/ 
+/_______  /   __/|__|\____/|___|  /\___  >
+        \/|__|                  \/     \/ 
+"""

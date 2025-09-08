@@ -10,6 +10,7 @@ import logging
 import snapatac2
 import snapatac2._snapatac2 as internal
 from ..utils._genome import Genome
+from ..utils import console
 from snapatac2.preprocessing._cell_calling import filter_cellular_barcodes_ordmag
 
 __all__ = ['make_fragment_file', 'import_fragments', 'import_contacts', 'import_values',
@@ -549,8 +550,15 @@ def add_tile_matrix(
         uns: 'reference_sequences'
         obsm: 'fragment_paired'
     """
+    console.level1("Generating cell by bin count matrix...")
     def fun(data, out):
         internal.mk_tile_matrix(data, bin_size, chunk_size, counting_strategy, value_type, summary_type, exclude_chroms, min_frag_size, max_frag_size, out)
+        data.var['seqnames'] = data.var_names.str.split(':').str[0]
+        data.var['start'] = data.var_names.str.split(':').str[1].str.split('-').str[0].astype(int)
+        data.var['end'] = data.var_names.str.split(':').str[1].str.split('-').str[1].astype(int)
+        data.var['width'] = data.var['end'] - data.var['start']
+        console.level2("Added seqnames, start, end, and width to data.var")
+
 
     if isinstance(exclude_chroms, str):
         exclude_chroms = [exclude_chroms]
@@ -573,6 +581,7 @@ def add_tile_matrix(
         else:
             out = internal.AnnData(filename=file, backend=backend, obs=adata.obs[:])
         fun(adata, out)
+        console.level2("Generated cell by bin count matrix")
         return out
 
 def make_peak_matrix(
