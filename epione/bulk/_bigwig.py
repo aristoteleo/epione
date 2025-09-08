@@ -152,22 +152,11 @@ class bigwig(object):
         Arguments:
             gtf_path: the path of gtf file.
         """
-        import omicverse as ov
-
         with console.group_node('Load GTF file', last=True, level=1):
             console.node('Reading GTF...', last=False, level=2)
-            features=ov.utils.read_gtf(gtf_path)
-            pattern = re.compile(r'([^\s]+) "([^"]+)";')
-            splitted = pd.DataFrame.from_records(np.vectorize(lambda x: {
-                key: val for key, val in pattern.findall(x)
-            })(features["attribute"]), index=features.index)
-            if set(features.columns).intersection(splitted.columns):
-                console.warn(
-                    "Splitted attribute names overlap standard GTF fields! The standard fields are overwritten!",
-                    level=2
-                )
-            features=features.assign(**splitted)
-            self.gtf=features
+            from ..utils import read_gtf
+            features = read_gtf(gtf_path)
+            self.gtf = features
             console.success('GTF loaded', level=2)
 
     def save_bw_result(self,save_path:str):
