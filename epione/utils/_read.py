@@ -11,6 +11,8 @@ import gzip
 from typing import Union
 from tqdm import tqdm
 
+from ..utils import console
+
 def read_ATAC_10x(matrix, cell_names='', var_names='', path_file=''):
     """
     Copy from Episcanpy
@@ -74,7 +76,7 @@ def read_gtf(
     pandas.DataFrame
         DataFrame with standard GTF columns and selected attributes.
     """
-
+    console.level2("Reading GTF file from {}...".format(gtf_path))
     req_set = set(required_attrs or ())
     cols = ["seqname", "source", "feature", "start", "end", "score", "strand", "frame"]
     if keep_attribute:
@@ -150,7 +152,7 @@ def read_gtf(
                 d = parse_attr_fast(attribute, req_set)
                 for k in req_set:
                     data[k].append(d.get(k, None))
-
+    console.success("GTF file read successfully", level=2)
     df = pd.DataFrame(data)
     return df
 
@@ -226,3 +228,24 @@ def parse_region_string(region: str) -> pd.DataFrame:
     feature_df = feature_df.astype({"Start": int, "End": int})
 
     return feature_df
+
+
+def read_features(
+    features_path,
+    feature_type="transcript",
+    chr_prefix=None,
+    keep_attribute=True,
+    annotation="HAVANA",
+    
+):
+    """
+    Read features from a file.
+    """
+    console.level1("Reading features...")
+    features = read_gtf(features_path, feature_whitelist=[feature_type], chr_prefix=chr_prefix, keep_attribute=keep_attribute)
+    features=features.loc[(features['feature']==feature_type)&(features['source']==annotation)]
+    features.loc[:, 'Chromosome'] = features['seqname']
+    features.loc[:, 'Start'] = features['start']
+    features.loc[:, 'End'] = features['end']    
+    console.success("Features read successfully", level=1)
+    return features

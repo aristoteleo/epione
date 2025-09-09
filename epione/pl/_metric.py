@@ -185,3 +185,88 @@ def fragment_histogram(
         g.set_xlabel("Fragment length (bp)")
     g.set(xlim=(0, 1000))
     return g
+
+
+
+
+def plot_joint(
+    adata,
+    x_col="log_total_fragment_counts",
+    y_col="tss_score",          
+    q=0.995,                    
+    point_color="black",
+    point_marker=".",
+    height=6.2,
+    space=0.0,
+    kde_cmap="Reds",
+    kde_alpha=0.75,
+    figsize=(4,4),
+    kde_kwargs=None,            
+):
+    r"""
+    Plot the joint distribution of two variables.
+    
+    Plot the joint distribution of two variables.
+
+    Parameters
+    ----------
+    adata
+        AnnData object with peak counts or multimodal MuData object with 'atac' modality.
+    x_col
+        Column name of .obs slot of the AnnData object which to group TSS signals by.
+    y_col
+        Column name of .obs slot of the AnnData object which to group TSS signals by.
+    q
+        Quantile to filter the y_col.
+    point_color
+        Color of the points.
+    point_marker
+        Marker of the points.
+    height
+        Height of the figure.
+    space
+        Space between the points.
+    kde_cmap
+        Color map of the kde plot.
+    kde_alpha
+        Alpha of the kde plot.
+    figsize
+        Size of the figure.
+    kde_kwargs
+        Keyword arguments for the kde plot.
+
+    Returns
+    ----------
+    axes
+        Axes object of the plot.
+    """
+    if kde_kwargs is None:
+        kde_kwargs = {}
+
+    df = adata.obs
+    plot_max = df[y_col].quantile(q)
+    df_plot = df.loc[df[y_col] < plot_max]
+
+    g = sns.jointplot(
+        data=df_plot,
+        x=x_col,
+        y=y_col,
+        color=point_color,
+        marker=point_marker,
+        height=height,
+        space=space,
+    )
+    # Density fill + contour lines (consistent with original logic)
+    g.plot_joint(sns.kdeplot, fill=True, cmap=kde_cmap, zorder=1, alpha=kde_alpha, **kde_kwargs)
+    g.plot_joint(sns.kdeplot, color="black", zorder=2, alpha=kde_alpha, **kde_kwargs)
+
+    g.ax_marg_x.spines["right"].set_visible(False)
+    g.ax_marg_x.spines["bottom"].set_visible(False)
+    g.ax_marg_y.spines["top"].set_visible(False)
+    g.ax_marg_y.spines["left"].set_visible(False)
+
+    if figsize is not None:
+        g.fig.set_size_inches(figsize[0], figsize[1], forward=True)
+
+    axes=[g.ax_joint, g.ax_marg_x, g.ax_marg_y]
+    return axes
