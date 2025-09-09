@@ -6,10 +6,9 @@ import multiprocessing
 from tqdm import tqdm
 
 from ._read import read_gtf
-from .genome import Genome
 
 def find_genes(adata,
-                 genome,
+                 gtf_file,
                  key_added='gene_annotation',
                  upstream=5000,
                  downstream=0,
@@ -26,32 +25,9 @@ def find_genes(adata,
     It is possible to use other type of features than genes present in a gtf file such as transcripts or CDS.
 
     """
-    """
-    Parameters
-    ----------
-    adata
-        AnnData with peaks/features in `var_names` formatted like `chr_start_end`.
-    genome
-        A `Genome` object (recommended), or a path to a GTF/GFF annotation file (backward compatible).
-    key_added
-        Column name added to `adata.var` with gene annotations.
-    upstream, downstream
-        Flanking distances applied depending on strand when building gene windows.
-    feature_type
-        Feature type to match in annotation (e.g., 'gene', 'transcript').
-    annotation
-        Annotation source to match (e.g., 'HAVANA', 'ENSEMBL').
-    raw
-        Unused, kept for backward compatibility.
-    """
     ### extracting the genes
-    if isinstance(genome, Genome):
-        anno_path = str(genome.annotation)
-    else:
-        anno_path = str(genome)
-
     gtf = {}
-    with open(anno_path) as f:
+    with open(gtf_file) as f:
         for line in f:
             if line[0:2] != '##' and '\t'+feature_type+'\t' in line and '\t'+annotation+'\t' in line:
                 line = line.rstrip('\n').split('\t')
@@ -113,10 +89,15 @@ def find_genes(adata,
 
 class Annotation(object):
 
-    def __init__(self, genome_or_path) -> None:
-        """Create an annotation helper from a Genome or annotation path."""
-        gtf_path = genome_or_path.annotation if isinstance(genome_or_path, Genome) else genome_or_path
-        self.gtf=read_gtf(str(gtf_path))
+    def __init__(self,gtf_path) -> None:
+        # Parse only essential attributes and transcripts for speed; drop raw attribute string
+        self.gtf=read_gtf(
+            gtf_path,
+            required_attrs=("gene_id", "gene_name"),
+            feature_whitelist=("transcript",),
+            chr_prefix="chr",
+            keep_attribute=False,
+        )
         self.features=self.gtf.loc[(self.gtf['feature']=='transcript')&(self.gtf['seqname'].str.contains('chr'))]
         chrom_dict={}
         for chrom in self.features['seqname'].unique():
@@ -167,126 +148,6 @@ class Annotation(object):
         features['body']=["{}:{}-{}".format(i,j,k) for i,j,k in zip(features['seqname'],
                                                                 features['start'],features['end'])]
         self.features=features
-
-    # ---- Fast path implementations ----
-    def _ensure_index(self, chrom: str):
-        if not hasattr(self, '_iv_ix_fast'):
-            self._iv_ix_fast = {}
-        if chrom in self._iv_ix_fast:
-            return
-        sub = self.features.loc[self.features['seqname']==chrom]
-        def parse_series(series):
-            starts=[]; ends=[]; labels=[]
-            for s in series.values.tolist():
-                try:
-                    part = s.split(":")[1]
-                    a,b = part.split("-")
-                    a=int(a); b=int(b)
-                except Exception:
-                    a=0; b=0
-                starts.append(a); ends.append(b); labels.append(s)
-            starts=np.asarray(starts, dtype=np.int64)
-            ends=np.asarray(ends, dtype=np.int64)
-            mids=(starts+ends)//2
-            order=np.argsort(starts, kind='mergesort')
-            return starts[order], ends[order], mids[order], np.asarray(labels, dtype=object)[order]
-        def get_col(name):
-            return sub[name] if name in sub.columns else pd.Series([], dtype=object)
-        self._iv_ix_fast[chrom] = {
-            'promoter': parse_series(get_col('promoter')),
-            'up_distal': parse_series(get_col('up_distal')),
-            'down_distal': parse_series(get_col('down_distal')),
-            'body': parse_series(get_col('body')),
-        }
-
-    def query_fast(self, query_list, chrom='chr1'):
-        """Vectorized overlap query using per-chromosome sorted interval indices.
-        Returns a DataFrame with columns: promoter, promoter_overlap, updistal, updistal_overlap, downdistal,
-        downdistal_overlap, body, body_overlap
-        """
-        self._ensure_index(chrom)
-        iv = self._iv_ix_fast[chrom]
-        q_intervals=[parse_interval(i) for i in query_list]
-        out=pd.DataFrame(index=[f"{chrom}:{a}-{b}" for a,b in q_intervals],
-                         columns=['promoter','promoter_overlap','updistal','updistal_overlap','downdistal','downdistal_overlap','body','body_overlap'])
-        def pick(name, qs, qe, qmid, qlen):
-            s,e,m,l = iv[name]
-            if len(s)==0:
-                return '', ''
-            r = np.searchsorted(s, qe, side='right')
-            if r==0:
-                return '', ''
-            s = s[:r]; e=e[:r]; m=m[:r]; l=l[:r]
-            os = np.maximum(s, qs)
-            oe = np.minimum(e, qe)
-            mask = oe >= os
-            if not np.any(mask):
-                return '', ''
-            olen = oe - os
-            valid = mask & (olen > qlen*0.9)
-            if not np.any(valid):
-                return '', ''
-            idx = np.argmin(np.abs(m[valid]-qmid))
-            return l[valid][idx], f"{chrom}:{int(os[valid][idx])}-{int(oe[valid][idx])}"
-        for (qs,qe) in tqdm(q_intervals):
-            qlen = qe - qs
-            qmid = qe - qlen//2
-            p,po = pick('promoter', qs,qe,qmid,qlen)
-            u,uo = pick('up_distal', qs,qe,qmid,qlen)
-            d,do = pick('down_distal', qs,qe,qmid,qlen)
-            b,bo = pick('body', qs,qe,qmid,qlen)
-            out.loc[f"{chrom}:{qs}-{qe}"] = [p,po,u,uo,d,do,b,bo]
-        out = out[~out.index.duplicated(keep='first')]
-        return out
-
-    def query_multi_fast(self, query_list, chrom='chr1', batch=1, ncpus=10):
-        """Parallel fast querying by splitting the query list; each worker runs the fast picker.
-        Note: building the index is done once in the parent process.
-        """
-        self._ensure_index(chrom)
-        q_intervals=[parse_interval(i) for i in query_list]
-        chunk_size = max(1, len(q_intervals)//max(1,batch))
-        chunks = [q_intervals[i:i+chunk_size] for i in range(0, len(q_intervals), chunk_size)]
-        def worker(chunk):
-            iv = self._iv_ix_fast[chrom]
-            out=pd.DataFrame(columns=['promoter','promoter_overlap','updistal','updistal_overlap','downdistal','downdistal_overlap','body','body_overlap'])
-            def pick(name, qs, qe, qmid, qlen):
-                s,e,m,l = iv[name]
-                if len(s)==0:
-                    return '', ''
-                r = np.searchsorted(s, qe, side='right')
-                if r==0:
-                    return '', ''
-                s2 = s[:r]; e2=e[:r]; m2=m[:r]; l2=l[:r]
-                os = np.maximum(s2, qs)
-                oe = np.minimum(e2, qe)
-                mask = oe >= os
-                if not np.any(mask):
-                    return '', ''
-                olen = oe - os
-                valid = mask & (olen > qlen*0.9)
-                if not np.any(valid):
-                    return '', ''
-                idx = np.argmin(np.abs(m2[valid]-qmid))
-                return l2[valid][idx], f"{chrom}:{int(os[valid][idx])}-{int(oe[valid][idx])}"
-            for qs,qe in chunk:
-                qlen = qe-qs
-                qmid = qe - qlen//2
-                p,po = pick('promoter', qs,qe,qmid,qlen)
-                u,uo = pick('up_distal', qs,qe,qmid,qlen)
-                d,do = pick('down_distal', qs,qe,qmid,qlen)
-                b,bo = pick('body', qs,qe,qmid,qlen)
-                out.loc[f"{chrom}:{qs}-{qe}"] = [p,po,u,uo,d,do,b,bo]
-            return out
-        if ncpus and ncpus>1 and len(chunks)>1:
-            import multiprocessing as _mp
-            with _mp.Pool(processes=ncpus) as pool:
-                dfs = pool.map(worker, chunks)
-        else:
-            dfs = [worker(c) for c in chunks]
-        merge_pd = pd.concat(dfs)
-        merge_pd = merge_pd[~merge_pd.index.duplicated(keep='first')]
-        return merge_pd
 
     def query(self,query_list,chrom='chr1'):
         query_interval=[parse_interval(i) for i in query_list]
