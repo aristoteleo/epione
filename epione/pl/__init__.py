@@ -1,4 +1,4 @@
-from ._metric import frag_size_distr
+from ._metric import frag_size_distr, tss_enrichment,fragment_histogram
 from ._base import *
 
-__all__ = ["frag_size_distr"]
+__all__ = ["frag_size_distr", "tss_enrichment", "fragment_histogram"]

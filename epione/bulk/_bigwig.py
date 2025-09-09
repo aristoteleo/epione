@@ -155,7 +155,15 @@ class bigwig(object):
         with console.group_node('Load GTF file', last=True, level=1):
             console.node('Reading GTF...', last=False, level=2)
             from ..utils import read_gtf
-            features = read_gtf(gtf_path)
+            # Parse only essential attributes and pre-filter for speed
+            # Keep attribute string to support plotting labels fallback
+            features = read_gtf(
+                gtf_path,
+                required_attrs=("gene_id", "gene_name"),
+                feature_whitelist=("transcript", "exon", "3UTR", "5UTR"),
+                chr_prefix="chr",
+                keep_attribute=False,
+            )
             self.gtf = features
             console.success('GTF loaded', level=2)
 
@@ -932,18 +940,25 @@ class bigwig(object):
                 plot_obj=goal_gtf1.iloc[i]
                 if plot_obj.feature=='transcript':
                     plt.hlines(y=1,xmin=plot_obj.start,xmax=plot_obj.end, color=gtf_color, linewidth=2)
-                    gene_attr=plot_obj.attribute
-                    plot_text=''
-                    jump_t=False
-                    for g in gene_attr.split(';'):
-                        if prefered_name in g:
-                            for jump_symbol in jump_symbols:
-                                if jump_symbol in g:
-                                    plot_text=''
-                                    jump_t=True
-                                    break
-                            if jump_t==False:
-                                plot_text=g.replace(prefered_name,'').replace('\"','')
+                    # Prefer pre-parsed attribute columns when available, fallback to raw attribute text
+                    if prefered_name in plot_obj.index and pd.notnull(plot_obj[prefered_name]):
+                        plot_text = str(plot_obj[prefered_name])
+                        jump_t = any(js in plot_text for js in jump_symbols)
+                        if jump_t:
+                            plot_text = ''
+                    else:
+                        gene_attr=plot_obj.attribute if 'attribute' in plot_obj.index else ''
+                        plot_text=''
+                        jump_t=False
+                        for g in gene_attr.split(';'):
+                            if prefered_name in g:
+                                for jump_symbol in jump_symbols:
+                                    if jump_symbol in g:
+                                        plot_text=''
+                                        jump_t=True
+                                        break
+                                if jump_t==False:
+                                    plot_text=g.replace(prefered_name,'').replace('\"','')
                                     
                             
                     if plot_text not in have_plot_text:

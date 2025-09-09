@@ -1,8 +1,8 @@
 from ._data import (
     import_fragments, make_peak_matrix, make_gene_matrix, add_tile_matrix,
-
+    
 )
-from ._metric import frag_size_distr, tsse, ensure_tabix_index
+from ._metric import frag_size_distr, tsse, ensure_tabix_index, tss_enrichment,nucleosome_signal
 
 __all__ = [
     "import_fragments",
@@ -12,4 +12,6 @@ __all__ = [
     "make_gene_matrix",
     "add_tile_matrix",
     "ensure_tabix_index",
+    "tss_enrichment",
+    "nucleosome_signal",
 ]

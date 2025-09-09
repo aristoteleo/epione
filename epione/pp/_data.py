@@ -339,6 +339,8 @@ def import_fragments(
             adata, fragment_file, chrom_sizes, chrM, min_num_fragments,
             sorted_by_barcode, shift_left, shift_right, chunk_size, whitelist, tempdir,
         )
+        adata.uns['files'] = {'fragments': fragment_file}
+        console.level2("Added fragments file to adata.uns['files']")
         return adata
 
 def import_contacts(
