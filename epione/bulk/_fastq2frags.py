@@ -2,7 +2,7 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Union
 import tarfile
 import gzip
 
@@ -127,8 +127,8 @@ def align_fastq_to_bam(
 
 def ensure_aligner_index(
     aligner: str,
-    fasta: str | Path,
-    index_prefix: str | Path | None = None,
+    fasta: Union[str, Path],
+    index_prefix: Union[str, Path, None] = None,
     overwrite: bool = False,
 ) -> str:
     """
@@ -364,7 +364,7 @@ def fetch_genome_fasta(genome: str) -> Path:
     return ensure_fasta_unzipped(fa_gz)
 
 
-def list_dataset_fastqs_tar() -> list[str]:
+def list_dataset_fastqs_tar() -> List[str]:
     """List FASTQ members inside the demo tar without extracting."""
     ds = _epione_datasets()
     tar_path = Path(ds.fetch("atac_pbmc_500_fastqs.tar"))
@@ -372,7 +372,7 @@ def list_dataset_fastqs_tar() -> list[str]:
         return [m.name for m in tf.getmembers() if m.isfile() and m.name.endswith((".fastq.gz", ".fq.gz"))]
 
 
-def extract_fastqs_from_tar(members: list[str], dest: str | Path) -> list[Path]:
+def extract_fastqs_from_tar(members: List[str], dest: Union[str, Path]) -> List[Path]:
     """Extract only selected FASTQ members from the demo tar to dest, return paths."""
     ds = _epione_datasets()
     tar_path = Path(ds.fetch("atac_pbmc_500_fastqs.tar"))
@@ -397,7 +397,7 @@ def extract_fastqs_from_tar(members: list[str], dest: str | Path) -> list[Path]:
         return [dest / Path(m).name for m in members]
 
 
-def fetch_dataset_fastq_pairs(out_dir: str | Path, *, limit_pairs: int = 1) -> List[Tuple[Path, Path]]:
+def fetch_dataset_fastq_pairs(out_dir: Union[str, Path], *, limit_pairs: int = 1) -> List[Tuple[Path, Path]]:
     """
     Download small demo FASTQs (10x PBMC 500) via epione datasets and return R1/R2 pairs.
     """
@@ -411,7 +411,7 @@ def fetch_dataset_fastq_pairs(out_dir: str | Path, *, limit_pairs: int = 1) -> L
     members = list_dataset_fastqs_tar()
     r1_names = sorted([m for m in members if "R1" in m and m.endswith((".fastq.gz", ".fq.gz"))])
     r2_names = sorted([m for m in members if "R2" in m and m.endswith((".fastq.gz", ".fq.gz"))])
-    pairs_names: list[Tuple[str, str]] = []
+    pairs_names: List[Tuple[str, str]] = []
     def key_name(n: str) -> str:
         return n.replace("R1", "").replace("R2", "")
     used = set()
@@ -447,7 +447,7 @@ def fetch_dataset_fastq_pairs(out_dir: str | Path, *, limit_pairs: int = 1) -> L
 
 def bulk_from_genome_demo(
     genome: str,
-    out_dir: str | Path,
+    out_dir: Union[str, Path],
     *,
     aligner: str = "bwa-mem2",
     threads: int = 8,

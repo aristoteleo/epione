@@ -13,12 +13,6 @@ from ._fastq2frags import (
 
 
 # Optional: bigwig visualization utilities (require numpy/pyBigWig/etc.)
-try:
-    from ._bigwig import bigwig, plot_matrix, plot_matrix_line, plotloc
-    from ._getScorePerBigWigBin import *  # noqa: F401,F403
-except Exception:  # ImportError and others
-    # Defer heavy deps; users focusing on alignment/fragments can still import this module
-    bigwig = None
-    plot_matrix = None
-    plot_matrix_line = None
-    plotloc = None
+from ._bigwig import bigwig, plot_matrix, plot_matrix_line, plotloc
+from ._getScorePerBigWigBin import *  # noqa: F401,F403
+
