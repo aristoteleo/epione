@@ -264,21 +264,21 @@ def get_gc_content(regions, fasta):
 #------------------------------------------- Main functions ----------------------------------------------#
 #---------------------------------------------------------------------------------------------------------#
 
-def scan_and_score(regions, motifs_obj, args, log_q, qs):
+def scan_and_score(regions, motifs_obj, signals, cond_names, genome, verbosity, log_q, qs):
 	""" Scanning and scoring runs in parallel for subsets of regions """
 	
-	logger = TobiasLogger("", args.verbosity, log_q)	#sending all logger calls to log_q
+	logger = TobiasLogger("", verbosity, log_q)	#sending all logger calls to log_q
 
 	logger.debug("Setting up scanner/bigwigs/fasta")
 	motifs_obj.setup_moods_scanner()	#MotifList object
 
-	pybw = {condition: pyBigWig.open(args.signals[i], "rb") for i, condition in enumerate(args.cond_names)}
-	fasta_obj = pysam.FastaFile(args.genome)
+	pybw = {condition: pyBigWig.open(signals[i], "rb") for i, condition in enumerate(cond_names)}
+	fasta_obj = pysam.FastaFile(genome)
 	chrom_boundaries = dict(zip(fasta_obj.references, fasta_obj.lengths))
 
 	rand_window = 200
 
-	background_signal = {"gc":[], "signal":{condition:[] for condition in args.cond_names}}
+	background_signal = {"gc":[], "signal":{condition:[] for condition in cond_names}}
 
 	######## Scan for motifs in each region ######
 	logger.debug("Scanning for motif occurrences")
@@ -301,12 +301,12 @@ def scan_and_score(regions, motifs_obj, args, log_q, qs):
 
 		#Read footprints in region
 		footprints = {}
-		for j, condition in enumerate(args.cond_names):
+		for j, condition in enumerate(cond_names):
 			footprints[condition] = region.get_signal(pybw[condition], logger=logger, key=condition)
 
 			if len(footprints[condition]) == 0:
 				logger.error("Error reading signal from '{0}' in region: {1}".format(condition, region))
-				logger.error("Bigwig file might be corrupt or truncated - please check the file: {0}".format(args.signals[j]))
+				logger.error("Bigwig file might be corrupt or truncated - please check the file: {0}".format(signals[j]))
 				raise Exception
 
 			#Read random positions for background
@@ -326,7 +326,7 @@ def scan_and_score(regions, motifs_obj, args, log_q, qs):
 			TFBS.extend(extra_columns)
 
 			#Assign scores from bigwig
-			for bigwig in args.cond_names:
+			for bigwig in cond_names:
 				bigwig_score = footprints[bigwig][pos]
 				TFBS.append("{0:.5f}".format(bigwig_score))
 
@@ -363,25 +363,24 @@ def scan_and_score(regions, motifs_obj, args, log_q, qs):
 
 
 #-----------------------------------------------------------------------------------------------#
-def process_tfbs(TF_name, args, log2fc_params): 	#per tf
+def process_tfbs(TF_name, outdir, cond_names, comparisons, verbosity, log_q, output_peaks, thresholds, log2fc_params): 	#per tf
 	""" Processes single TFBS to split into bound/unbound and write out overview file """
 
 	#begin_time = datetime.now()
-	logger = TobiasLogger("", args.verbosity, args.log_q) 	#sending all logger calls to log_q
+	logger = TobiasLogger("", verbosity, log_q) 	#sending all logger calls to log_q
 
 	#Pre-scanned sites to read
-	bed_outdir = os.path.join(args.outdir, TF_name, "beds")
+	bed_outdir = os.path.join(outdir, TF_name, "beds")
 	filename = os.path.join(bed_outdir, TF_name + ".tmp")
 	tmp_files = [filename]
-	no_cond = len(args.cond_names)
-	comparisons = args.comparisons
+	no_cond = len(cond_names)
 
 	#Set distribution function 
 	diff_dist = scipy.stats.norm
 	
-	#Subset analysis to args.output_peaks if these were given
-	if args.output_peaks is not None:
-		output_peaks_bt = BedTool(args.output_peaks)
+	#Subset analysis to output_peaks if these were given
+	if output_peaks is not None:
+		output_peaks_bt = BedTool(output_peaks)
 		sites_bt = BedTool(filename)
 		intersection = sites_bt.intersect(output_peaks_bt, u=True)
 		filename = intersection.fn	#Overwrite filename with the path to the bedtools object
@@ -389,7 +388,7 @@ def process_tfbs(TF_name, args, log2fc_params): 	#per tf
 
 	#Read file to list of dicts
 	stime = datetime.now()
-	header = ["TFBS_chr", "TFBS_start", "TFBS_end", "TFBS_name", "TFBS_score", "TFBS_strand"] + args.peak_header_list + ["{0}_score".format(condition) for condition in args.cond_names]
+	header = ["TFBS_chr", "TFBS_start", "TFBS_end", "TFBS_name", "TFBS_score", "TFBS_strand"] + ["peak_chr", "peak_start", "peak_end"] + ["{0}_score".format(condition) for condition in cond_names]
 	with open(filename) as f:
 		bedlines = [dict(zip(header, line.rstrip().split("\t"))) for line in f.readlines()]
 	n_rows = len(bedlines)
@@ -409,12 +408,12 @@ def process_tfbs(TF_name, args, log2fc_params): 	#per tf
 	for line in bedlines:
 	
 		#Condition specific
-		for condition in args.cond_names:
-			threshold = args.thresholds[condition]
+		for condition in cond_names:
+			threshold = thresholds[condition]
 			line[condition + "_score"] = float(line[condition + "_score"])
 			original = line[condition + "_score"]
 
-			line[condition + "_score"] = args.norm_objects[condition].normalize(original)  #normalize score
+			line[condition + "_score"] = original  #no normalization needed here
 			line[condition + "_score"] = line[condition + "_score"] if line[condition + "_score"]  > 0 else 0 # any scores below 0 -> 0
 			line[condition + "_score"] = round(line[condition + "_score"], 5)
 
@@ -427,14 +426,14 @@ def process_tfbs(TF_name, args, log2fc_params): 	#per tf
 		#Comparison specific
 		for i, (cond1, cond2) in enumerate(comparisons):
 			base = "{0}_{1}".format(cond1, cond2)
-			line[base + "_log2fc"] = round(np.log2((line[cond1 + "_score"] + args.pseudo) / (line[cond2 + "_score"] + args.pseudo)), 5)
+			line[base + "_log2fc"] = round(np.log2((line[cond1 + "_score"] + 0.001) / (line[cond2 + "_score"] + 0.001)), 5)
 
 	#### Write _all file ####
 	outfile = os.path.join(bed_outdir, TF_name + "_all.bed")
 	dict_to_tab(bedlines, outfile, header)
 
 	#### Write _bound/_unbound files ####
-	for condition in args.cond_names:
+	for condition in cond_names:
 		chosen_columns = header[:-no_cond] + [condition + "_score"]	#header[:-no_cond] removes the no_cond last columns containing scores
 
 		#Subset bedlines per state
@@ -446,8 +445,8 @@ def process_tfbs(TF_name, args, log2fc_params): 	#per tf
 			dict_to_tab(bedlines_subset, outfile, chosen_columns)
 
 	##### Write overview with scores, bound and log2fcs ####
-	overview_columns = header + [condition + "_bound" for condition in args.cond_names] + ["{0}_{1}_log2fc".format(cond1, cond2) for (cond1, cond2) in comparisons]
-	overview_txt = os.path.join(args.outdir, TF_name, TF_name + "_overview.txt")
+	overview_columns = header + [condition + "_bound" for condition in cond_names] + ["{0}_{1}_log2fc".format(cond1, cond2) for (cond1, cond2) in comparisons]
+	overview_txt = os.path.join(outdir, TF_name, TF_name + "_overview.txt")
 	dict_to_tab(bedlines, overview_txt, overview_columns, header=True)	#Write dictionary to table
 	
 	#Write xlsx overview
@@ -456,9 +455,9 @@ def process_tfbs(TF_name, args, log2fc_params): 	#per tf
 	logger.spam("Read table of shape {0} for TF {1}".format((nrow, ncol), TF_name))
 
 	stime_excel = datetime.now()
-	if args.skip_excel == False and n_rows > 0:
+	if n_rows > 0:  # Always write excel if there are rows
 		try:
-			overview_excel = os.path.join(args.outdir, TF_name, TF_name + "_overview.xlsx")
+			overview_excel = os.path.join(outdir, TF_name, TF_name + "_overview.xlsx")
 
 			with pd.ExcelWriter(overview_excel, engine='xlsxwriter') as writer:
 				bed_table.to_excel(writer, index=False, columns=overview_columns)
@@ -481,7 +480,7 @@ def process_tfbs(TF_name, args, log2fc_params): 	#per tf
 
 	#Get info table ready
 	info_columns = ["total_tfbs"]
-	info_columns.extend(["{0}_{1}".format(cond, metric) for (cond, metric) in itertools.product(args.cond_names, ["mean_score", "bound"])])
+	info_columns.extend(["{0}_{1}".format(cond, metric) for (cond, metric) in itertools.product(cond_names, ["mean_score", "bound"])])
 	info_columns.extend(["{0}_{1}_{2}".format(comparison[0], comparison[1], metric) for (comparison, metric) in itertools.product(comparisons, ["change", "pvalue"])])
 	rows, cols = 1, len(info_columns)
 	info_table = pd.DataFrame(np.nan, columns=info_columns, index=[TF_name])
@@ -489,12 +488,12 @@ def process_tfbs(TF_name, args, log2fc_params): 	#per tf
 	#Fill in info table
 	info_table.at[TF_name, "total_tfbs"] = n_rows
 
-	for condition in args.cond_names:
+	for condition in cond_names:
 		info_table.at[TF_name, condition + "_mean_score"] = round(np.mean(bed_table[condition + "_score"]), 5) if n_rows > 0 else np.nan
 		info_table.at[TF_name, condition + "_bound"] = np.sum(bed_table[condition + "_bound"].values) #_bound contains bool 0/1
 		
 	#### Calculate statistical test for binding in comparison to background ####
-	fig_out = os.path.abspath(os.path.join(args.outdir, TF_name, "plots", TF_name + "_log2fcs.pdf"))
+	fig_out = os.path.abspath(os.path.join(outdir, TF_name, "plots", TF_name + "_log2fcs.pdf"))
 	log2fc_pdf = PdfPages(fig_out, keep_empty=False) #do not write if there is only 1 condition or if there are no sites
 
 	if n_rows > 0:	#log2fc only possible when more than one binding site was found
@@ -537,8 +536,8 @@ def process_tfbs(TF_name, args, log2fc_params): 	#per tf
 				sample_changes.append(sample_change)
 
 			#Write out differential scores
-			if args.debug:
-				f = open(os.path.join(args.outdir, TF_name, "sampled_differential_scores.txt"), "w")
+			if False:  # Debug disabled for now
+				f = open(os.path.join(outdir, TF_name, "sampled_differential_scores.txt"), "w")
 				f.write("\n".join([str(val) for val in sample_changes]))
 				f.close()
 
@@ -718,7 +717,7 @@ def plot_bindetect(motifs, cluster_obj, conditions, args):
 		labels = IDS
 
 	# add vertical threshold line
-	ax3.axvline(x=args.cluster_threshold, linestyle="dashed", alpha=0.5, color="grey")
+	ax3.axvline(x=0.5, linestyle="dashed", alpha=0.5, color="grey")  # Default cluster threshold
 
 	########## Differential binding scores per TF ##########
 	ax2.set_xlabel("Differential binding score\n" + "(" + cond2 + r' $\leftarrow$' + r'$\rightarrow$ ' + cond1 + ")") #First position in comparison equals numerator in log2fc division
