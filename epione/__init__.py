@@ -6,6 +6,14 @@ Subpackages (bulk, pp, single, pl, utils) can be imported on demand:
     import epione.pp
 """
 
+from . import (
+    bulk,
+    pp,
+    single,
+    pl,
+    utils,
+)
+
 __all__ = [
     'bulk',
     'pp',
