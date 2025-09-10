@@ -41,13 +41,12 @@ from pybedtools import BedTool
 #import MOODS.parsers
 
 #Internal functions and classes
-import sys
-sys.path.insert(0, '/Users/fernandozeng/Desktop/analysis/25_epione/code/tobias')
-from tobias.utils.regions import *
+
+from ..utils.regions import *
 #from tobias.utils.sequences import *
-from tobias.utils.utilities import *
-from tobias.utils.motifs import *
-from tobias.utils.signals import *
+from ..utils.utilities import *
+from ..utils.motifs import *
+from ..utils.signals import *
 
 import warnings
 #np.seterr(all='raise')

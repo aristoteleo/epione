@@ -39,14 +39,13 @@ import pysam
 import pyBigWig as pybw
 
 #Internal functions and classes
-import sys
-sys.path.insert(0, '/Users/fernandozeng/Desktop/analysis/25_epione/code/tobias')
-from tobias.parsers import add_bindetect_arguments
-from tobias.tools.bindetect_functions import *
-from tobias.utils.utilities import *
-from tobias.utils.regions import *
-from tobias.utils.motifs import *
-from tobias.utils.logger import TobiasLogger
+
+
+from ._bindetect_functions import *
+from ..utils.utilities import *
+from ..utils.regions import *
+from ..utils.motifs import *
+from ..utils.logger import TobiasLogger
 
 #For warnings from curve_fit
 import warnings
@@ -955,15 +954,51 @@ def run_bindetect(args):
 	logger.end()
 
 
-#--------------------------------------------------------------------------------------------------------#
-if __name__ == '__main__':
+def add_bindetect_arguments(parser):
 
-	parser = argparse.ArgumentParser()
-	parser = add_bindetect_arguments(parser)
-	args = parser.parse_args()
+	parser.formatter_class = lambda prog: argparse.RawDescriptionHelpFormatter(prog, max_help_position=35, width=90)
+	description = "BINDetect takes motifs, signals (footprints) and genome as input to estimate bound transcription factor binding sites and differential binding between conditions. "
+	description += "The underlying method is a modified motif enrichment test to see which motifs have the largest differences in signal across input conditions. "
+	description += "The output is an in-depth overview of global changes as well as the individual binding site signal-differences.\n\n"
+	description += "Usage:\nTOBIAS BINDetect --signals <bigwig1> (<bigwig2> (...)) --motifs <motifs.txt> --genome <genome.fasta> --peaks <peaks.bed>\n\n"
+	description += "Output files:\n- <outdir>/<prefix>_figures.pdf\n- <outdir>/<prefix>_results.{txt,xlsx}\n- <outdir>/<prefix>_distances.txt\n"
+	description += "- <outdir>/<TF>/<TF>_overview.{txt,xlsx} (per motif)\n- <outdir>/<TF>/beds/<TF>_all.bed (per motif)\n"
+	description += "- <outdir>/<TF>/beds/<TF>_<condition>_bound.bed (per motif-condition pair)\n- <outdir>/<TF>/beds/<TF>_<condition>_unbound.bed (per motif-condition pair)\n\n"
+	parser.description = format_help_description("BINDetect", description)
 
-	if len(sys.argv[1:]) == 0:
-		parser.print_help()
-		sys.exit()
+	parser._action_groups.pop()	#pop -h
+	
+	required = parser.add_argument_group('Required arguments')
+	required.add_argument('--signals', metavar="<bigwig>", help="Signal per condition (.bigwig format)", nargs="*")
+	required.add_argument('--peaks', metavar="<bed>", help="Peaks.bed containing open chromatin regions across all conditions")
+	required.add_argument('--motifs', metavar="<motifs>", help="Motif file(s) in pfm/jaspar/meme/transfac format", nargs="*")
+	required.add_argument('--genome', metavar="<fasta>", help="Genome .fasta file")
 
-	run_bindetect(args)
+	optargs = parser.add_argument_group('Optional arguments')
+	optargs.add_argument('--cond-names', metavar="<name>", nargs="*", help="Names of conditions fitting to --signals (default: prefix of --signals)")
+	optargs.add_argument('--peak-header', metavar="<file>", help="File containing the header of --peaks separated by whitespace or newlines (default: peak columns are named \"_additional_<count>\")")
+	optargs.add_argument('--naming', metavar="<string>", help="Naming convention for TF output files ('id', 'name', 'name_id', 'id_name') (default: 'name_id')", choices=["id", "name", "name_id", "id_name"], default="name_id")
+	optargs.add_argument('--motif-pvalue', metavar="<float>", type=lambda x: restricted_float(x, 0, 1), help="Set p-value threshold for motif scanning (default: 1e-4)", default=0.0001)
+	optargs.add_argument('--bound-pvalue', metavar="<float>", type=lambda x: restricted_float(x, 0, 1), help="Set p-value threshold for bound/unbound split (default: 0.001)", default=0.001)
+	optargs.add_argument('--cluster-threshold', metavar="<float>", type=lambda x: restricted_float(x, 0, 1), help="Set the clustering threshold. Motifs below this threshold will be assigned to one cluster (default: 0.5)", default=0.5)
+	#optargs.add_argument('--volcano-diff-thresh', metavar="<float>", help="", default=0.2)	#not yet implemented
+	#optargs.add_argument('--volcano-p-thresh', metavar="<float>", help="", default=0.05)	#not yet implemented
+
+	optargs.add_argument('--pseudo', type=float, metavar="<float>", help="Pseudocount for calculating log2fcs (default: estimated from data)", default=None)
+	optargs.add_argument('--time-series', action='store_true', help="Will only compare signals1<->signals2<->signals3 (...) in order of input, and skip all-against-all comparison.")
+	optargs.add_argument('--skip-excel', action='store_true', help="Skip creation of excel files - for large datasets, this will speed up BINDetect considerably")
+	optargs.add_argument('--output-peaks', metavar="<bed>", help="""Gives the possibility to set the output peak set differently than the input --peaks.
+													 				This will limit all analysis to the regions in --output-peaks. 
+																	NOTE: --peaks must still be set to the full peak set!""")
+	optargs.add_argument('--norm-off', action='store_true', help="Turn off normalization of footprint scores across conditions")
+
+	runargs = parser.add_argument_group("Run arguments")
+	runargs.add_argument('--outdir', metavar="<directory>", help="Output directory to place TFBS/plots in (default: bindetect_output)", default="bindetect_output")
+	optargs.add_argument('--prefix', metavar="<prefix>", help="Prefix for overview files in --outdir folder (default: bindetect)", default="bindetect")
+	runargs.add_argument('--cores', metavar="<int>", type=int, help="Number of cores to use for computation (default: 1)", default=1)
+	runargs.add_argument('--split', metavar="<int>", type=int, help="Split of multiprocessing jobs (default: 100)", default=100)
+	runargs.add_argument('--debug', action='store_true', help="Creates an additional '_debug.pdf'-file with debug plots")	#creates extra output for debugging
+	
+	runargs = add_logger_args(runargs)
+
+	return(parser)
