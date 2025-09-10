@@ -10,7 +10,6 @@ BINDetect: Detects differential binding between conditions as well as bound tran
 
 import os
 import sys
-import argparse
 import numpy as np
 import multiprocessing as mp
 import time
@@ -58,44 +57,11 @@ def norm_fit(x, mean, std, scale):
 	return(scale * scipy.stats.norm.pdf(x, mean, std))
 
 #----------------------------------------------------------------------------------------------------------------#
-class BindetectArgs:
-	"""Args-like object for bindetect function"""
-	def __init__(self, condition_names=None, score_files=None, motif_file=None, fasta_file=None, regions_bed=None, output_dir="bindetect_results", **kwargs):
-		# Set defaults to match TOBIAS behavior
-		self.signals = score_files
-		self.motifs = [motif_file] if motif_file else []
-		self.genome = fasta_file
-		self.peaks = regions_bed
-		self.outdir = output_dir
-		self.cond_names = condition_names
-		self.prefix = kwargs.get('prefix', 'bindetect')
-		self.verbosity = kwargs.get('verbosity', 3)
-		self.cores = kwargs.get('cores', 8)
-		self.split = kwargs.get('split', 100)
-		self.naming = kwargs.get('naming', 'name_id')
-		self.motif_pvalue = kwargs.get('motif_pvalue', 0.0001)
-		self.bound_pvalue = kwargs.get('bound_pvalue', 0.001)
-		self.norm_off = kwargs.get('norm_off', False)
-		self.time_series = kwargs.get('time_series', False)
-		self.debug = kwargs.get('debug', False)
-		self.cluster_threshold = kwargs.get('cluster_threshold', 0.5)
-		self.peak_header = kwargs.get('peak_header', None)
-		self.peak_header_list = None
-		self.gc = None
-		self.pseudo = None
-		self.thresholds = {}
-		self.norm_objects = {}
-		self.comparisons = []
-		self.log_q = None
-		self.skip_excel = kwargs.get('skip_excel', False)
-		self.output_peaks = kwargs.get('output_peaks', None)
-		
-		# Update with any additional kwargs
-		for key, value in kwargs.items():
-			if hasattr(self, key):
-				setattr(self, key, value)
 
-def bindetect(condition_names=None, score_files=None, motif_file=None, fasta_file=None, regions_bed=None, output_dir="bindetect_results", **kwargs):
+def bindetect(condition_names=None, score_files=None, motif_file=None, fasta_file=None, regions_bed=None, output_dir="bindetect_results", 
+              prefix="bindetect", verbosity=3, cores=8, split=100, naming="name_id", motif_pvalue=0.0001, bound_pvalue=0.001, 
+              norm_off=False, time_series=False, debug=False, cluster_threshold=0.5, peak_header=None, skip_excel=False, 
+              output_peaks=None, pseudo=None):
 	"""
 	Main function to run bindetect algorithm with direct parameters
 	
@@ -113,49 +79,99 @@ def bindetect(condition_names=None, score_files=None, motif_file=None, fasta_fil
 		Path to BED file with regions to analyze
 	output_dir : str, default "bindetect_results"
 		Output directory for results
-	**kwargs : dict
-		Additional parameters for bindetect algorithm
+	prefix : str, default "bindetect"
+		Prefix for output files
+	verbosity : int, default 3
+		Verbosity level for logging
+	cores : int, default 8
+		Number of cores to use
+	split : int, default 100
+		Split size for multiprocessing
+	naming : str, default "name_id"
+		Naming convention for TF output files
+	motif_pvalue : float, default 0.0001
+		P-value threshold for motif scanning
+	bound_pvalue : float, default 0.001
+		P-value threshold for bound/unbound split
+	norm_off : bool, default False
+		Turn off normalization of footprint scores
+	time_series : bool, default False
+		Compare signals in order instead of all-against-all
+	debug : bool, default False
+		Create debug plots
+	cluster_threshold : float, default 0.5
+		Clustering threshold for motifs
+	peak_header : str, optional
+		File containing peak header information
+	skip_excel : bool, default False
+		Skip creation of excel files
+	output_peaks : str, optional
+		Different output peak set
+	pseudo : float, optional
+		Pseudocount for log2fc calculation
 	"""
-	args = BindetectArgs(condition_names, score_files, motif_file, fasta_file, regions_bed, output_dir, **kwargs)
-	return run_bindetect(args)
+	return run_bindetect(condition_names, score_files, motif_file, fasta_file, regions_bed, output_dir,
+	                     prefix, verbosity, cores, split, naming, motif_pvalue, bound_pvalue, norm_off,
+	                     time_series, debug, cluster_threshold, peak_header, skip_excel, output_peaks, pseudo)
 
-def run_bindetect(args):
-	""" Main function to run bindetect algorithm with input files and parameters given in args """
+def run_bindetect(condition_names, score_files, motif_file, fasta_file, regions_bed, output_dir,
+                  prefix, verbosity, cores, split, naming, motif_pvalue, bound_pvalue, norm_off,
+                  time_series, debug, cluster_threshold, peak_header, skip_excel, output_peaks, pseudo):
+	""" Main function to run bindetect algorithm with direct parameters """
+
+	# Set up variables directly from parameters
+	signals = score_files
+	motifs = [motif_file] if motif_file else []
+	genome = fasta_file
+	peaks = regions_bed
+	outdir = os.path.abspath(output_dir)
+	cond_names = [os.path.basename(os.path.splitext(bw)[0]) for bw in signals] if condition_names is None else condition_names
+	
+	# Initialize other variables
+	peak_header_list = None
+	gc = None
+	thresholds = {}
+	norm_objects = {}
+	comparisons = []
+	log_q = None
 
 	#Checking input and setting cond_names
-	check_required(args, ["signals", "motifs", "genome", "peaks"])
-	args.cond_names = [os.path.basename(os.path.splitext(bw)[0]) for bw in args.signals] if args.cond_names is None else args.cond_names
-	args.outdir = os.path.abspath(args.outdir)
+	if signals is None:
+		sys.exit("ERROR: Missing argument --signals")
+	if motifs is None or len(motifs) == 0:
+		sys.exit("ERROR: Missing argument --motifs")
+	if genome is None:
+		sys.exit("ERROR: Missing argument --genome")
+	if peaks is None:
+		sys.exit("ERROR: Missing argument --peaks")
 
 	#Set output files
 	states = ["bound", "unbound"]
-	outfiles = [os.path.abspath(os.path.join(args.outdir, "*", "beds", "*_{0}_{1}.bed".format(condition, state))) for (condition, state) in itertools.product(args.cond_names, states)]
-	outfiles.append(os.path.abspath(os.path.join(args.outdir, "*", "beds", "*_all.bed")))
-	outfiles.append(os.path.abspath(os.path.join(args.outdir, "*", "plots", "*_log2fcs.pdf")))
-	outfiles.append(os.path.abspath(os.path.join(args.outdir, "*", "*_overview.txt")))
-	outfiles.append(os.path.abspath(os.path.join(args.outdir, "*", "*_overview.xlsx")))
+	outfiles = [os.path.abspath(os.path.join(outdir, "*", "beds", "*_{0}_{1}.bed".format(condition, state))) for (condition, state) in itertools.product(cond_names, states)]
+	outfiles.append(os.path.abspath(os.path.join(outdir, "*", "beds", "*_all.bed")))
+	outfiles.append(os.path.abspath(os.path.join(outdir, "*", "plots", "*_log2fcs.pdf")))
+	outfiles.append(os.path.abspath(os.path.join(outdir, "*", "*_overview.txt")))
+	outfiles.append(os.path.abspath(os.path.join(outdir, "*", "*_overview.xlsx")))
 
-	outfiles.append(os.path.abspath(os.path.join(args.outdir, args.prefix + "_distances.txt")))
-	outfiles.append(os.path.abspath(os.path.join(args.outdir, args.prefix + "_results.txt")))
-	outfiles.append(os.path.abspath(os.path.join(args.outdir, args.prefix + "_results.xlsx")))
-	outfiles.append(os.path.abspath(os.path.join(args.outdir, args.prefix + "_figures.pdf")))
+	outfiles.append(os.path.abspath(os.path.join(outdir, prefix + "_distances.txt")))
+	outfiles.append(os.path.abspath(os.path.join(outdir, prefix + "_results.txt")))
+	outfiles.append(os.path.abspath(os.path.join(outdir, prefix + "_results.xlsx")))
+	outfiles.append(os.path.abspath(os.path.join(outdir, prefix + "_figures.pdf")))
 
 
 	#-------------------------------------------------------------------------------------------------------------#
 	#-------------------------------------------- Setup logger and pool ------------------------------------------#
 	#-------------------------------------------------------------------------------------------------------------#
 
-	logger = TobiasLogger("BINDetect", args.verbosity)
+	logger = TobiasLogger("BINDetect", verbosity)
 	logger.begin()
 
-	parser = add_bindetect_arguments(argparse.ArgumentParser())
-	logger.arguments_overview(parser, args)
 	logger.output_files(outfiles)
 
 	# Setup pool
-	args.cores = check_cores(args.cores, logger)
-	writer_cores = max(1, int(args.cores*0.1))
-	worker_cores = max(1, args.cores - writer_cores)
+	cores = check_cores(cores, logger)
+	writer_cores = max(1, int(cores*0.1))
+	worker_cores = max(1, cores - writer_cores)
 	logger.debug("Worker cores: {0}".format(worker_cores))
 	logger.debug("Writer cores: {0}".format(writer_cores))
 
@@ -169,36 +185,34 @@ def run_bindetect(args):
 	logger.info("----- Processing input data -----")
 
 	#Check that cond_names are the right length and are unique:
-	if len(args.cond_names) != len(args.signals):
-		logger.error("The given number of given '--cond-names' ({0}) differ from the given input '--signals' ({1}). Please enter one condition name per signal.".format(len(args.cond_names), len(args.signals)))
+	if len(cond_names) != len(signals):
+		logger.error("The given number of given '--cond-names' ({0}) differ from the given input '--signals' ({1}). Please enter one condition name per signal.".format(len(cond_names), len(signals)))
 		sys.exit(1)
 
-	if len(args.cond_names) != len(set(args.cond_names)):
-		logger.error("The condition names are not unique ({0}). Please use --cond-names to set a unique set of condition names.".format(args.cond_names))
+	if len(cond_names) != len(set(cond_names)):
+		logger.error("The condition names are not unique ({0}). Please use --cond-names to set a unique set of condition names.".format(cond_names))
 		sys.exit(1)
 
 	#Check opening/writing of files
 	logger.info("Checking reading/writing of files")
-	check_files([args.signals, args.motifs, args.genome, args.peaks], action="r")
+	check_files([signals, motifs, genome, peaks], action="r")
 	check_files(outfiles[-3:], action="w")
-	make_directory(args.outdir)
+	make_directory(outdir)
 
 	#Comparisons between conditions
-	no_conditions = len(args.signals)
-	if args.time_series:
-		comparisons = list(zip(args.cond_names[:-1], args.cond_names[1:]))
-		args.comparisons = comparisons
+	no_conditions = len(signals)
+	if time_series:
+		comparisons = list(zip(cond_names[:-1], cond_names[1:]))
 	else:
-		comparisons = list(itertools.combinations(args.cond_names, 2))	#all-against-all
-		args.comparisons = comparisons
+		comparisons = list(itertools.combinations(cond_names, 2))	#all-against-all
 
 	#Pdf for debug output
-	if args.debug: 
-		debug_out = os.path.abspath(os.path.join(args.outdir, args.prefix + "_debug.pdf"))
+	if debug: 
+		debug_out = os.path.abspath(os.path.join(outdir, prefix + "_debug.pdf"))
 		debug_pdf = PdfPages(debug_out, keep_empty=True)
 
 	#Open figure pdf and write overview
-	fig_out = os.path.abspath(os.path.join(args.outdir, args.prefix + "_figures.pdf"))
+	fig_out = os.path.abspath(os.path.join(outdir, prefix + "_figures.pdf"))
 	figure_pdf = PdfPages(fig_out, keep_empty=True)
 
 	plt.figure()
@@ -208,9 +222,9 @@ def run_bindetect(args):
 	#output and order
 	titles = []
 	titles.append("Raw score distributions")
-	if no_conditions > 1 and args.norm_off == False:
+	if no_conditions > 1 and norm_off == False:
 		titles.append("Normalized score distributions")
-	if args.debug:
+	if debug:
 		for (cond1, cond2) in comparisons:
 			titles.append("Background log2FCs ({0} / {1})".format(cond1, cond2))	
 
@@ -224,7 +238,7 @@ def run_bindetect(args):
 	################# Read peaks ################
 	#Read peak and peak_header
 	logger.info("Reading peaks")
-	peaks = RegionList().from_bed(args.peaks)
+	peaks = RegionList().from_bed(peaks)
 	logger.info("- Found {0} regions in input peaks".format(len(peaks)))
 
 	#Check number of columns in peaks
@@ -245,30 +259,30 @@ def run_bindetect(args):
 	#Read header and check match with number of peak columns
 	peak_columns = len(peaks[0]) #number of columns
 	logger.debug("--peaks have {0} columns".format(peak_columns))
-	if args.peak_header != None:
-		content = open(args.peak_header, "r").read()
-		args.peak_header_list = content.split()
-		logger.debug("Peak header: {0}".format(args.peak_header_list))
+	if peak_header != None:
+		content = open(peak_header, "r").read()
+		peak_header_list = content.split()
+		logger.debug("Peak header: {0}".format(peak_header_list))
 
 		#Check whether peak header fits with number of peak columns
-		if len(args.peak_header_list) != peak_columns:
-			logger.error("Length of --peak_header ({0}) does not fit number of columns in --peaks ({1}).".format(len(args.peak_header_list), peak_columns))
+		if len(peak_header_list) != peak_columns:
+			logger.error("Length of --peak_header ({0}) does not fit number of columns in --peaks ({1}).".format(len(peak_header_list), peak_columns))
 			sys.exit(1)
 	else:
-		args.peak_header_list = ["peak_chr", "peak_start", "peak_end"] + ["additional_" + str(num + 1) for num in range(peak_columns-3)]
-	logger.debug("Peak header list: {0}".format(args.peak_header_list))
+		peak_header_list = ["peak_chr", "peak_start", "peak_end"] + ["additional_" + str(num + 1) for num in range(peak_columns-3)]
+	logger.debug("Peak header list: {0}".format(peak_header_list))
 
 	################# Check for match between peaks and fasta/bigwig #################
 	logger.info("Checking for match between --peaks and --fasta/--signals boundaries")
-	logger.info("- Comparing peaks to {0}".format(args.genome))
-	fasta_obj = pysam.FastaFile(args.genome)
+	logger.info("- Comparing peaks to {0}".format(genome))
+	fasta_obj = pysam.FastaFile(genome)
 	fasta_boundaries = dict(zip(fasta_obj.references, fasta_obj.lengths))
 	fasta_obj.close()
 	logger.debug("Fasta boundaries: {0}".format(fasta_boundaries))
 	peaks = peaks.apply_method(OneRegion.check_boundary, fasta_boundaries, "exit")	#will exit if peaks are outside borders
 
 	#Check boundaries of each bigwig signal individually
-	for signal in args.signals:	
+	for signal in signals:	
 		logger.info("- Comparing peaks to {0}".format(signal))
 		pybw_obj = pybw.open(signal)
 		pybw_header = pybw_obj.chroms()
@@ -279,18 +293,18 @@ def run_bindetect(args):
 	##### GC content for motif scanning ######
 	#Make chunks of regions for multiprocessing
 	logger.info("Estimating GC content from peak sequences")
-	peak_chunks = peaks.chunks(args.split)
-	gc_content_pool = pool.starmap(get_gc_content, itertools.product(peak_chunks, [args.genome])) 
+	peak_chunks = peaks.chunks(split)
+	gc_content_pool = pool.starmap(get_gc_content, itertools.product(peak_chunks, [genome])) 
 	gc_content = np.mean(gc_content_pool)	#fraction
-	args.gc = gc_content
-	bg = np.array([(1-args.gc)/2.0, args.gc/2.0, args.gc/2.0, (1-args.gc)/2.0])
+	gc = gc_content
+	bg = np.array([(1-gc)/2.0, gc/2.0, gc/2.0, (1-gc)/2.0])
 	logger.info("- GC content estimated at {0:.2f}%".format(gc_content*100))
 
 	################ Get motifs ################
 	logger.info("Reading motifs from file") 
 	motif_list = MotifList()
-	args.motifs = expand_dirs(args.motifs)
-	for f in args.motifs:
+	motifs = expand_dirs(motifs)
+	for f in motifs:
 		try:
 			motif_list += MotifList().from_file(f)  #List of OneMotif objects
 		except Exception as e:
@@ -305,7 +319,7 @@ def run_bindetect(args):
 
 	#Set prefixes
 	for motif in motif_list:
-		motif.set_prefix(args.naming)
+		motif.set_prefix(naming)
 		motif.bg = bg
 
 		logger.spam("Getting pssm for motif {0}".format(motif.name))
@@ -334,7 +348,7 @@ def run_bindetect(args):
 
 	#Get threshold for motifs
 	logger.debug("Getting match threshold per motif")
-	outlist = pool.starmap(OneMotif.get_threshold, itertools.product(motif_list, [args.motif_pvalue])) 
+	outlist = pool.starmap(OneMotif.get_threshold, itertools.product(motif_list, [motif_pvalue])) 
 
 	logger.spam(motif_list)
 
@@ -345,15 +359,15 @@ def run_bindetect(args):
 	logger.info("Creating folder structure for each TF")
 	for TF in motif_names:
 		logger.spam("Creating directories for {0}".format(TF))
-		make_directory(os.path.join(args.outdir, TF))
-		make_directory(os.path.join(args.outdir, TF, "beds"))
-		make_directory(os.path.join(args.outdir, TF, "plots"))
+		make_directory(os.path.join(outdir, TF))
+		make_directory(os.path.join(outdir, TF, "beds"))
+		make_directory(os.path.join(outdir, TF, "plots"))
 
 	#-------------------------------------------------------------------------------------------------------------#	
 	#----------------------------------------- Plot logos for all motifs -----------------------------------------#
 	#-------------------------------------------------------------------------------------------------------------#
 
-	logo_filenames = {motif.prefix: os.path.join(args.outdir, motif.prefix, motif.prefix + ".png") for motif in motif_list}
+	logo_filenames = {motif.prefix: os.path.join(outdir, motif.prefix, motif.prefix + ".png") for motif in motif_list}
 
 	logger.info("Plotting sequence logos for each motif")
 	task_list = [pool.apply_async(OneMotif.logo_to_file, (motif, logo_filenames[motif.prefix], )) for motif in motif_list]
@@ -373,7 +387,7 @@ def run_bindetect(args):
 
 	logger.comment("")
 	logger.start_logger_queue()		#start process for listening and handling through the main logger queue
-	args.log_q = logger.queue 		#queue for multiprocessing logging
+	log_q = logger.queue 		#queue for multiprocessing logging
 	manager = mp.Manager()
 	logger.info("Scanning for motifs and matching to signals...")
 
@@ -390,12 +404,12 @@ def run_bindetect(args):
 	writer_tasks = []
 	for TF_names_sub in TF_names_chunks:
 		logger.debug("Creating writer queue for {0}".format(TF_names_sub))
-		files = [os.path.join(args.outdir, TF, "beds", TF + ".tmp") for TF in TF_names_sub]
+		files = [os.path.join(outdir, TF, "beds", TF + ".tmp") for TF in TF_names_sub]
 
 		q = manager.Queue()
 		qs_list.append(q)
 
-		writer_tasks.append(writer_pool.apply_async(file_writer, args=(q, dict(zip(TF_names_sub, files)), args)))	 #, callback = lambda x: finished.append(x) print("Writing time: {0}".format(x)))
+		writer_tasks.append(writer_pool.apply_async(file_writer, args=(q, dict(zip(TF_names_sub, files)), None)))	 #, callback = lambda x: finished.append(x) print("Writing time: {0}".format(x)))
 		for TF in TF_names_sub:
 			writer_qs[TF] = q
 	writer_pool.close() #no more jobs applied to writer_pool
@@ -406,12 +420,12 @@ def run_bindetect(args):
 		logger.debug("Running with cores = 1")
 		results = []
 		for chunk in peak_chunks:
-			results.append(scan_and_score(chunk, motif_list, args, args.log_q, writer_qs))
+			results.append(scan_and_score(chunk, motif_list, signals, cond_names, genome, verbosity, log_q, writer_qs))
 		
 	else: 
 		logger.debug("Sending jobs to worker pool")
 
-		task_list = [pool.apply_async(scan_and_score, (chunk, motif_list, args, args.log_q, writer_qs, )) for chunk in peak_chunks]
+		task_list = [pool.apply_async(scan_and_score, (chunk, motif_list, signals, cond_names, genome, verbosity, log_q, writer_qs, )) for chunk in peak_chunks]
 		monitor_progress(task_list, logger)
 		results = [task.get() for task in task_list]
 	
@@ -466,11 +480,11 @@ def run_bindetect(args):
 				TF_overlaps[tup] = 0
 
 	#Collect sampled background values
-	for bigwig in args.cond_names:
+	for bigwig in cond_names:
 		background["signal"][bigwig] = np.array(background["signal"][bigwig])
 
 	#Check how many values were fetched from background
-	n_bg_values = len(background["signal"][args.cond_names[0]])
+	n_bg_values = len(background["signal"][cond_names[0]])
 	logger.debug("Collected {0} values from background".format(n_bg_values))
 	if n_bg_values < 1000:
 		err_str = "Number of background values collected from peaks is low (={0}) ".format(n_bg_values)
@@ -479,34 +493,34 @@ def run_bindetect(args):
 		logger.warning(err_str) 
 
 	#Plot score distribution
-	fig = plot_score_distribution([background["signal"][bigwig] for bigwig in args.cond_names], labels=args.cond_names, title="Raw scores per condition")
+	fig = plot_score_distribution([background["signal"][bigwig] for bigwig in cond_names], labels=cond_names, title="Raw scores per condition")
 	figure_pdf.savefig(fig, bbox_inches='tight')
 	plt.close()
 
 	#Normalize arrays
-	args.norm_objects = {}
-	if args.norm_off == True or len(args.cond_names) == 1: #if norm_off or length of cond is 1 - create constant normalization
-		for bigwig in args.cond_names:
-			args.norm_objects[bigwig] = ArrayNorm("constant", popt=1.0, value_min=0, value_max=1) #no normalization; min/max don't matter for constant norm
+	norm_objects = {}
+	if norm_off == True or len(cond_names) == 1: #if norm_off or length of cond is 1 - create constant normalization
+		for bigwig in cond_names:
+			norm_objects[bigwig] = ArrayNorm("constant", popt=1.0, value_min=0, value_max=1) #no normalization; min/max don't matter for constant norm
 
 	else:
 		logger.comment("")
 		logger.info("Normalizing scores across conditions")
 
-		list_of_vals = [background["signal"][bigwig] for bigwig in args.cond_names]
-		if args.debug: 
-			args.norm_objects = quantile_normalization(list_of_vals, args.cond_names, pdfpages=debug_pdf, logger=logger)
+		list_of_vals = [background["signal"][bigwig] for bigwig in cond_names]
+		if debug: 
+			norm_objects = quantile_normalization(list_of_vals, cond_names, pdfpages=debug_pdf, logger=logger)
 		else:
-			args.norm_objects = quantile_normalization(list_of_vals, args.cond_names, logger=logger)
+			norm_objects = quantile_normalization(list_of_vals, cond_names, logger=logger)
 
 		#Normalize background and visualize score distribution
-		for bigwig in args.cond_names:
+		for bigwig in cond_names:
 			
 			original = background["signal"][bigwig]
 
 			#Check for nan
 			logger.debug("Background nans ({0}): {1}".format(bigwig, sum(np.isnan(original))))
-			normalized = args.norm_objects[bigwig].normalize(original)
+			normalized = norm_objects[bigwig].normalize(original)
 			
 			#Replace negative values with 0
 			negatives = normalized < 0
@@ -515,7 +529,7 @@ def run_bindetect(args):
 			background["signal"][bigwig] = normalized
 			logger.debug("Background nans after normalization ({0}): {1}".format(bigwig, sum(np.isnan(background["signal"][bigwig]))))
 		
-		fig = plot_score_distribution([background["signal"][bigwig] for bigwig in args.cond_names], labels=args.cond_names, title="Normalized scores per condition")
+		fig = plot_score_distribution([background["signal"][bigwig] for bigwig in cond_names], labels=cond_names, title="Normalized scores per condition")
 		figure_pdf.savefig(fig, bbox_inches='tight')
 		plt.close()
 
@@ -527,7 +541,7 @@ def run_bindetect(args):
 	logger.info("Estimating bound/unbound threshold")
 
 	#Prepare scores (remove 0's etc.)
-	bg_values = np.array([background["signal"][bigwig] for bigwig in args.cond_names]).flatten()	#scores from all conditions
+	bg_values = np.array([background["signal"][bigwig] for bigwig in cond_names]).flatten()	#scores from all conditions
 	logger.debug("Size of background array collected: {0}".format(bg_values.size))
 	bg_values = bg_values[np.logical_not(np.isclose(bg_values, 0.0))]	#only non-zero counts
 	logger.debug("Size of background array after filtering > 0: {0}".format(bg_values.size))
@@ -558,7 +572,7 @@ def run_bindetect(args):
 	stds = np.sqrt(gmm.covariances_).flatten()	
 
 	#Plot components for debugging
-	if args.debug:
+	if debug:
 
 		fig, ax = plt.subplots(nrows=2, ncols=1, constrained_layout=True)
 
@@ -598,8 +612,7 @@ def run_bindetect(args):
 	mode = scipy.optimize.fmin(lambda x: -scipy.stats.lognorm.pdf(x, *log_params), 0, disp=False)[0]
 	logger.debug("- Mode estimated at: {0}".format(mode))
 	pseudo = mode / 2.0		#pseudo is half the mode
-	args.pseudo = pseudo
-	logger.debug("Pseudocount estimated at: {0}".format(round(args.pseudo, 5)))
+	logger.debug("Pseudocount estimated at: {0}".format(round(pseudo, 5)))
 	
 	# Estimate theoretical normal for threshold
 	leftside_x = np.linspace(scipy.stats.lognorm(*log_params).ppf([0.01]), mode, 100)
@@ -614,13 +627,13 @@ def run_bindetect(args):
 	logger.debug("Theoretical normal parameters: {0}".format(norm_params))
 
 	#Set threshold for bound/unbound
-	threshold = round(scipy.stats.norm.ppf(1-args.bound_pvalue, *norm_params), 5)
+	threshold = round(scipy.stats.norm.ppf(1-bound_pvalue, *norm_params), 5)
 
-	args.thresholds = {bigwig: threshold for bigwig in args.cond_names}
+	thresholds = {bigwig: threshold for bigwig in cond_names}
 	logger.stats("- Threshold estimated at: {0}".format(threshold))
 
-	#Only plot if args.debug is True
-	if args.debug:
+	#Only plot if debug is True
+	if debug:
 
 		#Plot mirrored data
 		fig, ax = plt.subplots(1,1)
@@ -663,7 +676,7 @@ def run_bindetect(args):
 
 	logger.comment("")
 	log2fc_params = {}
-	if len(args.signals) > 1:
+	if len(signals) > 1:
 		logger.info("Calculating background log2 fold-changes between conditions")
 
 		for (bigwig1, bigwig2) in comparisons:	#cond1, cond2
@@ -678,7 +691,7 @@ def run_bindetect(args):
 			scores2 = scores2[included]
 
 			#Calculate background log2fc normal disitribution
-			log2fcs = np.log2(np.true_divide(scores1 + args.pseudo, scores2 + args.pseudo))
+			log2fcs = np.log2(np.true_divide(scores1 + pseudo, scores2 + pseudo))
 			
 			lower, upper = np.percentile(log2fcs, [1,99])
 			log2fcs_fit = log2fcs[np.logical_and(log2fcs >= lower, log2fcs <= upper)]
@@ -691,7 +704,7 @@ def run_bindetect(args):
 			log2fc_params[(bigwig1, bigwig2)] = norm_params
 
 			#If debug: plot background log2fc to figures
-			if args.debug:
+			if debug:
 				fig, ax = plt.subplots(1, 1)
 				plt.hist(log2fcs, density=True, bins='auto', label="Background log2fc ({0} / {1})".format(bigwig1, bigwig2))
 
@@ -705,7 +718,7 @@ def run_bindetect(args):
 				debug_pdf.savefig(fig, bbox_inches='tight')
 				plt.close()
 				
-				#f = open(os.path.join(args.outdir, "{0}_{1}_log2fcs.txt".format(bigwig1, bigwig2)), "w")
+				#f = open(os.path.join(outdir, "{0}_{1}_log2fcs.txt".format(bigwig1, bigwig2)), "w")
 				#f.write("\n".join([str(val) for val in log2fcs]))
 				#f.close()
 			
@@ -720,7 +733,7 @@ def run_bindetect(args):
 		
 	#Getting bindetect table ready
 	info_columns = ["total_tfbs"]
-	info_columns.extend(["{0}_{1}".format(cond, metric) for (cond, metric) in itertools.product(args.cond_names, ["threshold", "bound"])])
+	info_columns.extend(["{0}_{1}".format(cond, metric) for (cond, metric) in itertools.product(cond_names, ["threshold", "bound"])])
 	info_columns.extend(["{0}_{1}_{2}".format(comparison[0], comparison[1], metric) for (comparison, metric) in itertools.product(comparisons, ["change", "pvalue"])])
 
 	cols = len(info_columns)
@@ -729,14 +742,14 @@ def run_bindetect(args):
 
 	#Starting calculations
 	results = []
-	if args.cores == 1:
+	if cores == 1:
 		for name in motif_names:
 			logger.info("- {0}".format(name))
-			results.append(process_tfbs(name, args, log2fc_params))
+			results.append(process_tfbs(name, outdir, cond_names, comparisons, verbosity, log_q, output_peaks, thresholds, log2fc_params))
 	else:
 		logger.debug("Sending jobs to worker pool")
 
-		task_list = [pool.apply_async(process_tfbs, (name, args, log2fc_params, )) for name in motif_names]
+		task_list = [pool.apply_async(process_tfbs, (name, outdir, cond_names, comparisons, verbosity, log_q, output_peaks, thresholds, log2fc_params, )) for name in motif_names]
 		monitor_progress(task_list, logger) 	#will not exit before all jobs are done
 		results = [task.get() for task in task_list]
 
@@ -753,7 +766,7 @@ def run_bindetect(args):
 	#-------------------------------------------------------------------------------------------------------------#	
 	
 	clustering = RegionCluster(TF_overlaps)
-	clustering.cluster(threshold=args.cluster_threshold)
+	clustering.cluster(threshold=cluster_threshold)
 
 	#Convert full ids to alt ids
 	convert = {motif.prefix: motif.name for motif in motif_list}
@@ -762,7 +775,7 @@ def run_bindetect(args):
 			clustering.clusters[cluster]["cluster_name"] = clustering.clusters[cluster]["cluster_name"].replace(name, convert[name])
 
 	#Write out distance matrix
-	matrix_out = os.path.join(args.outdir, args.prefix + "_distances.txt")
+	matrix_out = os.path.join(outdir, prefix + "_distances.txt")
 	clustering.write_distance_mat(matrix_out)
 
 
@@ -802,7 +815,7 @@ def run_bindetect(args):
 
 	#Map correct type
 	info_table["total_tfbs"] = info_table["total_tfbs"].map(int)
-	for condition in args.cond_names:
+	for condition in cond_names:
 		info_table[condition + "_bound"] = info_table[condition + "_bound"].map(int)
 	
 	#Format comparisons
@@ -833,11 +846,11 @@ def run_bindetect(args):
 	
 	#Write bindetect results tables
 	#info_table.insert(0, "TF_name", info_table.index)	 #Set index as first column
-	bindetect_out = os.path.join(args.outdir, args.prefix + "_results.txt")
+	bindetect_out = os.path.join(outdir, prefix + "_results.txt")
 	info_table.to_csv(bindetect_out, sep="\t", index=False, header=True, na_rep="NA")
 
 	#### Write excel ###
-	bindetect_excel = os.path.join(args.outdir, args.prefix + "_results.xlsx")
+	bindetect_excel = os.path.join(outdir, prefix + "_results.xlsx")
 
 	with pd.ExcelWriter(bindetect_excel, engine='xlsxwriter') as writer:
 
@@ -895,7 +908,7 @@ def run_bindetect(args):
 
 			#Interactive BINDetect plot
 			logger.info("- {0} / {1} (interactive plot)".format(cond1, cond2))
-			html_out = os.path.join(args.outdir, "bindetect_" + base + ".html")
+			html_out = os.path.join(outdir, "bindetect_" + base + ".html")
 			plot_interactive_bindetect(motif_list, [cond1, cond2], html_out)
 			
 
@@ -903,9 +916,9 @@ def run_bindetect(args):
 	#----------------------------- Make heatmap across conditions (for debugging)---------------------------------#	
 	#-------------------------------------------------------------------------------------------------------------#	
 
-	if args.debug and len(args.signals) > 1:
+	if debug and len(signals) > 1:
 		logger.info("Plotting heatmap across conditions for debugging")
-		mean_columns = [cond + "_mean_score" for cond in args.cond_names]
+		mean_columns = [cond + "_mean_score" for cond in cond_names]
 		heatmap_table = info_table[mean_columns]
 		heatmap_table.index = info_table["output_prefix"]
 
@@ -947,58 +960,9 @@ def run_bindetect(args):
 	#-------------------------------------------------- Wrap up---------------------------------------------------#
 	#-------------------------------------------------------------------------------------------------------------#
 	
-	if args.debug:
+	if debug:
 		debug_pdf.close()
 
 	figure_pdf.close()
 	logger.end()
 
-
-def add_bindetect_arguments(parser):
-
-	parser.formatter_class = lambda prog: argparse.RawDescriptionHelpFormatter(prog, max_help_position=35, width=90)
-	description = "BINDetect takes motifs, signals (footprints) and genome as input to estimate bound transcription factor binding sites and differential binding between conditions. "
-	description += "The underlying method is a modified motif enrichment test to see which motifs have the largest differences in signal across input conditions. "
-	description += "The output is an in-depth overview of global changes as well as the individual binding site signal-differences.\n\n"
-	description += "Usage:\nTOBIAS BINDetect --signals <bigwig1> (<bigwig2> (...)) --motifs <motifs.txt> --genome <genome.fasta> --peaks <peaks.bed>\n\n"
-	description += "Output files:\n- <outdir>/<prefix>_figures.pdf\n- <outdir>/<prefix>_results.{txt,xlsx}\n- <outdir>/<prefix>_distances.txt\n"
-	description += "- <outdir>/<TF>/<TF>_overview.{txt,xlsx} (per motif)\n- <outdir>/<TF>/beds/<TF>_all.bed (per motif)\n"
-	description += "- <outdir>/<TF>/beds/<TF>_<condition>_bound.bed (per motif-condition pair)\n- <outdir>/<TF>/beds/<TF>_<condition>_unbound.bed (per motif-condition pair)\n\n"
-	parser.description = format_help_description("BINDetect", description)
-
-	parser._action_groups.pop()	#pop -h
-	
-	required = parser.add_argument_group('Required arguments')
-	required.add_argument('--signals', metavar="<bigwig>", help="Signal per condition (.bigwig format)", nargs="*")
-	required.add_argument('--peaks', metavar="<bed>", help="Peaks.bed containing open chromatin regions across all conditions")
-	required.add_argument('--motifs', metavar="<motifs>", help="Motif file(s) in pfm/jaspar/meme/transfac format", nargs="*")
-	required.add_argument('--genome', metavar="<fasta>", help="Genome .fasta file")
-
-	optargs = parser.add_argument_group('Optional arguments')
-	optargs.add_argument('--cond-names', metavar="<name>", nargs="*", help="Names of conditions fitting to --signals (default: prefix of --signals)")
-	optargs.add_argument('--peak-header', metavar="<file>", help="File containing the header of --peaks separated by whitespace or newlines (default: peak columns are named \"_additional_<count>\")")
-	optargs.add_argument('--naming', metavar="<string>", help="Naming convention for TF output files ('id', 'name', 'name_id', 'id_name') (default: 'name_id')", choices=["id", "name", "name_id", "id_name"], default="name_id")
-	optargs.add_argument('--motif-pvalue', metavar="<float>", type=lambda x: restricted_float(x, 0, 1), help="Set p-value threshold for motif scanning (default: 1e-4)", default=0.0001)
-	optargs.add_argument('--bound-pvalue', metavar="<float>", type=lambda x: restricted_float(x, 0, 1), help="Set p-value threshold for bound/unbound split (default: 0.001)", default=0.001)
-	optargs.add_argument('--cluster-threshold', metavar="<float>", type=lambda x: restricted_float(x, 0, 1), help="Set the clustering threshold. Motifs below this threshold will be assigned to one cluster (default: 0.5)", default=0.5)
-	#optargs.add_argument('--volcano-diff-thresh', metavar="<float>", help="", default=0.2)	#not yet implemented
-	#optargs.add_argument('--volcano-p-thresh', metavar="<float>", help="", default=0.05)	#not yet implemented
-
-	optargs.add_argument('--pseudo', type=float, metavar="<float>", help="Pseudocount for calculating log2fcs (default: estimated from data)", default=None)
-	optargs.add_argument('--time-series', action='store_true', help="Will only compare signals1<->signals2<->signals3 (...) in order of input, and skip all-against-all comparison.")
-	optargs.add_argument('--skip-excel', action='store_true', help="Skip creation of excel files - for large datasets, this will speed up BINDetect considerably")
-	optargs.add_argument('--output-peaks', metavar="<bed>", help="""Gives the possibility to set the output peak set differently than the input --peaks.
-													 				This will limit all analysis to the regions in --output-peaks. 
-																	NOTE: --peaks must still be set to the full peak set!""")
-	optargs.add_argument('--norm-off', action='store_true', help="Turn off normalization of footprint scores across conditions")
-
-	runargs = parser.add_argument_group("Run arguments")
-	runargs.add_argument('--outdir', metavar="<directory>", help="Output directory to place TFBS/plots in (default: bindetect_output)", default="bindetect_output")
-	optargs.add_argument('--prefix', metavar="<prefix>", help="Prefix for overview files in --outdir folder (default: bindetect)", default="bindetect")
-	runargs.add_argument('--cores', metavar="<int>", type=int, help="Number of cores to use for computation (default: 1)", default=1)
-	runargs.add_argument('--split', metavar="<int>", type=int, help="Split of multiprocessing jobs (default: 100)", default=100)
-	runargs.add_argument('--debug', action='store_true', help="Creates an additional '_debug.pdf'-file with debug plots")	#creates extra output for debugging
-	
-	runargs = add_logger_args(runargs)
-
-	return(parser)
