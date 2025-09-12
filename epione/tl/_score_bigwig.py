@@ -24,7 +24,7 @@ import warnings
 
 # Try to import Cython optimized functions
 try:
-    from ._footprint_cython import (
+    from ..utils._footprint_cython import (
         tobias_footprint_array, 
         fos_score_array,
         fast_rolling_mean,

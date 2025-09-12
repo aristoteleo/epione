@@ -5,9 +5,11 @@ import snapatac2
 from pathlib import Path
 from ..utils import console
 import os
-from typing import Union, Optional
+from typing import Union, Optional, Literal
 import pandas as pd
 from anndata import AnnData
+from ..utils.genome import Genome
+
 
 from tqdm import tqdm
 
@@ -589,3 +591,133 @@ def select_features(
         adata.var["selected"] = result
     else:
         return result
+
+def make_peak_matrix(
+    adata: internal.AnnData | internal.AnnDataSet,
+    *,
+    use_rep: str | list[str] | None = None,
+    inplace: bool = False,
+    file: Path | None = None,
+    backend: Literal['hdf5'] = 'hdf5',
+    peak_file: Path | None = None,
+    chunk_size: int = 500,
+    use_x: bool = False,
+    min_frag_size: int | None = None,
+    max_frag_size: int | None = None,
+    counting_strategy: Literal['fragment', 'insertion', 'paired-insertion'] = 'paired-insertion',
+    value_type: Literal['target', 'total', 'fraction'] = 'target',
+    summary_type: Literal['sum', 'mean'] = 'sum',
+) -> internal.AnnData:
+    """Generate cell by peak count matrix.
+
+    This function will generate a cell by peak count matrix and store it in a 
+    new .h5ad file.
+
+    :func:`~snapatac2.pp.import_fragments` must be ran first in order to use this function.
+
+    Parameters
+    ----------
+    adata
+        The (annotated) data matrix of shape `n_obs` x `n_vars`.
+        Rows correspond to cells and columns to regions.
+    use_rep
+        This is used to read peak information from `.uns[use_rep]`.
+        The peaks can also be provided by a list of strings:
+        ["chr1:1-100", "chr2:2-200"].
+    inplace
+        Whether to add the tile matrix to the AnnData object or return a new AnnData object.
+    file
+        File name of the output h5ad file used to store the result. If provided,
+        result will be saved to a backed AnnData, otherwise an in-memory AnnData
+        is used. This has no effect when `inplace=True`.
+    backend
+        The backend to use for storing the result. If `None`, the default backend will be used.
+    peak_file
+        Bed file containing the peaks. If provided, peak information will be read
+        from this file.
+    chunk_size
+        Chunk size
+    use_x
+        If True, use the matrix stored in `.X` as raw counts.
+        Otherwise the `.obsm['insertion']` is used.
+    min_frag_size
+        Minimum fragment size to include.
+    max_frag_size
+        Maximum fragment size to include.
+    counting_strategy
+        The strategy to compute feature counts. It must be one of the following:
+        "fragment", "insertion", or "paired-insertion". "fragment" means the
+        feature counts are assigned based on the number of fragments that overlap
+        with a region of interest. "insertion" means the feature counts are assigned
+        based on the number of insertions that overlap with a region of interest.
+        "paired-insertion" is similar to "insertion", but it only counts the insertions
+        once if the pair of insertions of a fragment are both within the same region
+        of interest [Miao24]_.
+        Note that this parameter has no effect if input are single-end reads.
+    value_type
+        The type of value to use from `.obsm['_values']`, only available when 
+        data is imported using :func:`~snapatac2.pp.import_values`. It must be one of the following:
+        "target", "total", or "fraction". "target" means the value is the number
+        of recrods that are with postive measurements, e.g., number of methylated bases.
+        "total" means the value is the total number of measurements, e.g., methylated bases plus
+        unmethylated bases. "fraction" means the value is the fraction of the
+        records that are positive, e.g., the fraction of methylated bases.
+    summary_type
+        The type of summary to use when multiple values are found in a bin. This parameter
+        is only used when `.obsm['_values']` exists, which is created by :func:`~snapatac2.pp.import_values`. 
+        It must be one of the following: "sum" or "mean".
+
+    Returns
+    -------
+    AnnData | ad.AnnData | None
+        An annotated data matrix of shape `n_obs` x `n_vars`. Rows correspond to
+        cells and columns to peaks. If `file=None`, an in-memory AnnData will be
+        returned, otherwise a backed AnnData is returned.
+
+    See Also
+    --------
+    add_tile_matrix
+    make_gene_matrix
+
+    Examples
+    --------
+    >>> import snapatac2 as snap
+    >>> data = snap.pp.import_fragments(snap.datasets.pbmc500(downsample=True), chrom_sizes=snap.genome.hg38, sorted_by_barcode=False)
+    >>> peak_mat = snap.pp.make_peak_matrix(data, peak_file=snap.datasets.cre_HEA())
+    >>> print(peak_mat)
+    AnnData object with n_obs × n_vars = 585 × 1154611
+        obs: 'n_fragment', 'frac_dup', 'frac_mito'
+    """
+    import gzip
+
+    if peak_file is not None and use_rep is not None:
+        raise RuntimeError("'peak_file' and 'use_rep' cannot be both set") 
+
+    if use_rep is None and peak_file is None:
+        use_rep = "peaks"
+
+    if isinstance(use_rep, str):
+        df = adata.uns[use_rep]
+        peaks = df[df.columns[0]]
+    else:
+        peaks = use_rep
+
+    if peak_file is not None:
+        if Path(peak_file).suffix == ".gz":
+            with gzip.open(peak_file, 'rt') as f:
+                peaks = [line.strip() for line in f]
+        else:
+            with open(peak_file, 'r') as f:
+                peaks = [line.strip() for line in f]
+
+    if inplace:
+        out = None
+    elif file is None:
+        if adata.isbacked:
+            out = AnnData(obs=adata.obs[:].to_pandas())
+        else:
+            out = AnnData(obs=adata.obs[:])
+    else:
+        out = internal.AnnData(filename=file, backend=backend, obs=adata.obs[:])
+    internal.mk_peak_matrix(adata, peaks, chunk_size, use_x, counting_strategy, value_type, summary_type, min_frag_size, max_frag_size, out)
+    return out
