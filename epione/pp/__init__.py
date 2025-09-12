@@ -4,7 +4,7 @@ from ._data import (
 )
 from ._metric import (
     frag_size_distr, tsse, ensure_tabix_index,
-    tss_enrichment,nucleosome_signal,select_features
+    tss_enrichment,nucleosome_signal,select_features,
  )
 from ._qc import (
     qc,scrublet

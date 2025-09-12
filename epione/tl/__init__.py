@@ -29,6 +29,9 @@ from ._plotting import (
     plot_heatmap, plot_tracks
 )
 
+from ._reducedimension import lsi, spectral
+
+
 __all__ = [
     "bindetect",
     "AtacBias", "atacorrect_core", "atacorrect", 
@@ -42,4 +45,5 @@ __all__ = [
     "filter_fragments", "create_network",
     "FootprintPlotter", "PlotTracks",
     "plot_heatmap", "plot_tracks",
+    "lsi","spectral"
 ]
