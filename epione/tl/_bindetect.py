@@ -902,7 +902,7 @@ def run_bindetect(condition_names, score_files, motif_file, fasta_file, regions_
 					motif.group = "n.s."
 
 			#Bindetect plot
-			fig = plot_bindetect(motif_list, clustering, [cond1, cond2], args)
+			fig = plot_bindetect(motif_list, clustering, [cond1, cond2], outdir, prefix, cond_names, comparisons, thresholds, log2fc_params)
 			figure_pdf.savefig(fig, bbox_inches='tight')
 			plt.close(fig)
 

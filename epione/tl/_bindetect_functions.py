@@ -388,9 +388,30 @@ def process_tfbs(TF_name, outdir, cond_names, comparisons, verbosity, log_q, out
 
 	#Read file to list of dicts
 	stime = datetime.now()
-	header = ["TFBS_chr", "TFBS_start", "TFBS_end", "TFBS_name", "TFBS_score", "TFBS_strand"] + ["peak_chr", "peak_start", "peak_end"] + ["{0}_score".format(condition) for condition in cond_names]
+	# Read first line to determine number of columns
 	with open(filename) as f:
-		bedlines = [dict(zip(header, line.rstrip().split("\t"))) for line in f.readlines()]
+		first_line = f.readline().strip()
+		if not first_line:
+			bedlines = []
+		else:
+			# Count columns and create appropriate header
+			num_cols = len(first_line.split("\t"))
+			tfbs_cols = ["TFBS_chr", "TFBS_start", "TFBS_end", "TFBS_name", "TFBS_score", "TFBS_strand"]
+			peak_cols = ["peak_chr", "peak_start", "peak_end"]  # Assuming 3 peak columns
+			score_cols = ["{0}_score".format(condition) for condition in cond_names]
+			
+			# Calculate remaining columns
+			remaining_cols = num_cols - len(tfbs_cols) - len(peak_cols) - len(score_cols)
+			if remaining_cols > 0:
+				extra_cols = ["additional_{0}".format(i) for i in range(remaining_cols)]
+			else:
+				extra_cols = []
+			
+			header = tfbs_cols + peak_cols + extra_cols + score_cols
+			
+			# Reset file pointer and read all lines
+			f.seek(0)
+			bedlines = [dict(zip(header, line.rstrip().split("\t"))) for line in f.readlines()]
 	n_rows = len(bedlines)
 	etime = datetime.now()
 	logger.spam("{0} - Reading took:\t{1}".format(TF_name, etime - stime))
@@ -599,7 +620,7 @@ def process_tfbs(TF_name, outdir, cond_names, comparisons, verbosity, log_q, out
 #------------------------------------------------------------------------------------------------------#
 #------------------------------------------------------------------------------------------------------#
 
-def plot_bindetect(motifs, cluster_obj, conditions, args):
+def plot_bindetect(motifs, cluster_obj, conditions, outdir, prefix, cond_names, comparisons, thresholds, log2fc_params):
 	"""
 		Conditions refer to the order of the fold_change divison, meaning condition1/condition2 
 		- Clusters is a RegionCluster object 
