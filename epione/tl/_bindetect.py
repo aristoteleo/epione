@@ -19,6 +19,7 @@ import itertools
 import pandas as pd
 import seaborn as sns
 from collections import Counter
+from tqdm import tqdm
 
 #Machine learning and statistics
 import sklearn
@@ -44,7 +45,7 @@ from ._bindetect_functions import *
 from ..utils.utilities import *
 from ..utils.regions import *
 from ..utils.motifs import *
-from ..utils.logger import TobiasLogger
+from ..utils import console
 
 #For warnings from curve_fit
 import warnings
@@ -163,17 +164,12 @@ def run_bindetect(condition_names, score_files, motif_file, fasta_file, regions_
 	#-------------------------------------------- Setup logger and pool ------------------------------------------#
 	#-------------------------------------------------------------------------------------------------------------#
 
-	logger = TobiasLogger("BINDetect", verbosity)
-	logger.begin()
-
-	logger.output_files(outfiles)
+	console.level1("Starting BINDetect analysis...")
 
 	# Setup pool
-	cores = check_cores(cores, logger)
+	cores = check_cores(cores)
 	writer_cores = max(1, int(cores*0.1))
 	worker_cores = max(1, cores - writer_cores)
-	logger.debug("Worker cores: {0}".format(worker_cores))
-	logger.debug("Writer cores: {0}".format(writer_cores))
 
 	pool = mp.Pool(processes=worker_cores)
 	writer_pool = mp.Pool(processes=writer_cores)
@@ -182,19 +178,16 @@ def run_bindetect(condition_names, score_files, motif_file, fasta_file, regions_
 	#-------------------------- Pre-processing data: Reading motifs, sequences, peaks ----------------------------#
 	#-------------------------------------------------------------------------------------------------------------#
 
-	logger.info("----- Processing input data -----")
+	console.level1("Processing input data")
 
 	#Check that cond_names are the right length and are unique:
 	if len(cond_names) != len(signals):
-		logger.error("The given number of given '--cond-names' ({0}) differ from the given input '--signals' ({1}). Please enter one condition name per signal.".format(len(cond_names), len(signals)))
+		console.error(f"The given number of condition names ({len(cond_names)}) differ from the given input signals ({len(signals)}). Please enter one condition name per signal.")
 		sys.exit(1)
 
 	if len(cond_names) != len(set(cond_names)):
-		logger.error("The condition names are not unique ({0}). Please use --cond-names to set a unique set of condition names.".format(cond_names))
+		console.error(f"The condition names are not unique ({cond_names}). Please use unique condition names.")
 		sys.exit(1)
-
-	#Check opening/writing of files
-	logger.info("Checking reading/writing of files")
 	check_files([signals, motifs, genome, peaks], action="r")
 	check_files(outfiles[-3:], action="w")
 	make_directory(outdir)
@@ -237,92 +230,80 @@ def run_bindetect(condition_names, score_files, motif_file, fasta_file, regions_
 
 	################# Read peaks ################
 	#Read peak and peak_header
-	logger.info("Reading peaks")
 	peaks = RegionList().from_bed(peaks)
-	logger.info("- Found {0} regions in input peaks".format(len(peaks)))
+	console.level2(f"Found {len(peaks)} regions in input peaks")
 
 	#Check number of columns in peaks
 	n_cols = len(peaks[0])
 	for i, peak in enumerate(peaks):
 		if len(peak) != n_cols:
-			logger.error("The lines in --peaks have a varying number of columns. Line 1 has {0} columns, but line {1} has {2} columns! Please adjust the format of this file to run TOBIAS BINDetect.".format(n_cols, i+1, len(peak)))
+			console.error(f"The lines in peaks have varying number of columns. Line 1 has {n_cols} columns, but line {i+1} has {len(peak)} columns! Please adjust the format of this file.")
 			sys.exit(1)
 
 	#Merge overlapping peaks
-	peaks = peaks.merge()	
-	logger.info("- Merged to {0} regions".format(len(peaks)))
+	peaks = peaks.merge()
 
 	if len(peaks) == 0:
-		logger.error("Input --peaks file is empty!")
+		console.error("Input peaks file is empty!")
 		sys.exit(1)
 		
 	#Read header and check match with number of peak columns
 	peak_columns = len(peaks[0]) #number of columns
-	logger.debug("--peaks have {0} columns".format(peak_columns))
+	console.level4(f"Peaks have {peak_columns} columns")
 	if peak_header != None:
 		content = open(peak_header, "r").read()
 		peak_header_list = content.split()
-		logger.debug("Peak header: {0}".format(peak_header_list))
+		console.level4(f"Peak header: {peak_header_list}")
 
 		#Check whether peak header fits with number of peak columns
 		if len(peak_header_list) != peak_columns:
-			logger.error("Length of --peak_header ({0}) does not fit number of columns in --peaks ({1}).".format(len(peak_header_list), peak_columns))
+			console.error(f"Length of peak_header ({len(peak_header_list)}) does not fit number of columns in peaks ({peak_columns}).")
 			sys.exit(1)
 	else:
 		peak_header_list = ["peak_chr", "peak_start", "peak_end"] + ["additional_" + str(num + 1) for num in range(peak_columns-3)]
-	logger.debug("Peak header list: {0}".format(peak_header_list))
+	console.level4(f"Peak header list: {peak_header_list}")
 
 	################# Check for match between peaks and fasta/bigwig #################
-	logger.info("Checking for match between --peaks and --fasta/--signals boundaries")
-	logger.info("- Comparing peaks to {0}".format(genome))
 	fasta_obj = pysam.FastaFile(genome)
 	fasta_boundaries = dict(zip(fasta_obj.references, fasta_obj.lengths))
 	fasta_obj.close()
-	logger.debug("Fasta boundaries: {0}".format(fasta_boundaries))
 	peaks = peaks.apply_method(OneRegion.check_boundary, fasta_boundaries, "exit")	#will exit if peaks are outside borders
 
 	#Check boundaries of each bigwig signal individually
 	for signal in signals:	
-		logger.info("- Comparing peaks to {0}".format(signal))
 		pybw_obj = pybw.open(signal)
 		pybw_header = pybw_obj.chroms()
 		pybw_obj.close()
-		logger.debug("Signal boundaries: {0}".format(pybw_header))
 		peaks = peaks.apply_method(OneRegion.check_boundary, pybw_header, "exit")
 
 	##### GC content for motif scanning ######
 	#Make chunks of regions for multiprocessing
-	logger.info("Estimating GC content from peak sequences")
 	peak_chunks = peaks.chunks(split)
 	gc_content_pool = pool.starmap(get_gc_content, itertools.product(peak_chunks, [genome])) 
 	gc_content = np.mean(gc_content_pool)	#fraction
 	gc = gc_content
 	bg = np.array([(1-gc)/2.0, gc/2.0, gc/2.0, (1-gc)/2.0])
-	logger.info("- GC content estimated at {0:.2f}%".format(gc_content*100))
+	console.level2(f"GC content estimated at {gc_content*100:.2f}%")
 
 	################ Get motifs ################
-	logger.info("Reading motifs from file") 
 	motif_list = MotifList()
 	motifs = expand_dirs(motifs)
 	for f in motifs:
 		try:
 			motif_list += MotifList().from_file(f)  #List of OneMotif objects
 		except Exception as e:
-			logger.error("Error reading motifs from '{0}'. Error message was: {1}".format(f, e))
+			console.error(f"Error reading motifs from '{f}'. Error message was: {e}")
 			sys.exit(1)
 
 	no_pfms = len(motif_list)
-	logger.info("- Read {0} motifs".format(no_pfms))
+	console.level2(f"Read {no_pfms} motifs")
 
-	logger.debug("Getting motifs ready")
 	motif_list.bg = bg
 
 	#Set prefixes
 	for motif in motif_list:
 		motif.set_prefix(naming)
 		motif.bg = bg
-
-		logger.spam("Getting pssm for motif {0}".format(motif.name))
 		motif.get_pssm()
 	
 	#Check that prefixes are unique regardless of upper/lower case name
@@ -331,9 +312,9 @@ def run_bindetect(condition_names, score_files, motif_file, fasta_file, regions_
 	if max(name_count.values()) > 1:
 
 		duplicated = [key for key, value in name_count.items() if value > 1]
-		logger.warning("The motif output names (as given by --naming) are not unique.")
-		logger.warning("The following names occur more than once: {0}".format(duplicated))
-		logger.warning("These motifs will be renamed with '_1', '_2' etc. To prevent this renaming, please make the names of the input --motifs unique")
+		console.warn("The motif output names are not unique.")
+		console.warn(f"The following names occur more than once: {duplicated}")
+		console.warn("These motifs will be renamed with '_1', '_2' etc. To prevent this renaming, please make the names of the input motifs unique")
 		
 		motif_count = {dup_motif: 1 for dup_motif in duplicated}
 		for i, motif in enumerate(motif_list):
@@ -341,24 +322,17 @@ def run_bindetect(condition_names, score_files, motif_file, fasta_file, regions_
 				
 				original_name = motif.prefix
 				motif.prefix = motif.prefix + "_{0}".format(motif_count[motif.prefix.upper()])	#Add number to make prefix unique
-				logger.debug("Renamed motif {0}: {1} -> {2}".format(i+1, original_name, motif.prefix))
+				console.level4(f"Renamed motif {i+1}: {original_name} -> {motif.prefix}")
 				motif_count[original_name.upper()] += 1
 
 	motif_names = [motif.prefix for motif in motif_list]
 
 	#Get threshold for motifs
-	logger.debug("Getting match threshold per motif")
 	outlist = pool.starmap(OneMotif.get_threshold, itertools.product(motif_list, [motif_pvalue])) 
-
-	logger.spam(motif_list)
-
 	motif_list = MotifList(outlist)	
-	for motif in motif_list:
-		logger.debug("Motif {0}: threshold {1}".format(motif.name, motif.threshold))
 
-	logger.info("Creating folder structure for each TF")
+	# Create folder structure for each TF
 	for TF in motif_names:
-		logger.spam("Creating directories for {0}".format(TF))
 		make_directory(os.path.join(outdir, TF))
 		make_directory(os.path.join(outdir, TF, "beds"))
 		make_directory(os.path.join(outdir, TF, "plots"))
@@ -369,15 +343,23 @@ def run_bindetect(condition_names, score_files, motif_file, fasta_file, regions_
 
 	logo_filenames = {motif.prefix: os.path.join(outdir, motif.prefix, motif.prefix + ".png") for motif in motif_list}
 
-	logger.info("Plotting sequence logos for each motif")
+	console.level2("Plotting sequence logos for each motif")
 	task_list = [pool.apply_async(OneMotif.logo_to_file, (motif, logo_filenames[motif.prefix], )) for motif in motif_list]
-	monitor_progress(task_list, logger)
+	
+	# Use tqdm for progress tracking
+	with tqdm(total=len(task_list), desc="Creating logos") as pbar:
+		while True:
+			done = sum([task.ready() for task in task_list])
+			pbar.n = done
+			pbar.refresh()
+			if done == len(task_list):
+				break
+			time.sleep(0.1)
+	
 	results = [task.get() for task in task_list]
-	logger.comment("")
 
-	logger.debug("Getting base64 strings per motif")
+	# Getting base64 strings per motif
 	for motif in motif_list:
-		#motif.get_base() 
 		with open(logo_filenames[motif.prefix], "rb") as png:
 			motif.base = base64.b64encode(png.read()).decode("utf-8") 
 
@@ -385,77 +367,59 @@ def run_bindetect(condition_names, score_files, motif_file, fasta_file, regions_
 	#--------------------- Motif scanning: Find binding sites and match to footprint scores ----------------------#
 	#-------------------------------------------------------------------------------------------------------------#
 
-	logger.comment("")
-	logger.start_logger_queue()		#start process for listening and handling through the main logger queue
-	log_q = logger.queue 		#queue for multiprocessing logging
+	log_q = None		#no logger queue needed for console
 	manager = mp.Manager()
-	logger.info("Scanning for motifs and matching to signals...")
+	console.level1("Scanning for motifs and matching to signals...")
 
 	#Create writer queues for bed-file output
-	logger.debug("Setting up writer queues")
 	qs_list = []
 	writer_qs = {}
-
-	#writer_queue = create_writer_queue(key2file, writer_cores)
-	#writer_queue.stop()	#wait until all are done
 
 	manager = mp.Manager()
 	TF_names_chunks = [motif_names[i::writer_cores] for i in range(writer_cores)]
 	writer_tasks = []
 	for TF_names_sub in TF_names_chunks:
-		logger.debug("Creating writer queue for {0}".format(TF_names_sub))
 		files = [os.path.join(outdir, TF, "beds", TF + ".tmp") for TF in TF_names_sub]
-
 		q = manager.Queue()
 		qs_list.append(q)
-
-		writer_tasks.append(writer_pool.apply_async(file_writer, args=(q, dict(zip(TF_names_sub, files)), None)))	 #, callback = lambda x: finished.append(x) print("Writing time: {0}".format(x)))
+		writer_tasks.append(writer_pool.apply_async(file_writer, args=(q, dict(zip(TF_names_sub, files)), None)))
 		for TF in TF_names_sub:
 			writer_qs[TF] = q
-	writer_pool.close() #no more jobs applied to writer_pool
+	writer_pool.close()
 
-	#todo: use run_parallel
 	#Start working on data
 	if worker_cores == 1:
-		logger.debug("Running with cores = 1")
 		results = []
-		for chunk in peak_chunks:
+		for chunk in tqdm(peak_chunks, desc="Scanning regions"):
 			results.append(scan_and_score(chunk, motif_list, signals, cond_names, genome, verbosity, log_q, writer_qs))
-		
 	else: 
-		logger.debug("Sending jobs to worker pool")
-
 		task_list = [pool.apply_async(scan_and_score, (chunk, motif_list, signals, cond_names, genome, verbosity, log_q, writer_qs, )) for chunk in peak_chunks]
-		monitor_progress(task_list, logger)
+		
+		# Use tqdm for progress tracking
+		with tqdm(total=len(task_list), desc="Scanning regions") as pbar:
+			while True:
+				done = sum([task.ready() for task in task_list])
+				pbar.n = done
+				pbar.refresh()
+				if done == len(task_list):
+					break
+				time.sleep(0.1)
+		
 		results = [task.get() for task in task_list]
 	
-	logger.info("Done scanning for TFBS across regions!")
-	#logger.stop_logger_queue()	#stop the listening process (wait until all was written)
-	
-	#--------------------------------------#
-	logger.info("Waiting for bedfiles to write")
-
 	#Stop all queues for writing
-	logger.debug("Stop all queues by inserting None")
 	for q in qs_list:
 		q.put((None, None))
 
 	#Wait for all writer tasks to finish
 	finished = 0
 	while finished == 0:
-		logger.debug("Writer task return status: {0}".format([task.get() if task.ready() else "NA" for task in writer_tasks]))
 		if sum([task.ready() for task in writer_tasks]) == len(writer_tasks):	
 			finished = 1
 			return_codes = [task.get() for task in writer_tasks]
 			if sum(return_codes) != 0:
-				logger.error("Bedfile writer finished with an error ({0})".format())
-			else:
-				logger.debug("Bedfile writer(s) finished!")
-		time.sleep(0.5) 
-
-	logger.debug("Joining bed_writer queues")
-	for i, q in enumerate(qs_list):
-		logger.debug("- Queue {0} (size {1})".format(i, q.qsize()))
+				console.error("Bedfile writer finished with an error")
+		time.sleep(0.1)
 			
 	#Waits until all queues are closed
 	writer_pool.join() 
@@ -464,7 +428,7 @@ def run_bindetect(condition_names, score_files, motif_file, fasta_file, regions_
 	#---------------------------------- Process information on background scores  --------------------------------#
 	#-------------------------------------------------------------------------------------------------------------#
 
-	logger.info("Merging results from subsets")
+	console.level1("Processing background scores")
 	background = merge_dicts([result[0] for result in results])
 	TF_overlaps = merge_dicts([result[1] for result in results])
 	results = None
@@ -485,12 +449,8 @@ def run_bindetect(condition_names, score_files, motif_file, fasta_file, regions_
 
 	#Check how many values were fetched from background
 	n_bg_values = len(background["signal"][cond_names[0]])
-	logger.debug("Collected {0} values from background".format(n_bg_values))
 	if n_bg_values < 1000:
-		err_str = "Number of background values collected from peaks is low (={0}) ".format(n_bg_values)
-		err_str += "- this affects estimation of the bound/unbound threshold and the normalization between conditions. "
-		err_str += "To improve this estimation, please run BINDetect with --peaks = the full peak set across all conditions."
-		logger.warning(err_str) 
+		console.warn(f"Low number of background values ({n_bg_values}) - this may affect threshold estimation") 
 
 	#Plot score distribution
 	fig = plot_score_distribution([background["signal"][bigwig] for bigwig in cond_names], labels=cond_names, title="Raw scores per condition")
@@ -504,30 +464,23 @@ def run_bindetect(condition_names, score_files, motif_file, fasta_file, regions_
 			norm_objects[bigwig] = ArrayNorm("constant", popt=1.0, value_min=0, value_max=1) #no normalization; min/max don't matter for constant norm
 
 	else:
-		logger.comment("")
-		logger.info("Normalizing scores across conditions")
+		console.level1("Normalizing scores across conditions")
 
 		list_of_vals = [background["signal"][bigwig] for bigwig in cond_names]
 		if debug: 
-			norm_objects = quantile_normalization(list_of_vals, cond_names, pdfpages=debug_pdf, logger=logger)
+			norm_objects = quantile_normalization(list_of_vals, cond_names, pdfpages=debug_pdf)
 		else:
-			norm_objects = quantile_normalization(list_of_vals, cond_names, logger=logger)
+			norm_objects = quantile_normalization(list_of_vals, cond_names)
 
 		#Normalize background and visualize score distribution
 		for bigwig in cond_names:
-			
 			original = background["signal"][bigwig]
-
-			#Check for nan
-			logger.debug("Background nans ({0}): {1}".format(bigwig, sum(np.isnan(original))))
 			normalized = norm_objects[bigwig].normalize(original)
 			
 			#Replace negative values with 0
 			negatives = normalized < 0
 			normalized[negatives] = 0
-
 			background["signal"][bigwig] = normalized
-			logger.debug("Background nans after normalization ({0}): {1}".format(bigwig, sum(np.isnan(background["signal"][bigwig]))))
 		
 		fig = plot_score_distribution([background["signal"][bigwig] for bigwig in cond_names], labels=cond_names, title="Normalized scores per condition")
 		figure_pdf.savefig(fig, bbox_inches='tight')
@@ -538,20 +491,17 @@ def run_bindetect(condition_names, score_files, motif_file, fasta_file, regions_
 	#-------------------------------------- Estimate bound/unbound threshold -------------------------------------#
 	#-------------------------------------------------------------------------------------------------------------#
 
-	logger.info("Estimating bound/unbound threshold")
+	console.level1("Estimating bound/unbound threshold")
 
 	#Prepare scores (remove 0's etc.)
 	bg_values = np.array([background["signal"][bigwig] for bigwig in cond_names]).flatten()	#scores from all conditions
-	logger.debug("Size of background array collected: {0}".format(bg_values.size))
 	bg_values = bg_values[np.logical_not(np.isclose(bg_values, 0.0))]	#only non-zero counts
-	logger.debug("Size of background array after filtering > 0: {0}".format(bg_values.size))
 	if len(bg_values) == 0:
-		logger.error("Error processing bigwig scores from background. It could be that there are no scores in the bigwig (= all scores are 0) assigned for the peaks. Please check your input files.")
+		console.error("Error processing bigwig scores from background. It could be that there are no scores in the bigwig (= all scores are 0) assigned for the peaks. Please check your input files.")
 		sys.exit(1)
 
 	x_max = np.percentile(bg_values, [99]) 
 	bg_values = bg_values[bg_values < x_max]
-	logger.debug("Size of background array after filtering < x_max ({0}): {1}".format(x_max, bg_values.size))
 
 	#Fit mixture of normals
 	log_vals = np.log(bg_values).reshape(-1, 1)
@@ -561,7 +511,6 @@ def run_bindetect(condition_names, score_files, motif_file, fasta_file, regions_
 		gmm.fit(log_vals)
 		
 		bic = gmm.bic(log_vals)
-		logger.debug("n_compontents: {0} | bic: {1}".format(n_components, bic))
 		if bic < lowest_bic:
 			lowest_bic = bic
 			best_gmm = gmm
@@ -610,9 +559,7 @@ def run_bindetect(condition_names, score_files, motif_file, fasta_file, regions_
 
 	#Mode of distribution
 	mode = scipy.optimize.fmin(lambda x: -scipy.stats.lognorm.pdf(x, *log_params), 0, disp=False)[0]
-	logger.debug("- Mode estimated at: {0}".format(mode))
 	pseudo = mode / 2.0		#pseudo is half the mode
-	logger.debug("Pseudocount estimated at: {0}".format(round(pseudo, 5)))
 	
 	# Estimate theoretical normal for threshold
 	leftside_x = np.linspace(scipy.stats.lognorm(*log_params).ppf([0.01]), mode, 100)
@@ -624,13 +571,12 @@ def run_bindetect(condition_names, score_files, motif_file, fasta_file, regions_
 	mirrored_pdf = np.concatenate([leftside_pdf, leftside_pdf[::-1]]).flatten()
 	popt, cov = scipy.optimize.curve_fit(lambda x, std, sc: sc * scipy.stats.norm.pdf(x, mode, std), mirrored_x, mirrored_pdf)
 	norm_params = (mode, popt[0])
-	logger.debug("Theoretical normal parameters: {0}".format(norm_params))
 
 	#Set threshold for bound/unbound
 	threshold = round(scipy.stats.norm.ppf(1-bound_pvalue, *norm_params), 5)
 
 	thresholds = {bigwig: threshold for bigwig in cond_names}
-	logger.stats("- Threshold estimated at: {0}".format(threshold))
+	console.success(f"Threshold estimated at: {threshold}")
 
 	#Only plot if debug is True
 	if debug:
@@ -674,13 +620,11 @@ def run_bindetect(condition_names, score_files, motif_file, fasta_file, regions_
 	#--------------------------------------- Foldchanges between conditions --------------------------------------#
 	#-------------------------------------------------------------------------------------------------------------#
 
-	logger.comment("")
 	log2fc_params = {}
 	if len(signals) > 1:
-		logger.info("Calculating background log2 fold-changes between conditions")
+		console.level1("Calculating differential binding statistics")
 
 		for (bigwig1, bigwig2) in comparisons:	#cond1, cond2
-			logger.info("- {0} / {1}".format(bigwig1, bigwig2))
 
 			#Estimate background log2fc 
 			scores1 = np.copy(background["signal"][bigwig1])
@@ -699,8 +643,6 @@ def run_bindetect(condition_names, score_files, motif_file, fasta_file, regions_
 			#Decide on diff_dist
 			diff_dist = scipy.stats.norm
 			norm_params = diff_dist.fit(log2fcs_fit)
-
-			logger.debug("({0} / {1}) Background log2fc distribution: {2}".format(bigwig1, bigwig2, norm_params))
 			log2fc_params[(bigwig1, bigwig2)] = norm_params
 
 			#If debug: plot background log2fc to figures
@@ -728,8 +670,7 @@ def run_bindetect(condition_names, score_files, motif_file, fasta_file, regions_
 	#----------------------------- Read total sites per TF to estimate bound/unbound -----------------------------#
 	#-------------------------------------------------------------------------------------------------------------#
 
-	logger.comment("")
-	logger.info("Processing scanned TFBS individually")
+	console.level1("Processing scanned TFBS individually")
 		
 	#Getting bindetect table ready
 	info_columns = ["total_tfbs"]
@@ -743,23 +684,27 @@ def run_bindetect(condition_names, score_files, motif_file, fasta_file, regions_
 	#Starting calculations
 	results = []
 	if cores == 1:
-		for name in motif_names:
-			logger.info("- {0}".format(name))
+		for name in tqdm(motif_names, desc="Processing TFs"):
 			results.append(process_tfbs(name, outdir, cond_names, comparisons, verbosity, log_q, output_peaks, thresholds, log2fc_params))
 	else:
-		logger.debug("Sending jobs to worker pool")
-
 		task_list = [pool.apply_async(process_tfbs, (name, outdir, cond_names, comparisons, verbosity, log_q, output_peaks, thresholds, log2fc_params, )) for name in motif_names]
-		monitor_progress(task_list, logger) 	#will not exit before all jobs are done
+		
+		# Use tqdm for progress tracking
+		with tqdm(total=len(task_list), desc="Processing TFs") as pbar:
+			while True:
+				done = sum([task.ready() for task in task_list])
+				pbar.n = done
+				pbar.refresh()
+				if done == len(task_list):
+					break
+				time.sleep(0.1)
+		
 		results = [task.get() for task in task_list]
 
-	logger.info("Concatenating results from subsets")
-	info_table = pd.concat(results)	 	#pandas tables
+	info_table = pd.concat(results) if results else pd.DataFrame()	#pandas tables
 
 	pool.terminate()
 	pool.join()
-	
-	logger.stop_logger_queue()
 	
 	#-------------------------------------------------------------------------------------------------------------#	
 	#------------------------------------------------ Cluster TFBS -----------------------------------------------#	
@@ -783,8 +728,7 @@ def run_bindetect(condition_names, score_files, motif_file, fasta_file, regions_
 	#----------------------------------------- Write all_bindetect file ------------------------------------------#
 	#-------------------------------------------------------------------------------------------------------------#
 
-	logger.comment("")
-	logger.info("Writing all_bindetect files")
+	console.level1("Writing results files")
 
 	#Add columns of name / motif_id / prefix
 	names = []
@@ -870,7 +814,7 @@ def run_bindetect(condition_names, score_files, motif_file, fasta_file, regions_
 	#-------------------------------------------------------------------------------------------------------------#	
 
 	if no_conditions > 1:
-		logger.info("Creating BINDetect plot(s)")
+		console.level1("Creating plots")
 
 		#Fill NAs from info_table to enable plotting of log2fcs (NA -> 0 change)
 		change_cols = [col for col in info_table.columns if "_change" in col]
@@ -880,8 +824,6 @@ def run_bindetect(condition_names, score_files, motif_file, fasta_file, regions_
 
 		#Plotting bindetect per comparison
 		for (cond1, cond2) in comparisons:
-
-			logger.info("- {0} / {1} (static plot)".format(cond1, cond2))
 			base = cond1 + "_" + cond2
 
 			#Fill motifs with metadata (.change, .pvalue, .logpvalue etc.)
@@ -907,7 +849,6 @@ def run_bindetect(condition_names, score_files, motif_file, fasta_file, regions_
 			plt.close(fig)
 
 			#Interactive BINDetect plot
-			logger.info("- {0} / {1} (interactive plot)".format(cond1, cond2))
 			html_out = os.path.join(outdir, "bindetect_" + base + ".html")
 			plot_interactive_bindetect(motif_list, [cond1, cond2], html_out)
 			
@@ -917,7 +858,7 @@ def run_bindetect(condition_names, score_files, motif_file, fasta_file, regions_
 	#-------------------------------------------------------------------------------------------------------------#	
 
 	if debug and len(signals) > 1:
-		logger.info("Plotting heatmap across conditions for debugging")
+		# Generate debug heatmap silently
 		mean_columns = [cond + "_mean_score" for cond in cond_names]
 		heatmap_table = info_table[mean_columns]
 		heatmap_table.index = info_table["output_prefix"]
@@ -964,5 +905,5 @@ def run_bindetect(condition_names, score_files, motif_file, fasta_file, regions_
 		debug_pdf.close()
 
 	figure_pdf.close()
-	logger.end()
+	console.success("BINDetect analysis completed!")
 

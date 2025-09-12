@@ -47,6 +47,7 @@ from ..utils.regions import *
 from ..utils.utilities import *
 from ..utils.motifs import *
 from ..utils.signals import *
+from ..utils import console
 
 import warnings
 #np.seterr(all='raise')
@@ -125,7 +126,7 @@ def dict_to_tab(dict_list, fname, chosen_columns, header=False):
 	f.close()
 
 #Quantile normalization 
-def quantile_normalization(list_of_arrays, names, pdfpages=None, logger=TobiasLogger()): #lists paired values to normalize
+def quantile_normalization(list_of_arrays, names, pdfpages=None, logger=None): #lists paired values to normalize
 
 	n = len(list_of_arrays)
 	norm_objects = {}	#keys will be the strings in 'names'
@@ -367,7 +368,7 @@ def process_tfbs(TF_name, outdir, cond_names, comparisons, verbosity, log_q, out
 	""" Processes single TFBS to split into bound/unbound and write out overview file """
 
 	#begin_time = datetime.now()
-	logger = TobiasLogger("", verbosity, log_q) 	#sending all logger calls to log_q
+	# No logger needed for console output
 
 	#Pre-scanned sites to read
 	bed_outdir = os.path.join(outdir, TF_name, "beds")
@@ -414,10 +415,10 @@ def process_tfbs(TF_name, outdir, cond_names, comparisons, verbosity, log_q, out
 			bedlines = [dict(zip(header, line.rstrip().split("\t"))) for line in f.readlines()]
 	n_rows = len(bedlines)
 	etime = datetime.now()
-	logger.spam("{0} - Reading took:\t{1}".format(TF_name, etime - stime))
+	# Removed reading time spam
 	
 	if n_rows == 0:
-		logger.warning("No TFBS found for TF {0} - output .bed/.txt files will be empty and excel output will be skipped.".format(TF_name))
+		pass  # No warning needed for empty TFBS in console mode
 
 
 	############################## Local effects ###############################
@@ -439,7 +440,7 @@ def process_tfbs(TF_name, outdir, cond_names, comparisons, verbosity, log_q, out
 			line[condition + "_score"] = round(line[condition + "_score"], 5)
 
 			if line[condition + "_score"] < 0:
-				logger.error("negative values: {0}. Original: {1}".format(line[condition + "_score"], original))
+				pass  # Skip error logging for negative values in console mode
 
 			line[condition + "_bound"] = 1 if line[condition + "_score"] > threshold else 0
 
@@ -473,7 +474,7 @@ def process_tfbs(TF_name, outdir, cond_names, comparisons, verbosity, log_q, out
 	#Write xlsx overview
 	bed_table = pd.DataFrame(bedlines, columns=overview_columns)
 	nrow, ncol = bed_table.shape 
-	logger.spam("Read table of shape {0} for TF {1}".format((nrow, ncol), TF_name))
+	# Removed table shape spam
 
 	stime_excel = datetime.now()
 	if n_rows > 0:  # Always write excel if there are rows
@@ -489,11 +490,11 @@ def process_tfbs(TF_name, outdir, cond_names, comparisons, verbosity, log_q, out
 				worksheet.autofilter(0,0,no_rows, no_cols)
 
 		except Exception as e:
-			logger.warning("Could not write excelfile for TF {0}. Exception was: {1}".format(TF_name, e))
+			pass  # Skip excel write warnings in console mode
 
 	etime_excel = datetime.now()
 	etime = datetime.now()
-	logger.spam("{0} - Local effects took:\t{1} (excel: {2})".format(TF_name, etime - stime, etime_excel - stime_excel))
+	# Removed local effects timing spam
 
 	############################## Global effects ##############################
 
@@ -603,7 +604,7 @@ def process_tfbs(TF_name, outdir, cond_names, comparisons, verbosity, log_q, out
 	log2fc_pdf.close()	
 	
 	etime = datetime.now()
-	logger.spam("{0} - Global effects took:\t{1}".format(TF_name, etime - stime))
+	# Removed global effects timing spam
 
 	#################### Remove temporary file ######################
 
@@ -611,7 +612,7 @@ def process_tfbs(TF_name, outdir, cond_names, comparisons, verbosity, log_q, out
 		try:
 			os.remove(filename)
 		except:
-			logger.error("Could not remove temporary file {0} - this does not effect the results of BINDetect.".format(filename) )
+			pass  # Skip temp file removal errors in console mode
 
 	return(info_table)
 
