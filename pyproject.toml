@@ -31,6 +31,7 @@ dependencies = [
     'loompy>=3.0.7',
     'pyrange',
     'snapatac2',
+    'colormaps'
 ]
 
 [project.optional-dependencies]

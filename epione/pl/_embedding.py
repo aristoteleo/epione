@@ -22,6 +22,7 @@ from matplotlib import pyplot as pl, colors, colormaps
 from matplotlib import rcParams, patheffects
 from matplotlib.colors import Colormap, Normalize, to_hex, to_rgba, is_color_like
 import matplotlib
+import colormaps as cmaps
 
 
 # Type definitions
@@ -57,7 +58,7 @@ def embedding(
     na_color: ColorLike = "lightgray",
     na_in_legend: bool = True,
     size: Union[float, Sequence[float], None] = None,
-    frameon: Optional[bool] = None,
+    frameon: Optional[bool] = 'small',
     legend_fontsize: Union[int, float, _FontSize, None] = None,
     legend_fontweight: Union[int, _FontWeight] = 'bold',
     legend_loc: str = 'right margin',
@@ -213,10 +214,19 @@ def embedding(
             cmap = color_map
     
     if cmap is None:
-        cmap = 'RdBu_r'
+        cmap = cmaps.aggrnyl
     
-    if not isinstance(cmap, matplotlib.colors.LinearSegmentedColormap):
-        cmap = copy(matplotlib.colormaps.get(cmap))
+    if not isinstance(cmap, matplotlib.colors.Colormap):
+        # Try to get colormap from cmaps module first, then fallback to matplotlib
+        if isinstance(cmap, str) and hasattr(cmaps, cmap):
+            cmap = getattr(cmaps, cmap)
+        else:
+            cmap = copy(matplotlib.colormaps.get(cmap))
+            cmap.set_bad(na_color)
+
+    # If cmap is now a Colormap object, copy it and set bad color
+    if isinstance(cmap, matplotlib.colors.Colormap):
+        cmap = copy(cmap)
         cmap.set_bad(na_color)
     
     kwargs["cmap"] = cmap
