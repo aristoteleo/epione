@@ -31,6 +31,8 @@ from ._plotting import (
 
 from ._reducedimension import lsi, spectral
 
+from ._umap import umap
+
 
 __all__ = [
     "bindetect",
@@ -45,5 +47,6 @@ __all__ = [
     "filter_fragments", "create_network",
     "FootprintPlotter", "PlotTracks",
     "plot_heatmap", "plot_tracks",
-    "lsi","spectral"
+    "lsi","spectral",
+    "umap",
 ]

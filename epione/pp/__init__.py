@@ -10,6 +10,11 @@ from ._qc import (
     qc,scrublet
 )
 
+from ._neighbors import (
+    neighbors,
+)
+
+
 
 __all__ = [
     "import_fragments",
@@ -24,4 +29,5 @@ __all__ = [
     "select_features",
     "qc",
     "scrublet",
+    "neighbors",
 ]
