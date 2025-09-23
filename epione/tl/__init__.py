@@ -33,6 +33,8 @@ from ._reducedimension import lsi, spectral
 
 from ._umap import umap
 
+from ._clusters import clusters
+
 
 __all__ = [
     "bindetect",
@@ -49,4 +51,5 @@ __all__ = [
     "plot_heatmap", "plot_tracks",
     "lsi","spectral",
     "umap",
+    "clusters",
 ]
