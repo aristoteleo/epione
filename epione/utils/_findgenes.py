@@ -96,7 +96,7 @@ class Annotation(object):
             required_attrs=("gene_id", "gene_name"),
             feature_whitelist=("transcript",),
             chr_prefix="chr",
-            keep_attribute=False,
+            keep_attribute=True,
         )
         self.features=self.gtf.loc[(self.gtf['feature']=='transcript')&(self.gtf['seqname'].str.contains('chr'))]
         chrom_dict={}
@@ -114,8 +114,8 @@ class Annotation(object):
             return peaks
 
     def tss_init(self,upstream=100,downstream=1000):
-        features_pos=self.features.loc[self.features['strand']=='+']
-        features_neg=self.features.loc[self.features['strand']=='-']
+        features_pos=self.features.loc[self.features['strand']=='+'].copy()
+        features_neg=self.features.loc[self.features['strand']=='-'].copy()
 
         features_pos['tss']=features_pos['start']
         features_pos['promoter']=["{}:{}-{}".format(i,self.parse_peaks(i,j-downstream),self.parse_peaks(i,j+upstream)) for i,j in zip(features_pos['seqname'],
@@ -128,8 +128,8 @@ class Annotation(object):
 
     def distal_init(self,upstream=[1000,200000],downstream=[1000,200000]):
 
-        features_pos=self.features.loc[self.features['strand']=='+']
-        features_neg=self.features.loc[self.features['strand']=='-']
+        features_pos=self.features.loc[self.features['strand']=='+'].copy()
+        features_neg=self.features.loc[self.features['strand']=='-'].copy()
 
         features_pos['up_distal']=["{}:{}-{}".format(i,self.parse_peaks(i,j-upstream[1]),self.parse_peaks(i,j-upstream[0])) for i,j in zip(features_pos['seqname'],
                                                                features_pos['tss'])]
@@ -490,7 +490,7 @@ class Annotation(object):
         merge_pd['promoter_near_gene_tss']=''
 
 
-        promoter_li_pd=merge_pd.loc[merge_pd['promoter']!='']
+        promoter_li_pd=merge_pd.loc[merge_pd['promoter']!=''].copy()
         promoter_li_pd['promoter_range']=[int(i.split(':')[1].split('-')[1])-int(i.split(':')[1].split('-')[0]) for i in promoter_li_pd['promoter']]
         promoter_li_pd['promoter_overlap_range']=[int(i.split(':')[1].split('-')[1])-int(i.split(':')[1].split('-')[0]) for i in promoter_li_pd['promoter_overlap']]
         promoter_li_pd['promoter_min_range']=[min(i,j) for i,j in zip(promoter_li_pd['promoter_range'],promoter_li_pd['promoter_overlap_range'])]
@@ -500,6 +500,8 @@ class Annotation(object):
         test1=self.features.copy()
         test1.index=test1['promoter']
         test1=test1[~test1.index.duplicated(keep="first")]
+        # Fill NaN gene_name with empty string to avoid None values
+        test1['gene_name'] = test1['gene_name'].fillna('')
         merge_pd.loc[promoter_li_index,'promoter_near_gene']=test1.loc[promoter_li_pd['promoter'].values.tolist(),'gene_name'].values.tolist()
         merge_pd.loc[promoter_li_index,'peak_type']='promoter'
         merge_pd.loc[promoter_li_index,'promoter_near_gene_tss']=test1.loc[promoter_li_pd['promoter'].values.tolist(),'tss'].values.tolist()
@@ -517,7 +519,7 @@ class Annotation(object):
         merge_pd['updistal_vaild']=''
         merge_pd['updistal_near_gene_tss']=''
 
-        updistal_li_pd=merge_pd.loc[merge_pd['updistal']!='']
+        updistal_li_pd=merge_pd.loc[merge_pd['updistal']!=''].copy()
         updistal_li_pd['updistal_range']=[int(i.split(':')[1].split('-')[1])-int(i.split(':')[1].split('-')[0]) for i in updistal_li_pd['updistal']]
         updistal_li_pd['updistal_overlap_range']=[int(i.split(':')[1].split('-')[1])-int(i.split(':')[1].split('-')[0]) for i in updistal_li_pd['updistal_overlap']]
         updistal_li_pd['updistal_min_range']=[min(i,j) for i,j in zip(updistal_li_pd['updistal_range'],updistal_li_pd['updistal_overlap_range'])]
@@ -527,6 +529,8 @@ class Annotation(object):
         test1=self.features.copy()
         test1.index=test1['up_distal']
         test1=test1[~test1.index.duplicated(keep="first")]
+        # Fill NaN gene_name with empty string to avoid None values
+        test1['gene_name'] = test1['gene_name'].fillna('')
         merge_pd.loc[updistal_li_index,'updistal_near_gene']=test1.loc[updistal_li_pd['updistal'].values.tolist(),'gene_name'].values.tolist()
         merge_pd.loc[updistal_li_index,'peak_type']='up_distal'
         merge_pd.loc[updistal_li_index,'updistal_near_gene_tss']=test1.loc[updistal_li_pd['updistal'].values.tolist(),'tss'].values.tolist()
@@ -544,7 +548,7 @@ class Annotation(object):
         merge_pd['downdistal_vaild']=''
         merge_pd['downdistal_near_gene_tss']=''
 
-        down_distal_li_pd=merge_pd.loc[merge_pd['downdistal']!='']
+        down_distal_li_pd=merge_pd.loc[merge_pd['downdistal']!=''].copy()
         down_distal_li_pd['downdistal_range']=[int(i.split(':')[1].split('-')[1])-int(i.split(':')[1].split('-')[0]) for i in down_distal_li_pd['downdistal']]
         down_distal_li_pd['downdistal_overlap_range']=[int(i.split(':')[1].split('-')[1])-int(i.split(':')[1].split('-')[0]) for i in down_distal_li_pd['downdistal_overlap']]
         down_distal_li_pd['downdistal_min_range']=[min(i,j) for i,j in zip(down_distal_li_pd['downdistal_range'],down_distal_li_pd['downdistal_overlap_range'])]
@@ -554,6 +558,8 @@ class Annotation(object):
         test1=self.features.copy()
         test1.index=test1['down_distal']
         test1=test1[~test1.index.duplicated(keep="first")]
+        # Fill NaN gene_name with empty string to avoid None values
+        test1['gene_name'] = test1['gene_name'].fillna('')
         merge_pd.loc[down_distal_li_index,'downdistal_near_gene']=test1.loc[down_distal_li_pd['downdistal'].values.tolist(),'gene_name'].values.tolist()
         merge_pd.loc[down_distal_li_index,'peak_type']='down_distal'
         merge_pd.loc[down_distal_li_index,'downdistal_near_gene_tss']=test1.loc[down_distal_li_pd['downdistal'].values.tolist(),'tss'].values.tolist()
@@ -571,7 +577,7 @@ class Annotation(object):
         merge_pd['body_vaild']=''
         merge_pd['body_near_gene_tss']=''
 
-        body_li_pd=merge_pd.loc[merge_pd['body']!='']
+        body_li_pd=merge_pd.loc[merge_pd['body']!=''].copy()
         body_li_pd['body_range']=[int(i.split(':')[1].split('-')[1])-int(i.split(':')[1].split('-')[0]) for i in body_li_pd['body']]
         body_li_pd['body_overlap_range']=[int(i.split(':')[1].split('-')[1])-int(i.split(':')[1].split('-')[0]) for i in body_li_pd['body_overlap']]
         body_li_pd['body_min_range']=[min(i,j) for i,j in zip(body_li_pd['body_range'],body_li_pd['body_overlap_range'])]
@@ -581,7 +587,8 @@ class Annotation(object):
         test1=self.features.copy()
         test1.index=test1['body']
         test1=test1[~test1.index.duplicated(keep="first")]
-
+        # Fill NaN gene_name with empty string to avoid None values
+        test1['gene_name'] = test1['gene_name'].fillna('')
         merge_pd.loc[body_li_index,'body_near_gene']=test1.loc[body_li_pd['body'].values.tolist(),'gene_name'].values.tolist()
         merge_pd.loc[body_li_index,'peak_type']='body'
         merge_pd.loc[body_li_index,'body_near_gene_tss']=test1.loc[body_li_pd['body'].values.tolist(),'tss'].values.tolist()
