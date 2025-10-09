@@ -62,7 +62,7 @@ def norm_fit(x, mean, std, scale):
 def bindetect(condition_names=None, score_files=None, motif_file=None, fasta_file=None, regions_bed=None, output_dir="bindetect_results", 
               prefix="bindetect", verbosity=3, cores=8, split=100, naming="name_id", motif_pvalue=0.0001, bound_pvalue=0.001, 
               norm_off=False, time_series=False, debug=False, cluster_threshold=0.5, peak_header=None, skip_excel=False, 
-              output_peaks=None, pseudo=None):
+              output_peaks=None, pseudo=None, target_tfs=None):
 	"""
 	Main function to run bindetect algorithm with direct parameters
 	
@@ -110,14 +110,17 @@ def bindetect(condition_names=None, score_files=None, motif_file=None, fasta_fil
 		Different output peak set
 	pseudo : float, optional
 		Pseudocount for log2fc calculation
+	target_tfs : str or list, optional
+		Restrict analysis to TF motifs whose name/id/prefix contains the provided string(s). Speeds up runs by skipping other motifs.
 	"""
 	return run_bindetect(condition_names, score_files, motif_file, fasta_file, regions_bed, output_dir,
 	                     prefix, verbosity, cores, split, naming, motif_pvalue, bound_pvalue, norm_off,
-	                     time_series, debug, cluster_threshold, peak_header, skip_excel, output_peaks, pseudo)
+	                     time_series, debug, cluster_threshold, peak_header, skip_excel, output_peaks, pseudo, target_tfs)
 
 def run_bindetect(condition_names, score_files, motif_file, fasta_file, regions_bed, output_dir,
                   prefix, verbosity, cores, split, naming, motif_pvalue, bound_pvalue, norm_off,
-                  time_series, debug, cluster_threshold, peak_header, skip_excel, output_peaks, pseudo):
+                  time_series, debug, cluster_threshold, peak_header, skip_excel, output_peaks, pseudo,
+                  target_tfs):
 	""" Main function to run bindetect algorithm with direct parameters """
 
 	# Set up variables directly from parameters
@@ -324,6 +327,36 @@ def run_bindetect(condition_names, score_files, motif_file, fasta_file, regions_
 				motif.prefix = motif.prefix + "_{0}".format(motif_count[motif.prefix.upper()])	#Add number to make prefix unique
 				console.level4(f"Renamed motif {i+1}: {original_name} -> {motif.prefix}")
 				motif_count[original_name.upper()] += 1
+
+	# Filter motifs if specific TFs requested
+	if target_tfs:
+		if isinstance(target_tfs, str):
+			target_list = [target_tfs]
+		else:
+			target_list = list(target_tfs)
+
+		target_list = [t.strip() for t in target_list if t and isinstance(t, str)]
+		target_lower = [t.lower() for t in target_list]
+
+		def _matches_target(motif):
+			candidates = [motif.prefix, motif.name, motif.id]
+			for candidate in candidates:
+				if not candidate:
+					continue
+				cand_lower = candidate.lower()
+				for target in target_lower:
+					if target in cand_lower:
+						return True
+			return False
+
+		filtered = [motif for motif in motif_list if _matches_target(motif)]
+		if not filtered:
+			console.error(f"No motifs matched the requested targets: {target_list}")
+			raise ValueError(f"No motifs matched the requested targets: {target_list}")
+
+		if len(filtered) < len(motif_list):
+			console.level2(f"Filtered motifs: keeping {len(filtered)} of {len(motif_list)} matching {target_list}")
+		motif_list = MotifList(filtered)
 
 	motif_names = [motif.prefix for motif in motif_list]
 
@@ -906,4 +939,3 @@ def run_bindetect(condition_names, score_files, motif_file, fasta_file, regions_
 
 	figure_pdf.close()
 	console.success("BINDetect analysis completed!")
-

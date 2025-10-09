@@ -29,6 +29,11 @@ from ._plotting import (
     plot_heatmap, plot_tracks
 )
 
+from ._footprint import (
+    get_footprints, plot_footprints, FootprintResult,
+    getFootprints, plotFootprints
+)
+
 from ._reducedimension import lsi, spectral
 
 from ._umap import umap
@@ -49,6 +54,8 @@ __all__ = [
     "filter_fragments", "create_network",
     "FootprintPlotter", "PlotTracks",
     "plot_heatmap", "plot_tracks",
+    "get_footprints", "plot_footprints", "FootprintResult",
+    "getFootprints", "plotFootprints",
     "lsi","spectral",
     "umap",
     "clusters",
