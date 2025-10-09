@@ -1,9 +1,10 @@
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
 import gc
 import re
 import os 
 import gzip
-from typing import Optional, Union, Dict, List
+from typing import Optional, Union, Dict, List, Any, Tuple
 import anndata as ad
 import numpy as np
 import pandas as pd
@@ -243,6 +244,11 @@ def pseudobulk_with_fragments(
     clusters: Optional[list] = None,
     bed_path: Optional[str] = 'temp',
     bigwig_path: Optional[str] = 'temp',
+    bam_path: Optional[str] = None,
+    bam_files: Optional[Union[str, List[str]]] = None,
+    bam_split_kwargs: Optional[Dict[str, Any]] = None,
+    bigwig_strategy: str = "fragment",
+    cutsite_shifts: Tuple[int, int] = (4, -5),
     verbose=True,
     path_to_fragments: Optional[Dict[str, str]] = None,
     normalize_bigwig: Optional[bool] = True,
@@ -252,6 +258,8 @@ def pseudobulk_with_fragments(
     auto_add_chr: Optional[bool] = True,
     performance_backend: Optional[str] = "pandas",
     sample_id_col: Optional[str] = None,
+    n_jobs: Optional[int] = 1,
+    show_progress: bool = True,
     **kwargs
     ):
 
@@ -277,6 +285,22 @@ def pseudobulk_with_fragments(
             Path to folder where the fragments bed files per group will be saved. If None, files will not be generated.
     bigwig_path: str
             Path to folder where the bigwig files per group will be saved. If None, files will not be generated.
+    bam_path: str
+            Path to folder where paired-end BAM files per group will be saved. If None, BAM files will not be generated.
+            Generated BAMs can be used as input for TOBIAS ATACorrect.
+    bam_files: str or list, optional
+            Input BAM file(s) that will be split per cluster. When provided together with `bam_path`, the function will
+            call the SC-Framework `split_bam_clusters` logic copied into epione to create true cluster-specific BAMs.
+    bam_split_kwargs: dict, optional
+            Additional keyword arguments forwarded to the internal `split_bam_clusters` implementation (e.g. reader_threads,
+            writer_threads, read_tag, sort_bams, index_bams, etc.).
+    bigwig_strategy: str, optional
+            Strategy used for bigwig generation. The default `'fragment'` writes fragment coverage (original behaviour).
+            Use `'cutsite'` to convert fragments into 1bp Tn5 cutsites prior to writing bigwig files, which is recommended
+            for downstream footprinting analyses.
+    cutsite_shifts: tuple(int, int), optional
+            Forward and reverse strand shifts applied when `bigwig_strategy='cutsite'`. Defaults to (4, -5), matching ATAC
+            conventions.
     path_to_fragments: str or dict, optional
             A dictionary of character strings, with sample name as names indicating the path to the fragments file/s from which pseudobulk profiles have to
             be created. If a :class:`CistopicObject` is provided as input it will be ignored, but if a cell metadata :class:`pd.DataFrame` is provided it
@@ -295,16 +319,18 @@ def pseudobulk_with_fragments(
     performance_backend: str, optional
             Performance backend to use for pandas operations. Options: 'pandas', 'modin', 'dask'. Default: 'pandas'.
     sample_id_col: str, optional
-            This parameter is not necessary.
-            Name of the column containing the sample name per barcode in the input :class:`CistopicObject.cell_data` or class:`pd.DataFrame`. Default: None.
+            Column containing sample identifiers when using multiple fragment files. Default: None.
+    n_jobs: int, optional
+            Number of worker threads to export group-level pseudobulks in parallel. Values <= 1 disable threading.
+    show_progress: bool, optional
+            Display a progress bar while exporting group-level pseudobulks. Default: True.
     **kwargs
             Additional parameters for ray.init()
 
-    Return
+    Returns
     ------
     dict
-            A dictionary containing the paths to the newly created bed fragments files per group a dictionary containing the paths to the
-            newly created bigwig files per group.
+            Paths to the newly created bed fragment, bigwig, and optional BAM files per group.
     """
     # check the imported package
     try:
@@ -435,7 +461,8 @@ def pseudobulk_with_fragments(
                         fragments_df["Name"].isin(tag_cells)
                     ]
             fragments_df_dict[sample_id] = fragments_df
-            print(fragments_df)
+            if verbose:
+                print(fragments_df)
 
     # Set groups
     if sample_id_col is not None:
@@ -451,6 +478,12 @@ def pseudobulk_with_fragments(
     cell_data[cluster_key] = cell_data[cluster_key].replace(" ", "", regex=True)
     cell_data[cluster_key] = cell_data[cluster_key].replace("[^A-Za-z0-9]+", "_", regex=True)
     groups = sorted(list(set(cell_data[cluster_key])))
+
+    if bigwig_strategy not in {"fragment", "cutsite"}:
+        raise ValueError("bigwig_strategy must be either 'fragment' or 'cutsite'.")
+    if bigwig_strategy == "cutsite":
+        if not isinstance(cutsite_shifts, (tuple, list)) or len(cutsite_shifts) != 2:
+            raise ValueError("cutsite_shifts must be a tuple/list of two integers (forward, reverse).")
 
     # Check chromosome sizes
     if isinstance(chromsizes, pd.DataFrame):
@@ -474,33 +507,78 @@ def pseudobulk_with_fragments(
     else:
         bw_paths = {}
 
-    # Get pseudobulk from different celltypes
-    for group in groups:
-        if sample_id_col is not None:
-            export_pseudobulk_one_sample(
-                cell_data,
-                group,
-                fragments_df_dict,
-                chromsizes,
-                bigwig_path,
-                bed_path,
-                normalize_bigwig,
-                remove_duplicates,
-                split_pattern,
-                sample_id_col,
-                )
-        else:
-            export_pseudobulk_one_sample(
-                cell_data,
-                group,
-                fragments_df_dict,
-                chromsizes,
-                bigwig_path,
-                bed_path,
-                normalize_bigwig,
-                remove_duplicates,
-                split_pattern,
-                 )
+    # Get pseudobulk from different cell types
+    def _export_group(group_name: str) -> None:
+        export_pseudobulk_one_sample(
+            cell_data,
+            group_name,
+            fragments_df_dict,
+            chromsizes,
+            bigwig_path,
+            bed_path,
+            normalize_bigwig,
+            remove_duplicates,
+            split_pattern,
+            sample_id_col,
+            bigwig_strategy=bigwig_strategy,
+            cutsite_shifts=cutsite_shifts,
+            verbose=verbose,
+        )
+
+    total_groups = len(groups)
+    if n_jobs is None or n_jobs <= 1:
+        group_iter = tqdm(groups, desc="Exporting pseudobulks", unit="group") if show_progress else groups
+        for group in group_iter:
+            _export_group(group)
+    else:
+        max_workers = None if n_jobs in (None, 0) else n_jobs
+        progress_bar = tqdm(total=total_groups, desc="Exporting pseudobulks", unit="group") if show_progress else None
+        try:
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = [executor.submit(_export_group, group) for group in groups]
+                for future in as_completed(futures):
+                    future.result()
+                    if progress_bar is not None:
+                        progress_bar.update(1)
+        finally:
+            if progress_bar is not None:
+                progress_bar.close()
+
+    # Generate cluster-specific BAM files using split_bam_clusters if requested
+    if isinstance(bam_path, str):
+        if bam_files is None:
+            raise ValueError("Parameter `bam_files` must be provided when `bam_path` is specified.")
+        os.makedirs(bam_path, exist_ok=True)
+        try:
+            import scanpy as sc  # type: ignore
+        except ImportError as exc:
+            raise ImportError(
+                "scanpy is required to split BAM files. Please install scanpy in the current environment."
+            ) from exc
+
+        from ._bam_split import split_bam_clusters
+
+        obs_df = cell_data.copy()
+        adata_split = sc.AnnData(
+            X=np.zeros((obs_df.shape[0], 0), dtype=np.float32),
+            obs=obs_df.copy(),
+        )
+
+        split_kwargs = dict(bam_split_kwargs or {})
+        if "barcode_col" not in split_kwargs:
+            split_kwargs["barcode_col"] = "barcode" if "barcode" in obs_df.columns else None
+
+        output_prefix = os.path.join(bam_path, "")
+        split_bam_clusters(
+            adata=adata_split,
+            bams=bam_files,
+            groupby=cluster_key,
+            output_prefix=output_prefix,
+            **split_kwargs,
+        )
+
+        if verbose:
+            print(f"Cluster-specific BAM files written under: {bam_path}")
         
 
 r"""
@@ -518,6 +596,9 @@ def export_pseudobulk_one_sample(
     remove_duplicates: Optional[bool] = True,
     split_pattern: Optional[str] = "___",
     sample_id_col: Optional[str] = None,
+    bigwig_strategy: str = "fragment",
+    cutsite_shifts: Tuple[int, int] = (4, -5),
+    verbose: bool = True,
 ):
     """
     Create pseudobulk as bed and bigwig from single cell fragments file given a barcode annotation and a group.
@@ -545,9 +626,17 @@ def export_pseudobulk_one_sample(
             Pattern to split cell barcode from sample id. Default: ___ .
     sample_id_col: str, optional
             Name of the column containing the sample name per barcode in the input :class:`CistopicObject.cell_data` or class:`pd.DataFrame`. Default: 'None'.
+    bigwig_strategy: str, optional
+            `"fragment"` (default) writes fragment coverage. `"cutsite"` converts each fragment into two 1bp Tn5 cutsites
+            before exporting bigwig files.
+    cutsite_shifts: tuple(int, int), optional
+            Forward and reverse strand cutsite shifts applied when `bigwig_strategy='cutsite'`. Defaults to (4, -5).
+    verbose: bool, optional
+            Whether to print per-group progress messages. Default: True.
     """
     # Create logger
-    print("Creating pseudobulk for " + str(group))
+    if verbose:
+        print("Creating pseudobulk for " + str(group))
     group_fragments_list = []
     group_fragments_dict = {}
 
@@ -595,9 +684,24 @@ def export_pseudobulk_one_sample(
     del fragments_df
     gc.collect()
 
-    group_pr = pr.PyRanges(group_fragments)
     if isinstance(bigwig_path, str):
         bigwig_path_group = os.path.join(bigwig_path, str(group) + ".bw")
+        if bigwig_strategy == "cutsite":
+            chrom_len_map = (
+                chromsizes.as_df()[["Chromosome", "End"]]
+                .drop_duplicates()
+                .set_index("Chromosome")["End"]
+                .to_dict()
+            )
+            cut_df = _fragments_to_cutsites(
+                group_fragments,
+                chrom_lengths=chrom_len_map,
+                shift_plus=cutsite_shifts[0],
+                shift_minus=cutsite_shifts[1],
+            )
+            group_pr = pr.PyRanges(cut_df)
+        else:
+            group_pr = pr.PyRanges(group_fragments)
         if remove_duplicates:
             group_pr.to_bigwig(
                 path=bigwig_path_group,
@@ -613,10 +717,11 @@ def export_pseudobulk_one_sample(
             )
     if isinstance(bed_path, str):
         bed_path_group = os.path.join(bed_path, str(group) + ".bed.gz")
-        group_pr.to_bed(
+        pr.PyRanges(group_fragments).to_bed(
             path=bed_path_group, keep=False, compression="infer", chain=False
         )
-    print(str(group) + " done!")
+    if verbose:
+        print(str(group) + " done!")
 
 
 def prepare_tag_cells(cell_names, split_pattern="___"):
@@ -638,6 +743,71 @@ def prepare_tag_cells(cell_names, split_pattern="___"):
         new_cell_names = [x.split(split_pattern)[0] for x in cell_names]
 
     return new_cell_names
+
+
+def _fragments_to_cutsites(
+    fragments: pd.DataFrame,
+    chrom_lengths: Dict[str, int],
+    shift_plus: int = 4,
+    shift_minus: int = -5,
+) -> pd.DataFrame:
+    """Convert fragment intervals to 1bp cutsite intervals for footprinting."""
+
+    required = {"Chromosome", "Start", "End"}
+    if not required.issubset(fragments.columns):
+        missing = required.difference(fragments.columns)
+        raise ValueError(f"Fragments DataFrame is missing required columns: {missing}")
+
+    if fragments.empty:
+        return pd.DataFrame(columns=["Chromosome", "Start", "End", "Score"])
+
+    chrom = fragments["Chromosome"].astype(str).to_numpy()
+    chrom_len_array = fragments["Chromosome"].map(chrom_lengths).to_numpy(dtype=np.float64)
+
+    start_array = fragments["Start"].to_numpy(dtype=np.int64) + int(shift_plus)
+    end_array = fragments["End"].to_numpy(dtype=np.int64) + int(shift_minus)
+
+    if "Score" in fragments.columns:
+        score_series = pd.to_numeric(fragments["Score"], errors="coerce").fillna(1)
+    else:
+        score_series = pd.Series(1, index=fragments.index, dtype=np.float64)
+    score_array = score_series.to_numpy(dtype=np.float64)
+
+    forward_mask = (start_array >= 0) & (start_array < chrom_len_array)
+    reverse_mask = (end_array >= 0) & (end_array < chrom_len_array)
+
+    # Forward strand cuts
+    forward_df = pd.DataFrame({
+        "Chromosome": chrom[forward_mask],
+        "Start": start_array[forward_mask],
+        "End": start_array[forward_mask] + 1,
+        "Score": score_array[forward_mask],
+    })
+
+    # Reverse strand cuts
+    reverse_df = pd.DataFrame({
+        "Chromosome": chrom[reverse_mask],
+        "Start": end_array[reverse_mask],
+        "End": end_array[reverse_mask] + 1,
+        "Score": score_array[reverse_mask],
+    })
+
+    cuts_df = pd.concat([forward_df, reverse_df], ignore_index=True)
+    cuts_df = cuts_df.loc[cuts_df["End"] > cuts_df["Start"]]
+
+    if not cuts_df.empty:
+        cuts_df = (
+            cuts_df.groupby(["Chromosome", "Start"], as_index=False)["Score"].sum()
+        )
+        cuts_df["End"] = cuts_df["Start"] + 1
+        cuts_df["Start"] = cuts_df["Start"].astype(np.int64)
+        cuts_df["End"] = cuts_df["End"].astype(np.int64)
+        cuts_df["Score"] = cuts_df["Score"].astype(np.float64)
+        cuts_df = cuts_df.sort_values(["Chromosome", "Start"], kind="mergesort")
+    else:
+        cuts_df = cuts_df.astype({"Start": np.int64, "End": np.int64, "Score": np.float64})
+
+    return cuts_df
 
 def read_fragments_from_file(
     fragments_bed_filename, 
