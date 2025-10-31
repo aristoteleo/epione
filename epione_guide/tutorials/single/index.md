@@ -9,6 +9,7 @@ Tutorials for preprocessing and analyzing single-cell ATAC-seq data using EpiOne
 :titlesonly: true
 
 t_preprocess
+t_integrate
 ```
 
 
