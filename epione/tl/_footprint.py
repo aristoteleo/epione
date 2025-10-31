@@ -31,6 +31,7 @@ import matplotlib.pyplot as plt
 from ..utils.regions import RegionList, OneRegion
 from ..utils.motifs import MotifList
 from ..utils import console
+from ._bindetect_functions import quantile_normalization, ArrayNorm
 
 try:
     from tqdm import tqdm
@@ -143,6 +144,9 @@ def get_footprints(
     flank: int = 250,
     min_sites: int = 25,
     verbose: int = 2,
+    normalize_background: bool = False,
+    background_sampling_window: int = 200,
+    aggregate: str = "sum",
 ) -> FootprintResult:
     """
     Aggregate cutsite signals around motif instances per condition.
@@ -166,6 +170,18 @@ def get_footprints(
         Minimum motif occurrences required to retain an aggregate profile.
     verbose :
         Console verbosity (0=silent, 1=level1, 2=level2+).
+    normalize_background : bool
+        Apply quantile normalization across conditions using sampled background
+        cutsite values (similar to ArchR/BINDetect). Default: False, which keeps
+        raw aggregate profiles so relative heights reflect the input bigwigs.
+    background_sampling_window : int
+        Approximate spacing (in bp) between random background samples within each
+        region when `normalize_background=True`. Larger values reduce the number of
+        sampled points. Default: 200.
+    aggregate : str
+        How to combine footprints across motif instances. "sum" (default) mirrors
+        ArchR behavior, preserving absolute cutsite differences. "mean" will average
+        per site.
 
     Returns
     -------
@@ -221,6 +237,7 @@ def get_footprints(
         for motif in motif_map.keys()
     }
     site_counts: Dict[str, int] = {motif: 0 for motif in motif_map.keys()}
+    background_samples: Dict[str, List[float]] = {cond: [] for cond in conditions}
 
     motif_iter = motif_map.items()
     if verbose >= 1:
@@ -253,33 +270,57 @@ def get_footprints(
                 continue
 
             windows = {}
-            valid = True
             for cond, handle in bigwig_handles.items():
                 values = handle.values(chrom, window_start, window_end)
                 if values is None:
-                    valid = False
-                    break
+                    continue
                 arr = np.array(values, dtype=np.float64)
                 arr = np.nan_to_num(arr, nan=0.0)
                 if arr.shape[0] != window_len:
-                    valid = False
-                    break
+                    continue
+                if normalize_background:
+                    sample_step = max(1, window_len // background_sampling_window)
+                    for idx in range(0, window_len, sample_step):
+                        val = arr[idx]
+                        if val > 0:
+                            background_samples[cond].append(val)
                 if strand == "-":
                     arr = arr[::-1]
-                windows[cond] = arr
+                if np.any(arr > 0):
+                    windows[cond] = arr
 
-            if not valid:
+            if not windows:
                 continue
 
             site_counts[motif] += 1
-            for cond in conditions:
-                aggregates[motif][cond] += windows[cond]
+            for cond, arr in windows.items():
+                aggregates[motif][cond] += arr
                 counts[motif][cond] += 1
 
     if fasta_obj is not None:
         fasta_obj.close()
     for handle in bigwig_handles.values():
         handle.close()
+
+    norm_objects = None
+    if normalize_background:
+        try:
+            arrays = []
+            for cond in conditions:
+                vals = np.array(background_samples[cond], dtype=np.float64)
+                vals = vals[vals > 0]
+                if vals.size == 0:
+                    arrays = []
+                    break
+                arrays.append(vals)
+            if arrays and len(arrays) == len(conditions):
+                norm_objects = quantile_normalization(arrays, conditions)
+        except Exception:
+            norm_objects = None
+
+    aggregate = aggregate.lower()
+    if aggregate not in {"sum", "mean"}:
+        raise ValueError("aggregate must be 'sum' or 'mean'.")
 
     avg_profiles: Dict[str, Dict[str, np.ndarray]] = {}
     for motif, cond_dict in aggregates.items():
@@ -289,7 +330,12 @@ def get_footprints(
         avg_profiles[motif] = {}
         for cond, arr in cond_dict.items():
             n = counts[motif][cond]
-            profile = arr / n if n > 0 else np.zeros(window_len, dtype=np.float64)
+            if aggregate == "mean":
+                profile = arr / n if n > 0 else np.zeros(window_len, dtype=np.float64)
+            else:  # sum
+                profile = arr
+            if normalize_background and norm_objects and cond in norm_objects:
+                profile = norm_objects[cond].normalize(profile)
             avg_profiles[motif][cond] = profile
 
     if not avg_profiles:
@@ -307,6 +353,8 @@ def get_footprints(
             "window_len": window_len,
             "conditions": conditions,
             "total_sites": site_counts,
+            "normalize_background": normalize_background,
+            "background_counts": {cond: len(background_samples[cond]) for cond in conditions},
         },
     )
     return result
@@ -423,8 +471,8 @@ def plot_footprints(
 
     out_path = os.path.join(output_dir, f"{plotName}.png")
     fig.savefig(out_path, dpi=200)
-    plt.close(fig)
-    return out_path
+    #plt.close(fig)
+    return fig
 
 
 def getFootprints(*args, **kwargs):
