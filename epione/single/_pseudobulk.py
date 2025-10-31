@@ -252,7 +252,7 @@ def pseudobulk_with_fragments(
     verbose=True,
     path_to_fragments: Optional[Dict[str, str]] = None,
     normalize_bigwig: Optional[bool] = True,
-    remove_duplicates: Optional[bool] = True,
+    remove_duplicates: Optional[bool] = False,
     split_pattern: Optional[str] = "___",
     use_polars: Optional[bool] = True,
     auto_add_chr: Optional[bool] = True,
@@ -260,6 +260,10 @@ def pseudobulk_with_fragments(
     sample_id_col: Optional[str] = None,
     n_jobs: Optional[int] = 1,
     show_progress: bool = True,
+    balance_clusters: bool = True,
+    random_state: Optional[int] = 0,
+    use_fragment_score: bool = True,
+    cutsite_min_score: Optional[float] = None,
     **kwargs
     ):
 
@@ -308,7 +312,7 @@ def pseudobulk_with_fragments(
     normalize_bigwig: bool, optional
             Whether bigwig files should be CPM normalized. Default: True.
     remove_duplicates: bool, optional
-            Whether duplicates should be removed before converting the data to bigwig.
+            Whether duplicates should be removed before converting the data to bigwig. Default: False.
     split_pattern: str, optional
             Pattern to split cell barcode from sample id. Default: '___'. Note, if `split_pattern` is not None, then `export_pseudobulk` will
             attempt to infer `sample_id` from the index of `input_data` and ignore `sample_id_col`.
@@ -324,6 +328,17 @@ def pseudobulk_with_fragments(
             Number of worker threads to export group-level pseudobulks in parallel. Values <= 1 disable threading.
     show_progress: bool, optional
             Display a progress bar while exporting group-level pseudobulks. Default: True.
+    balance_clusters: bool, optional
+            Randomly subsample each cluster to match the smallest cluster size before aggregation (mirrors ArchR pseudo-bulk).
+            Default: True.
+    random_state: int, optional
+            Random seed used during cluster subsampling when `balance_clusters=True`. Default: 0.
+    use_fragment_score: bool, optional
+            Whether to use the fragment `Score` column for weighting cut sites. When False, each fragment contributes equally (counting cut sites).
+            Default: True.
+    cutsite_min_score: float, optional
+            Threshold to zero-out cut site scores below this value (applied after normalization). Useful to remove low RPM noise.
+            Default: None (no threshold).
     **kwargs
             Additional parameters for ray.init()
 
@@ -349,14 +364,56 @@ def pseudobulk_with_fragments(
     if path_to_fragments is None:
         print("Please, provide path_to_fragments.")
   
-    # Get celltype 
+    # Get celltype
     if isinstance(input_data, ad.AnnData):
         input_data = input_data.obs
     if clusters is None:
-        cell_data = input_data 
+        cell_data_original = input_data
     elif clusters is not None:
-        cell_data = input_data[input_data[cluster_key].isin(clusters)]
-    
+        cell_data_original = input_data[input_data[cluster_key].isin(clusters)]
+
+    # Balance clusters BEFORE filtering fragments
+    selected_indices = {}
+    if balance_clusters:
+        # Get cluster counts and filter out empty clusters
+        counts = cell_data_original[cluster_key].value_counts(dropna=False)
+        # Filter out clusters with 0 cells or empty string names
+        counts = counts[counts > 0]
+
+        if len(counts) == 0:
+            # No valid clusters, use original data
+            cell_data = cell_data_original
+            for cluster_name, df_cluster in cell_data.groupby(cluster_key, sort=False):
+                selected_indices[str(cluster_name)] = df_cluster.index.tolist()
+        else:
+            target = counts.min()  # Minimum cluster size (excluding empty clusters)
+
+            if verbose:
+                print(f"DEBUG: Balancing clusters to target={target}")
+                print(f"DEBUG: Original counts={counts.to_dict()}")
+
+            # Downsample each cluster to target size
+            balanced_dfs = []
+            for cluster_name in counts.index:
+                cluster_cells = cell_data_original[cell_data_original[cluster_key] == cluster_name]
+                if len(cluster_cells) <= target:
+                    sampled = cluster_cells
+                else:
+                    sampled = cluster_cells.sample(n=target, random_state=random_state)
+                balanced_dfs.append(sampled)
+                selected_indices[str(cluster_name)] = sampled.index.tolist()
+                if verbose:
+                    print(f"DEBUG: Cluster {cluster_name}: {len(cluster_cells)} -> {len(sampled)}")
+
+            cell_data = pd.concat(balanced_dfs, axis=0)
+            if verbose:
+                print(f"DEBUG: Balanced cell_data shape={cell_data.shape}")
+                print(f"DEBUG: Balanced counts={cell_data[cluster_key].value_counts().to_dict()}")
+    else:
+        cell_data = cell_data_original
+        for cluster_name, df_cluster in cell_data.groupby(cluster_key, sort=False):
+            selected_indices[str(cluster_name)] = df_cluster.index.tolist()
+
     # Process the sample_id_col(optional)
     if sample_id_col is not None:
         try:
@@ -365,8 +422,8 @@ def pseudobulk_with_fragments(
             print(
             'Please, include a sample identification column (e.g. "sample_id") in your cell metadata!'
         )
-            
-    # Get fragments
+
+    # Get fragments - IMPORTANT: use balanced cell_data for filtering
     fragments_df_dict = {}
     for sample_id in path_to_fragments.keys():
         if sample_id_col is not None:
@@ -464,20 +521,63 @@ def pseudobulk_with_fragments(
             if verbose:
                 print(fragments_df)
 
+    # Debug: check cell_data shape after balancing but before column selection
+    if verbose:
+        print(f"DEBUG: cell_data shape after balancing: {cell_data.shape}")
+        print(f"DEBUG: cell_data[{cluster_key}] value counts: {cell_data[cluster_key].value_counts().to_dict()}")
+
     # Set groups
     if sample_id_col is not None:
         if "barcode" in cell_data:
-            cell_data = cell_data.loc[:, [cluster_key,sample_id_col,"barcode"]]
+            cell_data = cell_data.loc[:, [cluster_key, sample_id_col, "barcode"]]
         else:
-            cell_data = cell_data.loc[:, [cluster_key,sample_id_col]]
+            cell_data = cell_data.loc[:, [cluster_key, sample_id_col]]
     else:
         if "barcode" in cell_data:
             cell_data = cell_data.loc[:, [cluster_key, "barcode"]]
         else:
             cell_data = cell_data.loc[:, [cluster_key]]
-    cell_data[cluster_key] = cell_data[cluster_key].replace(" ", "", regex=True)
-    cell_data[cluster_key] = cell_data[cluster_key].replace("[^A-Za-z0-9]+", "_", regex=True)
-    groups = sorted(list(set(cell_data[cluster_key])))
+
+    # Debug: check cell_data shape after column selection
+    if verbose:
+        print(f"DEBUG: cell_data shape after column selection: {cell_data.shape}")
+
+    def _normalize_cluster_label(label: Any) -> str:
+        """Mirror the on-disk sanitization of cluster names used for output paths."""
+        sanitized = re.sub(" ", "", str(label))
+        return re.sub("[^A-Za-z0-9]+", "_", sanitized)
+
+    cell_data[cluster_key] = cell_data[cluster_key].map(_normalize_cluster_label)
+
+    # Debug: check cell_data shape after normalization
+    if verbose:
+        print(f"DEBUG: cell_data shape after normalization: {cell_data.shape}")
+
+    if selected_indices:
+        normalized_selected_indices: Dict[str, List[str]] = {}
+        for raw_name, indices in selected_indices.items():
+            normalized_name = _normalize_cluster_label(raw_name)
+            # Combine indices when multiple raw names collapse into the same normalized key
+            normalized_selected_indices.setdefault(normalized_name, []).extend(list(indices))
+        selected_indices = normalized_selected_indices
+
+    group_counts = (
+        cell_data.groupby(cluster_key, sort=False).size().astype(int).to_dict()
+    )
+
+    # Debug: print group counts to verify balancing
+    if verbose:
+        print(f"DEBUG: group_counts after balancing: {group_counts}")
+
+    if clusters is not None:
+        requested_groups = []
+        for raw_name in clusters:
+            normalized_name = _normalize_cluster_label(raw_name)
+            if normalized_name in group_counts:
+                requested_groups.append(normalized_name)
+        groups = requested_groups
+    else:
+        groups = sorted(group_counts.keys())
 
     if bigwig_strategy not in {"fragment", "cutsite"}:
         raise ValueError("bigwig_strategy must be either 'fragment' or 'cutsite'.")
@@ -508,8 +608,8 @@ def pseudobulk_with_fragments(
         bw_paths = {}
 
     # Get pseudobulk from different cell types
-    def _export_group(group_name: str) -> None:
-        export_pseudobulk_one_sample(
+    def _export_group(group_name: str):
+        cut_total = export_pseudobulk_one_sample(
             cell_data,
             group_name,
             fragments_df_dict,
@@ -522,8 +622,15 @@ def pseudobulk_with_fragments(
             sample_id_col,
             bigwig_strategy=bigwig_strategy,
             cutsite_shifts=cutsite_shifts,
-            verbose=verbose,
+            use_fragment_score=use_fragment_score,
+            cutsite_min_score=cutsite_min_score,
+            verbose=verbose and not show_progress,
         )
+        if show_progress:
+            cell_count = group_counts.get(group_name, len(selected_indices.get(group_name, [])))
+            msg = f"{group_name}: cells={cell_count}, cut_total={cut_total if cut_total is not None else 'NA'}"
+            tqdm.write(msg)
+        return cut_total
 
     total_groups = len(groups)
     if n_jobs is None or n_jobs <= 1:
@@ -593,11 +700,13 @@ def export_pseudobulk_one_sample(
     bigwig_path: str,
     bed_path: str,
     normalize_bigwig: Optional[bool] = True,
-    remove_duplicates: Optional[bool] = True,
+    remove_duplicates: Optional[bool] = False,
     split_pattern: Optional[str] = "___",
     sample_id_col: Optional[str] = None,
     bigwig_strategy: str = "fragment",
     cutsite_shifts: Tuple[int, int] = (4, -5),
+    use_fragment_score: bool = True,
+    cutsite_min_score: Optional[float] = None,
     verbose: bool = True,
 ):
     """
@@ -621,7 +730,7 @@ def export_pseudobulk_one_sample(
     normalize_bigwig: bool, optional
             Whether bigwig files should be CPM normalized. Default: True.
     remove_duplicates: bool, optional
-            Whether duplicates should be removed before converting the data to bigwig.
+            Whether duplicates should be removed before converting the data to bigwig. Default: False.
     split_pattern: str
             Pattern to split cell barcode from sample id. Default: ___ .
     sample_id_col: str, optional
@@ -631,6 +740,10 @@ def export_pseudobulk_one_sample(
             before exporting bigwig files.
     cutsite_shifts: tuple(int, int), optional
             Forward and reverse strand cutsite shifts applied when `bigwig_strategy='cutsite'`. Defaults to (4, -5).
+    use_fragment_score: bool, optional
+            Whether to use the fragment `Score` column when generating cutsite coverage. When False, each fragment contributes equally.
+    cutsite_min_score: float, optional
+            Threshold to zero-out scores below this value (applied after normalization).
     verbose: bool, optional
             Whether to print per-group progress messages. Default: True.
     """
@@ -684,8 +797,20 @@ def export_pseudobulk_one_sample(
     del fragments_df
     gc.collect()
 
+    if remove_duplicates:
+        dedup_subset = [col for col in ("Chromosome", "Start", "End", "Name") if col in group_fragments.columns]
+        if dedup_subset:
+            group_fragments = group_fragments.drop_duplicates(subset=dedup_subset)
+        if "Score" in group_fragments.columns:
+            group_fragments.loc[:, "Score"] = 1.0
+
+    cut_total = None
+    raw_total = None
+    scaled_total = None
     if isinstance(bigwig_path, str):
         bigwig_path_group = os.path.join(bigwig_path, str(group) + ".bw")
+        rpm_flag = normalize_bigwig
+        value_col = None
         if bigwig_strategy == "cutsite":
             chrom_len_map = (
                 chromsizes.as_df()[["Chromosome", "End"]]
@@ -698,22 +823,75 @@ def export_pseudobulk_one_sample(
                 chrom_lengths=chrom_len_map,
                 shift_plus=cutsite_shifts[0],
                 shift_minus=cutsite_shifts[1],
+                use_fragment_score=use_fragment_score,
             )
+            if "Score" in cut_df.columns:
+                cut_df["Score"] = cut_df["Score"].astype(np.float64)
+                raw_total = float(cut_df["Score"].sum())
+            else:
+                raw_total = float(len(cut_df))
+            if normalize_bigwig and "Score" in cut_df:
+                if raw_total > 0:
+                    cut_df["Score"] = cut_df["Score"] * (1e6 / raw_total)
+                scaled_total = float(cut_df["Score"].sum())
+                rpm_flag = False
+            if cutsite_min_score is not None and "Score" in cut_df:
+                cut_df.loc[cut_df["Score"] < cutsite_min_score, "Score"] = 0.0
+
+            value_col = "Score" if "Score" in cut_df.columns else None
             group_pr = pr.PyRanges(cut_df)
         else:
-            group_pr = pr.PyRanges(group_fragments)
-        if remove_duplicates:
-            group_pr.to_bigwig(
-                path=bigwig_path_group,
-                chromosome_sizes=chromsizes,
-                rpm=normalize_bigwig,
+            fragments_df = group_fragments.copy()
+            if "Score" in fragments_df.columns:
+                fragments_df["Score"] = fragments_df["Score"].astype(np.float64)
+                raw_total = float(fragments_df["Score"].sum())
+            else:
+                raw_total = float(len(fragments_df))
+            if normalize_bigwig and "Score" in fragments_df:
+                if raw_total > 0:
+                    fragments_df["Score"] = fragments_df["Score"] * (1e6 / raw_total)
+                scaled_total = float(fragments_df["Score"].sum())
+                rpm_flag = False
+            if cutsite_min_score is not None and "Score" in fragments_df:
+                fragments_df.loc[fragments_df["Score"] < cutsite_min_score, "Score"] = 0.0
+            value_col = "Score" if "Score" in fragments_df.columns else None
+            group_pr = pr.PyRanges(fragments_df)
+
+        group_df = group_pr.df
+        if group_df.empty:
+            cut_total = 0.0 if not normalize_bigwig else {"raw": 0.0, "normalized": 0.0}
+            # Create an empty bigwig so downstream steps don't fail
+            chromsizes_df = chromsizes.as_df()
+            header = list(
+                zip(
+                    chromsizes_df["Chromosome"].astype(str).tolist(),
+                    chromsizes_df["End"].astype(int).tolist(),
+                )
             )
+            with pyBigWig.open(bigwig_path_group, "w") as bw_handle:
+                bw_handle.addHeader(header, maxZooms=0)
         else:
+            if value_col == "Score" and "Score" in group_df.columns:
+                if raw_total is None:
+                    raw_total = float(group_df["Score"].sum())
+                if normalize_bigwig and scaled_total is None:
+                    scaled_total = float(group_df["Score"].sum())
+            else:
+                if raw_total is None:
+                    raw_total = float(len(group_df))
+
+            cut_total = (
+                {"raw": raw_total if raw_total is not None else 0.0,
+                 "normalized": scaled_total if scaled_total is not None else None}
+                if normalize_bigwig
+                else raw_total if raw_total is not None else float(len(group_df))
+            )
+
             group_pr.to_bigwig(
                 path=bigwig_path_group,
                 chromosome_sizes=chromsizes,
-                rpm=normalize_bigwig,
-                value_col="Score",
+                rpm=rpm_flag,
+                value_col=value_col,
             )
     if isinstance(bed_path, str):
         bed_path_group = os.path.join(bed_path, str(group) + ".bed.gz")
@@ -721,7 +899,12 @@ def export_pseudobulk_one_sample(
             path=bed_path_group, keep=False, compression="infer", chain=False
         )
     if verbose:
-        print(str(group) + " done!")
+        cell_count = None
+        if cluster_key is not None and cluster_key in cell_data.columns:
+            cell_count = int((cell_data[cluster_key] == group).sum())
+        print(f"{group} done! cells={cell_count if cell_count is not None else 'NA'}, cut_total={cut_total if cut_total is not None else 'NA'}")
+
+    return cut_total
 
 
 def prepare_tag_cells(cell_names, split_pattern="___"):
@@ -750,6 +933,7 @@ def _fragments_to_cutsites(
     chrom_lengths: Dict[str, int],
     shift_plus: int = 4,
     shift_minus: int = -5,
+    use_fragment_score: bool = True,
 ) -> pd.DataFrame:
     """Convert fragment intervals to 1bp cutsite intervals for footprinting."""
 
@@ -763,18 +947,20 @@ def _fragments_to_cutsites(
 
     chrom = fragments["Chromosome"].astype(str).to_numpy()
     chrom_len_array = fragments["Chromosome"].map(chrom_lengths).to_numpy(dtype=np.float64)
+    valid_chrom = ~np.isnan(chrom_len_array)
 
     start_array = fragments["Start"].to_numpy(dtype=np.int64) + int(shift_plus)
-    end_array = fragments["End"].to_numpy(dtype=np.int64) + int(shift_minus)
+    end_base = fragments["End"].to_numpy(dtype=np.int64) - 1  # fragments End is exclusive
+    end_array = end_base + int(shift_minus)
 
-    if "Score" in fragments.columns:
+    if use_fragment_score and "Score" in fragments.columns:
         score_series = pd.to_numeric(fragments["Score"], errors="coerce").fillna(1)
     else:
         score_series = pd.Series(1, index=fragments.index, dtype=np.float64)
     score_array = score_series.to_numpy(dtype=np.float64)
 
-    forward_mask = (start_array >= 0) & (start_array < chrom_len_array)
-    reverse_mask = (end_array >= 0) & (end_array < chrom_len_array)
+    forward_mask = valid_chrom & (start_array >= 0) & (start_array < chrom_len_array)
+    reverse_mask = valid_chrom & (end_array >= 0) & (end_array < chrom_len_array)
 
     # Forward strand cuts
     forward_df = pd.DataFrame({
@@ -808,6 +994,52 @@ def _fragments_to_cutsites(
         cuts_df = cuts_df.astype({"Start": np.int64, "End": np.int64, "Score": np.float64})
 
     return cuts_df
+
+
+def _balance_cluster_cells(
+    cell_data: pd.DataFrame,
+    cluster_key: str,
+    random_state: Optional[int] = 0,
+) -> Tuple[pd.DataFrame, Dict[str, List[str]]]:
+    """
+    Down-sample each cluster to the size of the smallest cluster.
+
+    This mirrors ArchR's pseudo-bulk strategy of creating balanced replicates,
+    preventing coverage dominance by clusters with many more cells.
+    """
+
+    counts = cell_data[cluster_key].value_counts(dropna=False)
+    print(f"DEBUG _balance_cluster_cells: Input counts = {counts.to_dict()}")
+
+    if counts.empty:
+        return cell_data, {}
+
+    target = counts.min()
+    print(f"DEBUG _balance_cluster_cells: Target = {target}")
+
+    if target == 0:
+        selected_zero = {
+            str(cluster): df_cluster.index.tolist()
+            for cluster, df_cluster in cell_data.groupby(cluster_key, sort=False)
+        }
+        return cell_data, selected_zero
+
+    balanced = []
+    selected = {}
+    for cluster, df_cluster in cell_data.groupby(cluster_key, sort=False):
+        if len(df_cluster) <= target:
+            sampled = df_cluster
+        else:
+            sampled = df_cluster.sample(n=target, random_state=random_state)
+        balanced.append(sampled)
+        selected[str(cluster)] = sampled.index.tolist()
+        print(f"DEBUG _balance_cluster_cells: Cluster {cluster} - original={len(df_cluster)}, sampled={len(sampled)}")
+
+    balanced_df = pd.concat(balanced, axis=0)
+    print(f"DEBUG _balance_cluster_cells: Output shape = {balanced_df.shape}")
+    print(f"DEBUG _balance_cluster_cells: Output counts = {balanced_df[cluster_key].value_counts().to_dict()}")
+
+    return balanced_df.sort_index(), selected
 
 def read_fragments_from_file(
     fragments_bed_filename, 

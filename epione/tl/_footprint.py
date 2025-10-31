@@ -464,10 +464,16 @@ def plot_footprints(
             ax2.tick_params(axis="y", colors="grey")
 
         if idx == 0:
-            ax.legend(loc="upper right", fontsize=8)
+            #bottom center
+            ax.legend(
+                loc="lower center", ncol=3, fontsize=8,
+                bbox_to_anchor=(0.5, -0.75),
+                frameon=False,
+            )
+            #ax.legend(loc="upper right", fontsize=8)
 
     axes[-1, 0].set_xlabel("Distance to motif centre (bp)")
-    fig.tight_layout()
+    #fig.tight_layout()
 
     out_path = os.path.join(output_dir, f"{plotName}.png")
     fig.savefig(out_path, dpi=200)
