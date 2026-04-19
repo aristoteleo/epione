@@ -349,12 +349,17 @@ def plot_peak2gene(
     # ---- Arc row -----------------------------------------------------------
     # Sort so low-|r| arcs render first (behind the important ones).
     sub_sorted = sub.reindex(sub["correlation"].abs().sort_values().index)
-    r_abs_max = 1.0   # match ArchR: normalize |r| to [0, 1]
+    # ArchR modulates arc HEIGHT by correlation strength: strong arcs go high,
+    # weak arcs stay flat. We normalise |r| to [floor, 1.0] so even the
+    # weakest links keep a tiny bit of curvature (otherwise they collapse
+    # onto the x-axis and are invisible).
+    FLOOR = 0.15
     for _, row in sub_sorted.iterrows():
         r_abs = abs(float(row["correlation"]))
-        col = cmap(np.clip(r_abs / r_abs_max, 0.0, 1.0))
+        col = cmap(np.clip(r_abs, 0.0, 1.0))
         lw = 0.4 + 1.3 * r_abs
-        path = _bezier_arc(row["peak_center"], row["tss"], 1.0)
+        h = FLOOR + (1.0 - FLOOR) * r_abs   # 0.15 .. 1.0
+        path = _bezier_arc(row["peak_center"], row["tss"], h)
         arc_ax.add_patch(PathPatch(path, facecolor="none",
                                    edgecolor=col, linewidth=lw))
     arc_ax.set_ylim(0, 1.05)
