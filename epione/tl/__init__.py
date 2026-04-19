@@ -40,6 +40,10 @@ from ._iterative_lsi import iterative_lsi
 
 from ._peak_to_gene import peak_to_gene
 
+from ._coaccessibility import coaccessibility
+
+from ._marker_features import find_marker_features
+
 from ._umap import umap
 
 from ._clusters import clusters
@@ -63,6 +67,8 @@ __all__ = [
     "lsi","spectral",
     "iterative_lsi",
     "peak_to_gene",
+    "coaccessibility",
+    "find_marker_features",
     "umap",
     "clusters",
 ]
