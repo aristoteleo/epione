@@ -23,3 +23,7 @@ epione_guide/site
 _build*
 .claude*
 *tobias
+
+# Cython build artifacts
+*.so
+*.pyc

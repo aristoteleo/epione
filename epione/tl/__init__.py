@@ -36,6 +36,10 @@ from ._footprint import (
 
 from ._reducedimension import lsi, spectral
 
+from ._iterative_lsi import iterative_lsi
+
+from ._peak_to_gene import peak_to_gene
+
 from ._umap import umap
 
 from ._clusters import clusters
@@ -57,6 +61,8 @@ __all__ = [
     "get_footprints", "plot_footprints", "FootprintResult",
     "getFootprints", "plotFootprints",
     "lsi","spectral",
+    "iterative_lsi",
+    "peak_to_gene",
     "umap",
     "clusters",
 ]

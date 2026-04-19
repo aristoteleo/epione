@@ -9,9 +9,36 @@ import sklearn.utils.extmath
 import scipy.sparse
 import math
 
-from snapatac2._utils import get_igraph_from_adjacency, is_anndata 
-import snapatac2._snapatac2 as internal
 import gc
+
+# snapatac2 is only required for `spectral()` and `multi_spectral()`; import it
+# lazily so the rest of epione.tl (e.g. lsi, iterative_lsi) works without it.
+try:
+    from snapatac2._utils import get_igraph_from_adjacency, is_anndata  # noqa: F401
+    import snapatac2._snapatac2 as internal
+    _HAS_SNAPATAC2 = True
+except ImportError as _e:  # pragma: no cover - depends on environment
+    _SNAPATAC2_IMPORT_ERROR = _e
+
+    class _MissingSnapAtac2:
+        """Placeholder that raises only when snapatac2 APIs are actually used."""
+
+        def __getattr__(self, name):
+            raise ImportError(
+                "snapatac2 is required for this feature "
+                f"(tried to access `{name}`). Install with "
+                "`pip install snapatac2` or run a function that does not "
+                "depend on it, e.g. `epione.tl.iterative_lsi`."
+            ) from _SNAPATAC2_IMPORT_ERROR
+
+    # Mirror the names / type-stub symbols referenced below
+    internal = _MissingSnapAtac2()
+
+    class _AnnStub:
+        pass
+    internal.AnnData = _AnnStub  # type: ignore[attr-defined]
+    internal.AnnDataSet = _AnnStub  # type: ignore[attr-defined]
+    _HAS_SNAPATAC2 = False
 
 
 def lsi_muon(adata: AnnData, scale_embeddings=True, n_comps=50, remove_first_component=True):
