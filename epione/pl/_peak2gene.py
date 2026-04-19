@@ -347,18 +347,28 @@ def plot_peak2gene(
                  va="center", ha="left", fontweight="bold")
 
     # ---- Arc row -----------------------------------------------------------
-    # Sort so low-|r| arcs render first (behind the important ones).
-    sub_sorted = sub.reindex(sub["correlation"].abs().sort_values().index)
-    # ArchR modulates arc HEIGHT by correlation strength: strong arcs go high,
-    # weak arcs stay flat. We normalise |r| to [floor, 1.0] so even the
-    # weakest links keep a tiny bit of curvature (otherwise they collapse
-    # onto the x-axis and are invisible).
-    FLOOR = 0.15
+    # "Nested semicircles": arc height scales with peak-TSS **distance** so a
+    # long-range link draws a big dome and a short-range link draws a small
+    # dome that physically sits inside it. Colour + line width still encode
+    # |r|. Draw large arcs first so small ones render on top (readable).
+    span = (sub["peak_center"] - sub["tss"]).abs().astype(float)
+    sub_sorted = sub.assign(_span=span).sort_values(
+        ["_span", "correlation"],
+        key=lambda s: s.abs() if s.name == "correlation" else s,
+        ascending=[False, True],
+    ).drop(columns="_span")
+
+    win = end - start
+    MIN_H = 0.08
+    MAX_H = 1.0
     for _, row in sub_sorted.iterrows():
         r_abs = abs(float(row["correlation"]))
         col = cmap(np.clip(r_abs, 0.0, 1.0))
-        lw = 0.4 + 1.3 * r_abs
-        h = FLOOR + (1.0 - FLOOR) * r_abs   # 0.15 .. 1.0
+        lw = 0.35 + 1.3 * r_abs
+        # Height ∝ span (distance), giving the classic "big circle wraps the
+        # small ones" look. Clipped to [MIN_H, MAX_H].
+        s = abs(float(row["peak_center"] - row["tss"])) / max(win, 1.0)
+        h = MIN_H + (MAX_H - MIN_H) * s
         path = _bezier_arc(row["peak_center"], row["tss"], h)
         arc_ax.add_patch(PathPatch(path, facecolor="none",
                                    edgecolor=col, linewidth=lw))
