@@ -165,7 +165,8 @@ def plot_peak2gene(
     # ---- Region resolution -------------------------------------------------
     if region is not None:
         chrom, start, end = _parse_region(region)
-        region_gene = None
+        # Keep `gene` as highlight target even when `region` is explicit.
+        region_gene = gene
     elif gene is not None:
         chrom, start, end = _pick_region_for_gene(links, gene, pad=pad_bp)
         region_gene = gene
