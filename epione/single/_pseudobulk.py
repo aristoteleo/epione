@@ -1,4 +1,5 @@
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
+import multiprocessing as _mp
 from tqdm import tqdm
 import gc
 import re
@@ -265,6 +266,7 @@ def pseudobulk_with_fragments(
     use_fragment_score: bool = True,
     cutsite_min_score: Optional[float] = None,
     cache_fragments: Union[bool, str, "os.PathLike"] = False,
+    executor: str = "thread",
     **kwargs
     ):
 
@@ -642,16 +644,53 @@ def pseudobulk_with_fragments(
     else:
         max_workers = None if n_jobs in (None, 0) else n_jobs
         progress_bar = tqdm(total=total_groups, desc="Exporting pseudobulks", unit="group") if show_progress else None
-        try:
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                futures = [executor.submit(_export_group, group) for group in groups]
-                for future in as_completed(futures):
-                    future.result()
-                    if progress_bar is not None:
-                        progress_bar.update(1)
-        finally:
-            if progress_bar is not None:
-                progress_bar.close()
+        # ThreadPoolExecutor lets all workers share fragments_df_dict for
+        # free, but pybigtools/pyBigWig write calls re-acquire the GIL per
+        # tuple, so threads don't scale. multiprocessing.Pool with fork
+        # context forks workers that inherit the dict via copy-on-write
+        # (no pickling of the 2+ GB state) and do their BigWig writes
+        # truly in parallel — ~2× faster end-to-end.
+        if executor == "process":
+            # Publish shared state in module globals so forked children
+            # can reach it without pickling through the task boundary.
+            _WORKER_STATE.clear()
+            _WORKER_STATE.update({
+                "cell_data":          cell_data,
+                "fragments_df_dict":  fragments_df_dict,
+                "chromsizes":         chromsizes,
+                "bigwig_path":        bigwig_path,
+                "bed_path":           bed_path,
+                "normalize_bigwig":   normalize_bigwig,
+                "remove_duplicates":  remove_duplicates,
+                "split_pattern":      split_pattern,
+                "sample_id_col":      sample_id_col,
+                "bigwig_strategy":    bigwig_strategy,
+                "cutsite_shifts":     cutsite_shifts,
+                "use_fragment_score": use_fragment_score,
+                "cutsite_min_score":  cutsite_min_score,
+                "verbose_worker":     verbose and not show_progress,
+            })
+            ctx = _mp.get_context("fork")
+            try:
+                with ctx.Pool(processes=max_workers) as pool:
+                    for _ in pool.imap_unordered(_export_group_worker, groups):
+                        if progress_bar is not None:
+                            progress_bar.update(1)
+            finally:
+                _WORKER_STATE.clear()
+                if progress_bar is not None:
+                    progress_bar.close()
+        else:
+            try:
+                with ThreadPoolExecutor(max_workers=max_workers) as ex:
+                    futures = [ex.submit(_export_group, group) for group in groups]
+                    for future in as_completed(futures):
+                        future.result()
+                        if progress_bar is not None:
+                            progress_bar.update(1)
+            finally:
+                if progress_bar is not None:
+                    progress_bar.close()
 
     # Generate cluster-specific BAM files using split_bam_clusters if requested
     if isinstance(bam_path, str):
@@ -972,6 +1011,34 @@ def _fragments_to_cutsites(
     return cuts_df
 
 
+# ---- Fork-friendly worker state -----------------------------------------
+# Populated by the parent immediately before spawning the Pool; children
+# inherit the dict through memory (copy-on-write on Linux), so we avoid
+# pickling the large fragments_df_dict per task.
+_WORKER_STATE: Dict[str, Any] = {}
+
+
+def _export_group_worker(group_name: str):
+    s = _WORKER_STATE
+    return export_pseudobulk_one_sample(
+        s["cell_data"],
+        group_name,
+        s["fragments_df_dict"],
+        s["chromsizes"],
+        s["bigwig_path"],
+        s["bed_path"],
+        s["normalize_bigwig"],
+        s["remove_duplicates"],
+        s["split_pattern"],
+        s["sample_id_col"],
+        bigwig_strategy=s["bigwig_strategy"],
+        cutsite_shifts=s["cutsite_shifts"],
+        use_fragment_score=s["use_fragment_score"],
+        cutsite_min_score=s["cutsite_min_score"],
+        verbose=s["verbose_worker"],
+    )
+
+
 def _read_fragments_cached(
     fragments_path: str,
     cache_fragments: Union[bool, str, "os.PathLike"],
@@ -1034,6 +1101,36 @@ def _read_fragments_cached(
     return df
 
 
+def _compute_runs_for_chrom(
+    s: np.ndarray, e: np.ndarray, w: np.ndarray, L: int
+):
+    """Sweep-line: collapse overlapping intervals into run-length intervals.
+
+    Returns ``(starts, ends, values)`` with zero-value runs filtered out.
+    """
+    s = np.clip(s, 0, L)
+    e = np.clip(e, 0, L)
+    keep = e > s
+    if not keep.any():
+        return None
+    s, e, w = s[keep], e[keep], w[keep]
+    positions = np.concatenate([s, e])
+    deltas    = np.concatenate([w, -w]).astype(np.float64, copy=False)
+    uniq_pos, inv = np.unique(positions, return_inverse=True)
+    delta_per_pos = np.bincount(inv, weights=deltas,
+                                minlength=uniq_pos.shape[0])
+    val_after = np.cumsum(delta_per_pos).astype(np.float32)
+    if uniq_pos.size < 2:
+        return None
+    starts_out = uniq_pos[:-1].astype(np.int64)
+    ends_out   = uniq_pos[1:].astype(np.int64)
+    values_out = val_after[:-1]
+    nz = (values_out != 0) & (ends_out > starts_out)
+    if not nz.any():
+        return None
+    return starts_out[nz], ends_out[nz], values_out[nz]
+
+
 def _write_bw_from_intervals(
     df: pd.DataFrame,
     chrom_lengths: Dict[str, int],
@@ -1044,63 +1141,66 @@ def _write_bw_from_intervals(
     Each input row contributes its ``Score`` (defaults to 1.0) to every base in
     ``[Start, End)``. Runs of equal value between consecutive events are
     emitted as a single BigWig entry, yielding bp-resolution output at
-    ``O(n log n)`` time and ``O(n)`` memory per chromosome — avoiding
-    PyRanges + pyrle's Python-loop Rle construction entirely.
+    ``O(n log n)`` time and ``O(n)`` memory per chromosome.
+
+    Prefers the Rust-backed ``pybigtools`` writer when available (same engine
+    snapatac2 uses: ~3× faster than pyBigWig and releases the GIL, so
+    ``ThreadPoolExecutor`` over groups actually parallelises). Falls back to
+    ``pyBigWig.addEntries`` otherwise.
     """
     order = sorted(chrom_lengths.keys())
-    header = [(c, int(chrom_lengths[c])) for c in order]
 
-    bw = pyBigWig.open(output_path, "w")
-    try:
-        bw.addHeader(header)
-        if df.empty:
-            return 0.0
-
+    # Pre-compute per-chrom runs (NumPy-only → releases GIL).
+    runs: List[Tuple[str, np.ndarray, np.ndarray, np.ndarray]] = []
+    if not df.empty:
         has_score = "Score" in df.columns
         by_chrom = df.groupby("Chromosome", sort=False)
-        total = 0.0
-        # BigWig requires sorted chroms; iterate in header order.
         for c in order:
             if c not in by_chrom.groups:
                 continue
             sub = by_chrom.get_group(c)
             L = int(chrom_lengths[c])
-            s = np.clip(sub["Start"].to_numpy(dtype=np.int64), 0, L)
-            e = np.clip(sub["End"].to_numpy(dtype=np.int64),   0, L)
+            s = sub["Start"].to_numpy(dtype=np.int64)
+            e = sub["End"].to_numpy(dtype=np.int64)
             w = (sub["Score"].to_numpy(dtype=np.float32)
                  if has_score else np.ones(len(sub), dtype=np.float32))
-            keep = e > s
-            if not keep.any():
+            out = _compute_runs_for_chrom(s, e, w, L)
+            if out is None:
                 continue
-            s, e, w = s[keep], e[keep], w[keep]
+            runs.append((c, *out))
 
-            positions = np.concatenate([s, e])
-            deltas    = np.concatenate([w, -w]).astype(np.float64, copy=False)
-            # np.unique already sorts internally — use its inverse map with
-            # np.bincount (much faster than a second argsort + np.add.at).
-            uniq_pos, inv = np.unique(positions, return_inverse=True)
-            delta_per_pos = np.bincount(inv, weights=deltas,
-                                        minlength=uniq_pos.shape[0])
-            val_after = np.cumsum(delta_per_pos).astype(np.float32)
+    total = 0.0
+    for c, s_out, e_out, v_out in runs:
+        total += float(((e_out - s_out) * v_out).sum())
 
-            if uniq_pos.size < 2:
-                continue
-            starts_out = uniq_pos[:-1].astype(np.int64)
-            ends_out   = uniq_pos[1:].astype(np.int64)
-            values_out = val_after[:-1]
-            nz = (values_out != 0) & (ends_out > starts_out)
-            if not nz.any():
-                continue
-            # Multi-chrom form with numpy arrays — avoids per-element
-            # Python conversion of the start/end/value arrays.
-            n_nz = int(nz.sum())
+    # Try the Rust-backed writer first.
+    try:
+        import pybigtools
+    except ImportError:
+        pybigtools = None
+
+    if pybigtools is not None:
+        w = pybigtools.open(output_path, "w")
+        # Generator over all (chrom, start, end, value) tuples — pybigtools
+        # releases the GIL while the Rust writer consumes the iterator.
+        def _tuples():
+            for c, s_out, e_out, v_out in runs:
+                # zip over numpy arrays; the inner tuple is a few Python
+                # objects per entry — cheaper than building separate lists.
+                for ii in range(s_out.shape[0]):
+                    yield (c, int(s_out[ii]), int(e_out[ii]), float(v_out[ii]))
+        w.write({c: int(L) for c, L in chrom_lengths.items()}, _tuples())
+        return total
+
+    # Fallback: pyBigWig (holds GIL during writes).
+    bw = pyBigWig.open(output_path, "w")
+    try:
+        bw.addHeader([(c, int(chrom_lengths[c])) for c in order])
+        for c, s_out, e_out, v_out in runs:
             bw.addEntries(
-                [c] * n_nz,
-                starts_out[nz],
-                ends=ends_out[nz],
-                values=values_out[nz].astype(np.float64),
+                [c] * len(s_out),
+                s_out, ends=e_out, values=v_out.astype(np.float64),
             )
-            total += float(((ends_out[nz] - starts_out[nz]) * values_out[nz]).sum())
         return total
     finally:
         bw.close()
