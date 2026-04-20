@@ -22,6 +22,8 @@ epione_guide/site
 *log
 _build*
 .claude*
+# Sphinx autosummary: generated at build time by autosummary_generate=True
+epione_guide/api/_autosummary/
 *tobias
 
 # Cython build artifacts

@@ -1,9 +1,15 @@
-sphinx>=5
-furo>=2022.09.29
-myst-parser
-myst-nb
+# Sphinx documentation dependencies for epione_guide.
+# Matches the omicverse_guide stack so the shared CSS/theme renders
+# identically — sphinx_book_theme (not furo), CSS in _static/css/.
+sphinx>=7.4,<8.0
+sphinx-book-theme>=1.1,<1.2
+myst-nb>=1.1,<1.2
+sphinx-autodoc-typehints<2.4
 sphinx-copybutton
-sphinx-design
-sphinx-autodoc-typehints
+sphinx-design<0.7
+sphinxext-opengraph
 linkify-it-py
 
+# Notebook execution support
+ipykernel
+nbformat
