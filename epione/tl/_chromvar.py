@@ -612,10 +612,17 @@ def compute_deviations(
     X_T = X.T.tocsc()
     n_cells = X_T.shape[1]
 
-    total_counts = float(X_T.sum())
-    peak_frac = (np.asarray(X_T.sum(axis=1)).ravel().astype(np.float64)
+    # scipy's ``X_T.sum()`` and ``X_T.sum(axis=...)`` each walk the full
+    # ``data`` array via ``csc_matvec`` against an all-ones vector — that's
+    # ~0.12 s per call on pbmc5k. ``axis=0`` + ``axis=1`` already visit the
+    # full matrix, so derive ``total_counts`` from them instead of doing a
+    # third pass.
+    cell_totals_raw = np.asarray(X_T.sum(axis=0)).ravel()
+    peak_totals_raw = np.asarray(X_T.sum(axis=1)).ravel()
+    total_counts = float(cell_totals_raw.sum())
+    peak_frac = (peak_totals_raw.astype(np.float64)
                  / max(total_counts, 1.0)).astype(np.float32)
-    cell_totals = np.asarray(X_T.sum(axis=0)).ravel().astype(np.float32)
+    cell_totals = cell_totals_raw.astype(np.float32, copy=False)
 
     _console(
         f"cells={n_cells:,} | peaks={n_peaks:,} | motifs={n_motifs:,} | "
