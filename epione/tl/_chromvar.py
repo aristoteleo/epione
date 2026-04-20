@@ -162,12 +162,20 @@ _M_DENSE_DISPATCH_DENSITY = 0.03
 
 def _set_blas_threads_ctx(n_jobs: int):
     """Context manager setting BLAS thread count; no-op if threadpoolctl
-    unavailable."""
+    unavailable.
+
+    ``n_jobs = -1`` (or 0/None) → use all CPUs — NOT ``limits=-1`` which
+    ``threadpool_limits`` interprets as an invalid value. An earlier
+    version clamped via ``max(n_jobs, 1)`` and inadvertently limited BLAS
+    to a single thread whenever the caller passed ``-1``, dropping BLAS
+    sgemm from ~0.2 s to ~0.8 s per M @ dense call on pbmc5k.
+    """
+    if n_jobs is None or n_jobs <= 0:
+        n_jobs = os.cpu_count() or 1
     try:
         from threadpoolctl import threadpool_limits
-        return threadpool_limits(limits=max(n_jobs, 1), user_api="blas")
+        return threadpool_limits(limits=n_jobs, user_api="blas")
     except Exception:
-        # Fall-back no-op context manager
         from contextlib import nullcontext
         return nullcontext()
 
