@@ -7,6 +7,8 @@ MOODS log-odds score exceeds the p-value threshold. Results go into
 """
 from __future__ import annotations
 
+import hashlib
+import os
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -18,6 +20,24 @@ from anndata import AnnData
 def _console(msg: str, verbose: bool = True) -> None:
     if verbose:
         print(f"  └─ [motif_matrix] {msg}", flush=True)
+
+
+def _save_cache(cache_file: str, M: sp.csr_matrix, motif_names, var_names):
+    """Persist a peak × motif sparse matrix as .npz so the next run with
+    the same var_names can skip MOODS entirely."""
+    var_hash = hashlib.sha256(
+        ";".join(map(str, var_names)).encode()
+    ).hexdigest()[:16]
+    out_parent = os.path.dirname(os.path.abspath(cache_file))
+    if out_parent:
+        os.makedirs(out_parent, exist_ok=True)
+    np.savez_compressed(
+        cache_file,
+        data=M.data, indices=M.indices, indptr=M.indptr,
+        shape=np.asarray(M.shape, dtype=np.int64),
+        motif_names=np.asarray(motif_names, dtype=object),
+        var_hash=np.asarray(var_hash),
+    )
 
 
 def _pwms_from_jaspar(
@@ -78,9 +98,11 @@ def _coerce_pwms_to_biopython(pwms):
 
 def add_motif_matrix(
     adata: AnnData,
-    genome_fasta: str,
+    genome_fasta: Optional[str] = None,
     pwms=None,
     *,
+    motif_database: Optional[str] = None,
+    cache_file: Optional[str] = None,
     motif_db: str = "JASPAR2024",
     motif_collection: str = "CORE",
     motif_tax_group: Sequence[str] = ("vertebrates",),
@@ -108,13 +130,82 @@ def add_motif_matrix(
         Nucleotide background model passed through to pychromvar:
         ``"even"`` (0.25/base, default), ``"subject"`` (per-peak), or
         ``"genome"``.
+    motif_database
+        Path to a pre-built genome-wide motif hit database produced by
+        :func:`epione.tl.build_motif_database`. When provided, MOODS is not
+        run — peaks are resolved by interval lookup against the database,
+        which takes seconds instead of ~100 s. ``genome_fasta`` / ``pwms``
+        / ``pvalue`` are ignored (the database's configuration wins).
+    cache_file
+        Path to a per-peak-set cache. On first run, the resulting motif
+        matrix is dumped to this file (``.npz``). On later runs with the
+        same ``adata.var_names`` hash the cache is loaded instead of
+        re-scanning. Independent of ``motif_database``.
     key_added
         - ``adata.varm[key_added]`` stores the sparse boolean matrix
           (same layout as :func:`pychromvar.match_motif` writes to
           ``adata.varm['motif_match']``).
         - ``adata.uns[key_added + '_names']`` stores motif names.
     """
+    # ---- Peak-set cache fast path -----------------------------------------
+    if cache_file is not None:
+        import hashlib
+        var_hash = hashlib.sha256(
+            ";".join(map(str, adata.var_names)).encode()
+        ).hexdigest()[:16]
+        if os.path.exists(cache_file):
+            try:
+                npz = np.load(cache_file, allow_pickle=True)
+                if str(npz["var_hash"]) == var_hash:
+                    _console(f"loading cache {cache_file}", verbose)
+                    M = sp.csr_matrix(
+                        (npz["data"].astype(np.bool_),
+                         npz["indices"], npz["indptr"]),
+                        shape=tuple(npz["shape"]),
+                    )
+                    adata.varm[key_added] = M
+                    adata.uns[f"{key_added}_names"] = np.asarray(
+                        npz["motif_names"], dtype=object)
+                    _console(
+                        f"{M.nnz:,} hits loaded from cache", verbose,
+                    )
+                    return adata
+            except Exception as e:
+                _console(f"cache load failed ({e}); rebuilding", verbose)
+
+    # ---- Database fast path -----------------------------------------------
+    if motif_database is not None:
+        from ._motif_database import query_motif_database
+        import re
+        pat = re.compile(r"(?P<chrom>[^\s:_-]+(?:[._][^\s:_-]+)?)[:_-](?P<s>\d+)[-_](?P<e>\d+)$")
+        rows = []
+        for n in adata.var_names:
+            m = pat.match(str(n))
+            if m is None:
+                raise ValueError(
+                    f"cannot parse peak name {n!r}; expected 'chrom:start-end'."
+                )
+            rows.append((m.group("chrom"), int(m.group("s")), int(m.group("e"))))
+        peaks_df = pd.DataFrame(rows, columns=["chrom", "start", "end"])
+        _console(f"querying database {motif_database}", verbose)
+        M, motif_names = query_motif_database(motif_database, peaks_df,
+                                              verbose=verbose)
+        adata.varm[key_added] = M
+        adata.uns[f"{key_added}_names"] = motif_names
+        adata.uns[f"{key_added}_params"] = dict(
+            source="motif_database", path=str(motif_database),
+        )
+        if cache_file is not None:
+            _save_cache(cache_file, M, motif_names, adata.var_names)
+        return adata
+
+    # ---- Fresh MOODS scan (pychromvar) ------------------------------------
     import pychromvar as pv
+    if genome_fasta is None:
+        raise ValueError(
+            "add_motif_matrix needs one of: genome_fasta=, motif_database=, "
+            "or cache_file= (with a populated cache)."
+        )
     if window is not None:
         import warnings
         warnings.warn(
@@ -166,4 +257,7 @@ def add_motif_matrix(
         f"{int(np.median(np.asarray(M.sum(axis=0)).ravel())):,}",
         verbose,
     )
+    if cache_file is not None:
+        _save_cache(cache_file, M, motif_names, adata.var_names)
+        _console(f"wrote cache {cache_file}", verbose)
     return adata
