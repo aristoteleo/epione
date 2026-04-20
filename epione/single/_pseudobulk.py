@@ -264,6 +264,7 @@ def pseudobulk_with_fragments(
     random_state: Optional[int] = 0,
     use_fragment_score: bool = True,
     cutsite_min_score: Optional[float] = None,
+    cache_fragments: Union[bool, str, "os.PathLike"] = False,
     **kwargs
     ):
 
@@ -433,14 +434,16 @@ def pseudobulk_with_fragments(
                     sample_id,
                     ". It will be ignored.",
                 )
-            if verbose: 
+            if verbose:
                 print("Reading fragments from " + path_to_fragments[sample_id])
-            fragments_df = read_fragments_from_file(
-                path_to_fragments[sample_id], 
-                use_polars=use_polars, 
+            fragments_df = _read_fragments_cached(
+                path_to_fragments[sample_id],
+                cache_fragments=cache_fragments,
+                use_polars=use_polars,
                 auto_add_chr=auto_add_chr,
-                performance_backend=performance_backend
-            ).df
+                performance_backend=performance_backend,
+                verbose=verbose,
+            )
             # Convert to int32 for memory efficiency
             fragments_df.Start = np.int32(fragments_df.Start)
             fragments_df.End = np.int32(fragments_df.End)
@@ -476,14 +479,16 @@ def pseudobulk_with_fragments(
                     ]
             fragments_df_dict[sample_id] = fragments_df
         else:
-            if verbose: 
+            if verbose:
                 print("Reading fragments from " + path_to_fragments[sample_id])
-            fragments_df = read_fragments_from_file(
-                path_to_fragments[sample_id], 
-                use_polars=use_polars, 
+            fragments_df = _read_fragments_cached(
+                path_to_fragments[sample_id],
+                cache_fragments=cache_fragments,
+                use_polars=use_polars,
                 auto_add_chr=auto_add_chr,
-                performance_backend=performance_backend
-            ).df
+                performance_backend=performance_backend,
+                verbose=verbose,
+            )
             # Convert to int32 for memory efficiency
             fragments_df.Start = np.int32(fragments_df.Start)
             fragments_df.End = np.int32(fragments_df.End)
@@ -741,6 +746,14 @@ def export_pseudobulk_one_sample(
             Whether to use the fragment `Score` column when generating cutsite coverage. When False, each fragment contributes equally.
     cutsite_min_score: float, optional
             Threshold to zero-out scores below this value (applied after normalization).
+    cache_fragments: bool or str/Path, optional
+            On-disk parquet cache for the parsed fragments. Parsing `.tsv.gz`
+            is dominated by single-threaded gzip + strtol (~8 s / 16 M
+            fragments); a parquet sidecar reads back in ~1-2 s. Default
+            False (no cache). `True` writes a `<fragfile>.parquet` next to
+            each source file. A `str`/`Path` stores all caches in that
+            directory. The cache is invalidated automatically when the
+            source `.tsv.gz` is modified (mtime check).
     verbose: bool, optional
             Whether to print per-group progress messages. Default: True.
     """
@@ -957,6 +970,68 @@ def _fragments_to_cutsites(
         cuts_df["Start"] = cuts_df["Start"].astype(np.int64)
         cuts_df["End"] = cuts_df["End"].astype(np.int64)
     return cuts_df
+
+
+def _read_fragments_cached(
+    fragments_path: str,
+    cache_fragments: Union[bool, str, "os.PathLike"],
+    use_polars: bool = True,
+    auto_add_chr: bool = True,
+    performance_backend: str = "pandas",
+    verbose: bool = True,
+) -> pd.DataFrame:
+    """Read fragments.tsv.gz with optional on-disk parquet cache.
+
+    Parses the text file once (gzip + strtol dominates), writes an
+    ``int32/int64 + zstd`` parquet sidecar, and returns the cached
+    parquet on subsequent calls (~10× faster than re-parsing).
+
+    ``cache_fragments``:
+        - ``False`` (default): always parse; no cache read or write.
+        - ``True``: read/write parquet next to the source
+          (``<path>.tsv.gz`` → ``<path>.tsv.gz.parquet``).
+        - ``str`` / ``Path``: read/write parquet inside that directory.
+          The directory is created if missing.
+    """
+    def _parse() -> pd.DataFrame:
+        return read_fragments_from_file(
+            fragments_path,
+            use_polars=use_polars,
+            auto_add_chr=auto_add_chr,
+            performance_backend=performance_backend,
+        ).df
+
+    if not cache_fragments:
+        return _parse()
+
+    import pathlib
+    src = pathlib.Path(fragments_path)
+    if isinstance(cache_fragments, bool):
+        cache_path = src.with_name(src.name + ".parquet")
+    else:
+        cache_dir = pathlib.Path(cache_fragments)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_path = cache_dir / (src.name + ".parquet")
+
+    # Reuse cache only when it's newer than the source.
+    if cache_path.exists() and cache_path.stat().st_mtime >= src.stat().st_mtime:
+        if verbose:
+            print(f"  [cache] reading {cache_path}")
+        try:
+            import polars as pl
+            return pl.read_parquet(str(cache_path)).to_pandas()
+        except Exception:
+            return pd.read_parquet(cache_path)
+
+    df = _parse()
+    if verbose:
+        print(f"  [cache] writing {cache_path}")
+    try:
+        import polars as pl
+        pl.from_pandas(df).write_parquet(str(cache_path), compression="zstd")
+    except Exception:
+        df.to_parquet(cache_path, compression="zstd")
+    return df
 
 
 def _write_bw_from_intervals(
