@@ -180,6 +180,7 @@ def plot_peak2gene(
     palette: Optional[Sequence[str]] = None,
     bigwig_files: Optional[Dict[str, str]] = None,
     gene_annotation: Optional[pd.DataFrame] = None,
+    exon_annotation: Optional[pd.DataFrame] = None,
     pad_bp: int = 50_000,
     figsize: Tuple[float, float] = (8, 9),
     title: Optional[str] = None,
@@ -219,6 +220,12 @@ def plot_peak2gene(
     gene_annotation
         DataFrame with ``gene_name, chrom, start, end, strand``. If omitted,
         only genes present in the links table are drawn (no strand colour).
+    exon_annotation
+        Optional DataFrame with exon-level rows (columns: ``gene_name,
+        chrom, start, end, strand`` and optionally ``feature_type``
+        ∈ {'CDS', 'UTR'}). Triggers UCSC-style gene rendering: baseline
+        intron line, exon blocks, thinner UTR blocks, strand chevrons.
+        When omitted, falls back to one rectangle per gene body.
     arc_cmap
         Override the default ArchR loop colormap (solarExtra-like gradient).
 
@@ -430,6 +437,16 @@ def plot_peak2gene(
                                     "gene_start": "start",
                                     "gene_end": "end"})
         win["strand"] = "+"
+    # Dedupe & filter exon annotation to the window once
+    ex_win = None
+    if exon_annotation is not None:
+        ex = exon_annotation.copy()
+        ex.columns = [c.lower() for c in ex.columns]
+        ex = ex[(ex["chrom"].astype(str) == chrom)
+                & (ex["end"] >= start) & (ex["start"] <= end)]
+        ex = ex.drop_duplicates(subset=["gene_name", "start", "end"])
+        ex_win = ex
+
     if len(win) > 0:
         # Split genes into two rows to avoid label collisions
         win = win.sort_values("start").reset_index(drop=True)
@@ -443,32 +460,110 @@ def plot_peak2gene(
                     chosen = ridx
                     break
             if chosen is None:
-                chosen = np.argmin(last_ends)
+                chosen = int(np.argmin(last_ends))
             last_ends[chosen] = float(r["end"])
             rows.append(chosen)
         win["_row"] = rows
         # y-coords for 2 rows
-        row_y = {0: 0.55, 1: 0.15}
+        row_y = {0: 0.85, 1: 0.35}
+        win_size = end - start
         for _, r in win.iterrows():
             hl = (r["gene_name"] == region_gene)
-            col = _GENE_STRAND_COL.get(str(r.get("strand", "+")), "#3D3D3D")
+            strand = str(r.get("strand", "+"))
+            col = _GENE_STRAND_COL.get(strand, "#3D3D3D")
             if hl:
-                col = "#208A42"  # ArchR stallion green for the highlighted gene
+                col = "#208A42"  # ArchR stallion green for target gene
             y = row_y[int(r["_row"])]
-            gene_ax.add_patch(Rectangle(
-                (r["start"], y), r["end"] - r["start"], 0.22,
-                facecolor=col, edgecolor="black" if hl else "none",
-                linewidth=0.8 if hl else 0, alpha=0.9,
-            ))
-            # Strand arrow: small wedge at centre
-            cx = (r["start"] + r["end"]) / 2
-            gene_ax.plot([cx], [y + 0.11], marker=(3, 0, 0 if str(r.get("strand","+")) == "+" else 180),
-                         markersize=4, color="white", markeredgecolor=col, markeredgewidth=0.6)
-            # Label — ArchR style: small text below gene body
-            gene_ax.text(cx, y - 0.02, r["gene_name"],
-                         ha="center", va="top",
-                         fontsize=6.5, color=col,
-                         fontweight="bold" if hl else "normal")
+
+            if ex_win is not None:
+                # ---- UCSC-style gene model -------------------------------
+                # Baseline intron line
+                g_s = float(r["start"]); g_e = float(r["end"])
+                gene_ax.hlines(y, g_s, g_e,
+                               color=col, linewidth=0.8, zorder=1)
+                # Exon blocks (dedup across transcripts)
+                sub_ex = ex_win[ex_win["gene_name"] == r["gene_name"]]
+                # Merge overlapping exons to draw one block
+                ivs = sorted(
+                    (max(float(s), g_s), min(float(e), g_e))
+                    for s, e in zip(sub_ex["start"], sub_ex["end"])
+                    if min(float(e), g_e) > max(float(s), g_s)
+                )
+                merged = []
+                for s, e in ivs:
+                    if merged and s <= merged[-1][1]:
+                        merged[-1] = (merged[-1][0], max(merged[-1][1], e))
+                    else:
+                        merged.append((s, e))
+                H_CDS = 0.28   # exon (thick) block height
+                H_UTR = 0.16   # UTR/thin block height
+                for s, e in merged:
+                    # ArchR annotation doesn't carry CDS vs UTR — draw all
+                    # exons as thick blocks. When feature_type is supplied
+                    # ("cds" / "utr") the thin-block convention is honored.
+                    hh = H_CDS
+                    gene_ax.add_patch(Rectangle(
+                        (s, y - hh / 2), e - s, hh,
+                        facecolor=col, edgecolor=col,
+                        linewidth=0.3, zorder=2,
+                    ))
+                if "feature_type" in sub_ex.columns:
+                    utr = sub_ex[sub_ex["feature_type"].astype(str)
+                                 .str.lower().isin({"utr", "3utr", "5utr",
+                                                     "three_prime_utr",
+                                                     "five_prime_utr"})]
+                    for _, u in utr.iterrows():
+                        s = max(float(u["start"]), g_s)
+                        e = min(float(u["end"]), g_e)
+                        if e <= s:
+                            continue
+                        gene_ax.add_patch(Rectangle(
+                            (s, y - H_UTR / 2), e - s, H_UTR,
+                            facecolor=col, edgecolor=col,
+                            linewidth=0.3, zorder=3,
+                        ))
+                # Strand chevrons on intron segments (UCSC convention)
+                step = max(win_size * 0.01, 1500.0)
+                xs = np.arange(g_s + step * 0.5, g_e, step)
+                in_exon = np.zeros_like(xs, dtype=bool)
+                for s, e in merged:
+                    in_exon |= (xs >= s) & (xs <= e)
+                xs = xs[~in_exon]
+                if len(xs):
+                    marker = ">" if strand == "+" else "<"
+                    gene_ax.scatter(xs, np.full_like(xs, y),
+                                    marker=marker, s=8, c=col,
+                                    linewidths=0, zorder=1.5)
+                # Highlight outline
+                if hl:
+                    gene_ax.add_patch(Rectangle(
+                        (g_s, y - H_CDS / 2 - 0.03),
+                        g_e - g_s, H_CDS + 0.06,
+                        facecolor="none", edgecolor="#208A42",
+                        linewidth=1.0, zorder=4,
+                    ))
+                # Gene label
+                cx = 0.5 * (g_s + g_e)
+                gene_ax.text(cx, y - H_CDS / 2 - 0.06, r["gene_name"],
+                             ha="center", va="top",
+                             fontsize=6.5, color=col,
+                             fontweight="bold" if hl else "normal")
+            else:
+                # ---- Gene-body rectangle (fallback when no exon data) -----
+                gene_ax.add_patch(Rectangle(
+                    (r["start"], y - 0.11), r["end"] - r["start"], 0.22,
+                    facecolor=col, edgecolor="black" if hl else "none",
+                    linewidth=0.8 if hl else 0, alpha=0.9,
+                ))
+                cx = (r["start"] + r["end"]) / 2
+                gene_ax.plot([cx], [y], marker=(3, 0,
+                             0 if strand == "+" else 180),
+                             markersize=4, color="white",
+                             markeredgecolor=col, markeredgewidth=0.6)
+                gene_ax.text(cx, y - 0.14, r["gene_name"],
+                             ha="center", va="top",
+                             fontsize=6.5, color=col,
+                             fontweight="bold" if hl else "normal")
 
     # X-axis: only on the bottom, formatted genomic style
     gene_ax.xaxis.set_major_formatter(mpl.ticker.FuncFormatter(_format_bp))
