@@ -45,6 +45,7 @@ from ._coaccessibility import coaccessibility
 from ._marker_features import find_marker_features
 
 from ._motif_matrix import add_motif_matrix
+from ._motif_database import build_motif_database, query_motif_database
 from ._background_peaks import add_background_peaks
 from ._chromvar import compute_deviations
 
@@ -74,6 +75,8 @@ __all__ = [
     "coaccessibility",
     "find_marker_features",
     "add_motif_matrix",
+    "build_motif_database",
+    "query_motif_database",
     "add_background_peaks",
     "compute_deviations",
     "umap",
