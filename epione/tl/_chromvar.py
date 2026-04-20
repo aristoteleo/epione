@@ -574,8 +574,14 @@ def compute_deviations(
     # below builds its own M_csr only when needed.
     density = M.nnz / max(M.shape[0] * M.shape[1], 1)
     if density >= _M_DENSE_DISPATCH_DENSITY:
-        # M.toarray() → (n_peaks, n_motifs); transpose + C-contig float32
-        M_dense = np.ascontiguousarray(M.toarray().T, dtype=np.float32)
+        # Build the dense (n_motifs, n_peaks) view as F-contig:
+        #   M.toarray()            → (n_peaks, n_motifs) C-contig dtype
+        #   .astype(np.float32)    → in-place cast where possible
+        #   .T                     → (n_motifs, n_peaks) F-contig view
+        # sgemm consumes F-contig equally fast (via transA flag), so this
+        # skips the ~0.2 s C-contig copy that
+        # ``ascontiguousarray(M.toarray().T, dtype=np.float32)`` would do.
+        M_dense = M.toarray().astype(np.float32, copy=False).T
         M_for_matmul = M_dense
         n_motifs, n_peaks = M_dense.shape
         M_csr = None
