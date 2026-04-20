@@ -1,6 +1,0 @@
-﻿epione
-======
-
-.. automodule:: epione
-
-   
