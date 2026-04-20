@@ -122,10 +122,23 @@ def _coverage_from_peaks(
     return out, x_grid
 
 
-def _bezier_arc(x0, x1, height):
-    xm = 0.5 * (x0 + x1)
-    verts = [(x0, 0), (xm, height), (x1, 0)]
-    codes = [MplPath.MOVETO, MplPath.CURVE3, MplPath.CURVE3]
+def _half_ellipse(x0, x1, y_radius, direction="down", n=100):
+    # Port of ArchR ArchRBrowser.R::getArchDF.
+    #   angles ∈ [π, 2π] → lower half-circle (sin<0). For "up" arcs we flip
+    #   y by rotating to [0, π]. rx = half-span, so the curve passes through
+    #   both endpoints exactly — shape is a parametric half-ellipse, not a
+    #   quadratic Bezier.
+    cx = 0.5 * (x0 + x1)
+    rx = 0.5 * abs(x1 - x0)
+    if direction == "down":
+        angles = np.linspace(np.pi, 2 * np.pi, n)
+    else:
+        angles = np.linspace(0.0, np.pi, n)
+    xs = rx * np.cos(angles) + cx
+    ys = y_radius * np.sin(angles)
+    verts = np.column_stack([xs, ys])
+    codes = np.full(n, MplPath.LINETO, dtype=np.uint8)
+    codes[0] = MplPath.MOVETO
     return MplPath(verts, codes)
 
 
@@ -348,41 +361,36 @@ def plot_peak2gene(
                  va="center", ha="left", fontweight="bold")
 
     # ---- Arc row -----------------------------------------------------------
-    # "Nested semicircles": arc height scales with peak-TSS **distance** so a
-    # long-range link draws a big dome and a short-range link draws a small
-    # dome that physically sits inside it. Colour + line width still encode
-    # |r|. Draw large arcs first so small ones render on top (readable).
-    span = (sub["peak_center"] - sub["tss"]).abs().astype(float)
-    sub_sorted = sub.assign(_span=span).sort_values(
-        ["_span", "correlation"],
+    # Exact port of ArchR ArchRBrowser.R::getArchDF: each link is a half
+    # ellipse with x-radius = |peak-tss|/2 and y-radius scaled linearly so
+    # the longest link reaches R_MAX and shorter ones are proportionally
+    # shallower — so a long-range dome visually contains the short-range
+    # ones. Sorted largest→smallest so short arcs render on top.
+    rx_series = (sub["peak_center"] - sub["tss"]).abs().astype(float) / 2.0
+    max_rx = float(rx_series.max()) if len(rx_series) else 1.0
+    sub_sorted = sub.assign(_rx=rx_series).sort_values(
+        ["_rx", "correlation"],
         key=lambda s: s.abs() if s.name == "correlation" else s,
         ascending=[False, True],
-    ).drop(columns="_span")
+    ).drop(columns="_rx")
 
-    win = end - start
-    MIN_H = 0.08
-    MAX_H = 1.0
-    sign = -1.0 if arc_direction == "down" else 1.0
+    R_MAX = 100.0  # arbitrary plotting units (matches ArchR's r=100)
     for _, row in sub_sorted.iterrows():
         r_abs = abs(float(row["correlation"]))
         col = cmap(np.clip(r_abs, 0.0, 1.0))
         lw = 0.35 + 1.3 * r_abs
-        # Height ∝ span (distance) so long-range links wrap around short-range
-        # ones ("big circle contains small circle"). Clipped to [MIN_H, MAX_H].
-        s = abs(float(row["peak_center"] - row["tss"])) / max(win, 1.0)
-        h = MIN_H + (MAX_H - MIN_H) * s
-        path = _bezier_arc(row["peak_center"], row["tss"], sign * h)
+        rx = 0.5 * abs(float(row["peak_center"] - row["tss"]))
+        ry = R_MAX * (rx / max_rx) if max_rx > 0 else 0.0
+        path = _half_ellipse(row["peak_center"], row["tss"], ry,
+                             direction=arc_direction)
         arc_ax.add_patch(PathPatch(path, facecolor="none",
                                    edgecolor=col, linewidth=lw))
     if arc_direction == "down":
-        arc_ax.set_ylim(-1.05, 0.02)
-        # Baseline (the anchor row) shown as the TOP spine
-        arc_ax.spines[["top", "right", "left"]].set_visible(False)
-        arc_ax.spines["bottom"].set_visible(False)
+        arc_ax.set_ylim(-R_MAX * 1.05, R_MAX * 0.02)
         arc_ax.axhline(0, color="black", linewidth=0.5, zorder=0)
     else:
-        arc_ax.set_ylim(-0.02, 1.05)
-        arc_ax.spines[["top", "right", "left"]].set_visible(False)
+        arc_ax.set_ylim(-R_MAX * 0.02, R_MAX * 1.05)
+    arc_ax.spines[["top", "right", "left", "bottom"]].set_visible(False)
     arc_ax.set_xlim(start, end)
     arc_ax.set_yticks([])
     arc_ax.text(1.01, 0.5, "Peak2GeneLinks",
