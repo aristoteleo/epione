@@ -44,6 +44,10 @@ from ._coaccessibility import coaccessibility
 
 from ._marker_features import find_marker_features
 
+from ._motif_matrix import add_motif_matrix
+from ._background_peaks import add_background_peaks
+from ._chromvar import compute_deviations
+
 from ._umap import umap
 
 from ._clusters import clusters
@@ -69,6 +73,9 @@ __all__ = [
     "peak_to_gene",
     "coaccessibility",
     "find_marker_features",
+    "add_motif_matrix",
+    "add_background_peaks",
+    "compute_deviations",
     "umap",
     "clusters",
 ]
