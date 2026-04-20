@@ -81,11 +81,21 @@ def _pick_region_for_gene(links: pd.DataFrame, gene: str, pad: int = 50_000):
 
 def _coverage_from_peaks(
     adata, group_by, chrom, start, end, var_df, n_bins=1000,
+    scale_factor=1e4,
 ):
-    """Interpolate per-peak mean accessibility into a smooth 1-D signal per
-    group, for ArchR-style filled-curve display.
+    """ArchR-style group-aggregated ATAC coverage from the peak matrix.
 
-    Returns dict[group] → 1D array of length ``n_bins`` along ``[start, end)``.
+    For each cell we first normalise peak counts by the cell's total depth
+    (CP10k-like, i.e. ``counts / total_counts * scale_factor``), then take
+    the **mean** across cells of the group so that groups with different
+    sequencing depth are directly comparable — this is what makes the
+    cell-type-specific peaks actually visible.
+
+    The per-group per-peak mean is then deposited into 1-D bins by adding
+    (not max-ing) each peak's value to every bin it covers, so that
+    overlapping peaks accumulate instead of overwriting.
+
+    Returns ``dict[group] → array[n_bins]`` on the grid ``[start, end)``.
     """
     groups = adata.obs[group_by].astype("category")
     mask = (var_df["chrom"] == chrom) & (var_df["end"] >= start) & (var_df["start"] <= end)
@@ -94,7 +104,15 @@ def _coverage_from_peaks(
     pk = np.where(mask)[0]
     centers = ((var_df.iloc[pk]["start"] + var_df.iloc[pk]["end"]) // 2).to_numpy()
     widths = (var_df.iloc[pk]["end"] - var_df.iloc[pk]["start"]).to_numpy()
+
+    # Per-cell depth normalisation (CP10k-style): each cell's peak vector
+    # is divided by its total peak-matrix sum.  This makes different-depth
+    # groups comparable on a per-cell basis.
+    cell_totals = np.asarray(adata.X.sum(axis=1)).ravel().astype(np.float64)
+    cell_totals[cell_totals == 0] = 1.0
+    inv = (scale_factor / cell_totals).astype(np.float32)  # (n_cells,)
     sub = adata.X[:, pk]
+
     out = {}
     x_grid = np.linspace(start, end, n_bins)
     bin_w = (end - start) / n_bins
@@ -103,12 +121,18 @@ def _coverage_from_peaks(
         if len(cells) == 0:
             out[g] = np.zeros(n_bins, dtype=np.float32)
             continue
+        # Weighted sum over cells then divide by n_cells → mean of
+        # per-cell CP10k values. For sparse X this is just
+        # inv[cells] @ sub[cells] / n_cells.
         if sp.issparse(sub):
-            v = np.asarray(sub[cells].mean(axis=0)).ravel()
+            s_rows = sub[cells]
+            # inv weighting: (1, n_cells) @ (n_cells, n_peaks) -> (n_peaks,)
+            v = np.asarray(inv[cells] @ s_rows).ravel() / max(len(cells), 1)
         else:
-            v = sub[cells].mean(axis=0)
-        # "Spread" each peak's intensity over its own width by depositing into
-        # the right-covering bins.
+            v = (inv[cells][:, None] * sub[cells]).sum(axis=0) / max(len(cells), 1)
+
+        # Bin deposition: add each peak's CP10k value to every bin it
+        # overlaps (so overlapping peaks accumulate).
         signal = np.zeros(n_bins, dtype=np.float32)
         for c, w, val in zip(centers, widths, v):
             if val <= 0:
@@ -117,7 +141,7 @@ def _coverage_from_peaks(
             hi = int(min(n_bins, (c + w / 2 - start) // bin_w + 1))
             if lo >= hi:
                 continue
-            signal[lo:hi] = np.maximum(signal[lo:hi], float(val))
+            signal[lo:hi] += float(val)
         out[g] = signal
     return out, x_grid
 
