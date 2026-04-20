@@ -107,24 +107,6 @@ if _HAS_NUMBA:
                 val = data[k_idx]
                 row += val * dense[col]
 
-    @njit(parallel=True, fastmath=True, cache=True, boundscheck=False)
-    def _nb_csr_at_dense_pair(data, indices, indptr, dense_a, dense_b, out_a, out_b):
-        """Fused: computes ``M @ dense_a`` and ``M @ dense_b`` in one pass.
-
-        Saves ~30% over calling ``_nb_csr_at_dense`` twice because each peak
-        row's 20 KB loads from ``dense_a[col]`` and ``dense_b[col]`` stay hot
-        in L1/L2 while the inner SIMD FMAs into both output rows pipeline.
-        """
-        n_rows = indptr.shape[0] - 1
-        for i in prange(n_rows):
-            ra = out_a[i]; ra[:] = 0.0
-            rb = out_b[i]; rb[:] = 0.0
-            for k_idx in range(indptr[i], indptr[i + 1]):
-                col = indices[k_idx]
-                val = data[k_idx]
-                ra += val * dense_a[col]
-                rb += val * dense_b[col]
-
     # Warm the kernels at import time so the first production call doesn't
     # pay the JIT-compile cost. ``cache=True`` persists across processes,
     # but the first-ever call still incurs load + lowering cost.
@@ -140,8 +122,6 @@ if _HAS_NUMBA:
         _dense   = np.zeros((2, 4), dtype=np.float32)
         _out     = np.zeros((2, 4), dtype=np.float32)
         _nb_csr_at_dense(_data, _indices, _indptr, _dense, _out)
-        _out2 = np.zeros((2, 4), dtype=np.float32)
-        _nb_csr_at_dense_pair(_data, _indices, _indptr, _dense, _dense, _out, _out2)
         # _nb_finalise_peer_stats is defined later; warm lazily on first call.
 
     try:
@@ -228,21 +208,6 @@ def _csr_at_dense_best(
         )
         return out
     return _threaded_csr_at_dense(M, dense, n_jobs, chunk_cells)
-
-
-def _maybe_densify_M(M_csr: sp.csr_matrix) -> "np.ndarray | sp.csr_matrix":
-    """Return ``M`` as ``np.ndarray`` if its density crosses the BLAS
-    dispatch threshold, otherwise unchanged. Densifying up-front once lets
-    the caller reuse the dense copy across multiple ``M @ dense`` calls
-    instead of paying the conversion per call.
-    """
-    density = M_csr.nnz / max(M_csr.shape[0] * M_csr.shape[1], 1)
-    if density >= _M_DENSE_DISPATCH_DENSITY:
-        out = M_csr.toarray()
-        if out.dtype != np.float32:
-            out = out.astype(np.float32, copy=False)
-        return out
-    return M_csr
 
 
 def _parallel_densify_csc(
