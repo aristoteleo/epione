@@ -215,6 +215,7 @@ def _parallel_densify_csc(
     n_jobs: int,
     chunk_cols: int,
     dtype=np.float32,
+    out: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """Densify a CSC matrix into a C-contiguous (rows × cols) array using
     column-chunked parallel ``toarray`` calls.
@@ -223,9 +224,14 @@ def _parallel_densify_csc(
     ``.todense()`` (F-contig) because scipy writes strided columns into the
     C-contig output. Splitting by columns lets multiple threads each write
     to their own stripe without contention — about 1.7× faster in practice.
+
+    ``out`` may be an existing buffer (including a strided column-stripe
+    view of a larger array) to densify into; callers use this to pre-stage
+    X_dense inside a bigger fused-sgemm buffer and skip an extra copy.
     """
     n_rows, n_cols = X_csc.shape
-    out = np.empty((n_rows, n_cols), dtype=dtype)
+    if out is None:
+        out = np.empty((n_rows, n_cols), dtype=dtype)
     if n_jobs in (None, 0, 1) or n_cols <= chunk_cols:
         out[:] = X_csc.toarray(order="C")
         if dtype is not None and out.dtype != dtype:
