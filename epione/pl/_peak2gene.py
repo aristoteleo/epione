@@ -22,7 +22,7 @@ the peak matrix gives an equally good visual that matches the ArchR look.
 """
 from __future__ import annotations
 
-from typing import Iterable, Optional, Sequence, Tuple, Union, Dict, List
+from typing import Iterable, Literal, Optional, Sequence, Tuple, Union, Dict, List
 import numpy as np
 import pandas as pd
 import scipy.sparse as sp
@@ -173,6 +173,7 @@ def plot_peak2gene(
     ax: Optional[plt.Axes] = None,
     arc_cmap: Optional[mpl.colors.Colormap] = None,
     coverage_ylim: Optional[Tuple[float, float]] = None,
+    arc_direction: Literal["up", "down"] = "down",
     show: bool = True,
 ):
     """ArchR-style arc plot of peak-to-gene links on a genomic window.
@@ -361,21 +362,29 @@ def plot_peak2gene(
     win = end - start
     MIN_H = 0.08
     MAX_H = 1.0
+    sign = -1.0 if arc_direction == "down" else 1.0
     for _, row in sub_sorted.iterrows():
         r_abs = abs(float(row["correlation"]))
         col = cmap(np.clip(r_abs, 0.0, 1.0))
         lw = 0.35 + 1.3 * r_abs
-        # Height ∝ span (distance), giving the classic "big circle wraps the
-        # small ones" look. Clipped to [MIN_H, MAX_H].
+        # Height ∝ span (distance) so long-range links wrap around short-range
+        # ones ("big circle contains small circle"). Clipped to [MIN_H, MAX_H].
         s = abs(float(row["peak_center"] - row["tss"])) / max(win, 1.0)
         h = MIN_H + (MAX_H - MIN_H) * s
-        path = _bezier_arc(row["peak_center"], row["tss"], h)
+        path = _bezier_arc(row["peak_center"], row["tss"], sign * h)
         arc_ax.add_patch(PathPatch(path, facecolor="none",
                                    edgecolor=col, linewidth=lw))
-    arc_ax.set_ylim(0, 1.05)
+    if arc_direction == "down":
+        arc_ax.set_ylim(-1.05, 0.02)
+        # Baseline (the anchor row) shown as the TOP spine
+        arc_ax.spines[["top", "right", "left"]].set_visible(False)
+        arc_ax.spines["bottom"].set_visible(False)
+        arc_ax.axhline(0, color="black", linewidth=0.5, zorder=0)
+    else:
+        arc_ax.set_ylim(-0.02, 1.05)
+        arc_ax.spines[["top", "right", "left"]].set_visible(False)
     arc_ax.set_xlim(start, end)
     arc_ax.set_yticks([])
-    arc_ax.spines[["top", "right", "left"]].set_visible(False)
     arc_ax.text(1.01, 0.5, "Peak2GeneLinks",
                 transform=arc_ax.transAxes, fontsize=9,
                 va="center", ha="left", fontweight="bold")
