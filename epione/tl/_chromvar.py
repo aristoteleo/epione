@@ -591,7 +591,11 @@ def compute_deviations(
     X = adata.layers[layer] if layer is not None else adata.X
     if not sp.issparse(X):
         X = sp.csr_matrix(X)
-    X_T = X.T.astype(np.float32).tocsc()
+    # X.T of a CSR is already CSC — no materialising conversion needed.
+    # Defer ``astype(np.float32)`` to the analytical path's densification so
+    # the integer counts flow straight into the dense float32 block without
+    # a separate sparse-level ~140 MB cast pass (saves ~0.1-0.2 s).
+    X_T = X.T.tocsc()
     n_cells = X_T.shape[1]
 
     total_counts = float(X_T.sum())
@@ -656,6 +660,11 @@ def compute_deviations(
     elif method == "sample":
         if M_csr is None:
             M_csr = sp.csr_matrix(M_for_matmul)
+        # sample path wants float32 sparse X.T for the per-iteration
+        # ``M_it @ X_T`` matmul. Analytical never touches X_T directly so we
+        # only pay this cast on the sample branch.
+        if X_T.dtype != np.float32:
+            X_T = X_T.astype(np.float32)
         Z, DEV = _sample_deviations(
             M_csr, X_T, bg, peak_frac, cell_totals, obs_dev, expected_fg,
             n_iter=n_iter, verbose=verbose,
