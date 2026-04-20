@@ -24,6 +24,9 @@ _build*
 .claude*
 # Sphinx autosummary: generated at build time by autosummary_generate=True
 epione_guide/api/_autosummary/
+# Per-tutorial data cache (downloaded / symlinked at notebook run time)
+epione_guide/tutorials/**/data_chromvar/
+epione_guide/tutorials/**/motif_db_*
 *tobias
 
 # Cython build artifacts
