@@ -420,14 +420,21 @@ def make_peak_matrix(
     if "files" not in adata.uns or "fragments" not in adata.uns["files"]:
         raise ValueError("adata.uns['files']['fragments'] missing")
 
-    fragment_file = adata.uns["files"]["fragments"]
+    fragment_file = str(adata.uns["files"]["fragments"])
     peaks = _parse_peaks(use_rep)
-    # Build per-chrom sorted peak intervals for fast overlap.
+    # Sort peaks by (chrom, start); build numpy arrays per chromosome for
+    # vectorised searchsorted lookup. ArchR merge_peaks guarantees
+    # non-overlapping peaks, so each insertion site is in ≤ 1 peak.
     by_chrom: dict[str, list[tuple[int, int, int]]] = defaultdict(list)
     for j, (chrom, s, e) in enumerate(peaks):
         by_chrom[chrom].append((s, e, j))
-    for chrom in by_chrom:
-        by_chrom[chrom].sort()
+    chrom_arrays: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
+    for chrom, lst in by_chrom.items():
+        lst.sort()
+        ps = np.fromiter((p[0] for p in lst), count=len(lst), dtype=np.int64)
+        pe = np.fromiter((p[1] for p in lst), count=len(lst), dtype=np.int64)
+        pj = np.fromiter((p[2] for p in lst), count=len(lst), dtype=np.int64)
+        chrom_arrays[chrom] = (ps, pe, pj)
     peak_labels = [f"{c}:{s}-{e}" for c, s, e in peaks]
 
     barcodes = list(adata.obs_names)
@@ -437,50 +444,99 @@ def make_peak_matrix(
 
     console.level1(f"building peak matrix: {n_cells:,} cells × {n_peaks:,} peaks")
 
+    import pysam
+
     chrM_set = set(chrM)
-    rows, cols, data = [], [], []
-    for chrom, start, end, bc, cnt in _open_fragment_file(fragment_file):
-        if bc not in bc_to_idx or chrom in chrM_set:
+    rows_list: list[np.ndarray] = []
+    cols_list: list[np.ndarray] = []
+    data_list: list[np.ndarray] = []
+
+    _ensure_tabix_index(fragment_file)
+    tbx = pysam.TabixFile(fragment_file)
+
+    # Process chromosome-by-chromosome so we can vectorise per-chrom.
+    for chrom, (ps, pe, pj) in chrom_arrays.items():
+        if chrom in chrM_set:
             continue
-        chr_peaks = by_chrom.get(chrom)
-        if not chr_peaks:
+        if chrom not in tbx.contigs:
             continue
-        i = bc_to_idx[bc]
-        # For "paired-insertion" we look at both ends (TN5 cut sites).
-        ends = (start, end - 1) if counting_strategy in ("insertion", "paired-insertion") else None
-        if ends:
-            for cut in ends:
-                # Binary search: find peaks whose start ≤ cut < end.
-                lo, hi = 0, len(chr_peaks)
-                while lo < hi:
-                    mid = (lo + hi) // 2
-                    if chr_peaks[mid][0] > cut:
-                        hi = mid
-                    else:
-                        lo = mid + 1
-                # Candidates are chr_peaks[:lo] — scan backwards for those with end > cut.
-                k = lo - 1
-                while k >= 0 and chr_peaks[k][0] <= cut:
-                    ps, pe, pj = chr_peaks[k]
-                    if pe > cut:
-                        rows.append(i); cols.append(pj); data.append(cnt)
-                        break   # assume non-overlapping peaks (ArchR style)
-                    k -= 1
+        # Bulk-read fragment records for this chromosome.
+        starts_buf: list[int] = []
+        ends_buf: list[int] = []
+        bcs_buf: list[int] = []
+        cnts_buf: list[int] = []
+        for line in tbx.fetch(chrom):
+            parts = line.split("\t")
+            if len(parts) < 4:
+                continue
+            bc = parts[3]
+            i = bc_to_idx.get(bc)
+            if i is None:
+                continue
+            try:
+                s = int(parts[1]); e = int(parts[2])
+            except ValueError:
+                continue
+            cnt = int(parts[4]) if len(parts) >= 5 and parts[4].isdigit() else 1
+            starts_buf.append(s); ends_buf.append(e)
+            bcs_buf.append(i); cnts_buf.append(cnt)
+        if not starts_buf:
+            continue
+        starts_arr = np.asarray(starts_buf, dtype=np.int64)
+        ends_arr = np.asarray(ends_buf, dtype=np.int64)
+        bcs_arr = np.asarray(bcs_buf, dtype=np.int64)
+        cnts_arr = np.asarray(cnts_buf, dtype=np.int32)
+
+        if counting_strategy in ("insertion", "paired-insertion"):
+            # Two insertion sites per fragment (TN5 cut at both ends).
+            for cut_arr in (starts_arr, ends_arr - 1):
+                idx = np.searchsorted(ps, cut_arr, side="right") - 1
+                valid = idx >= 0
+                if not valid.any():
+                    continue
+                # Check end > cut for the candidate peak.
+                candidate_ends = pe[np.where(valid, idx, 0)]
+                valid &= candidate_ends > cut_arr
+                if not valid.any():
+                    continue
+                rows_list.append(bcs_arr[valid])
+                cols_list.append(pj[idx[valid]])
+                data_list.append(cnts_arr[valid])
         else:
-            # "fragment": overlap all peaks whose interval intersects [start, end).
-            lo, hi = 0, len(chr_peaks)
-            while lo < hi:
-                mid = (lo + hi) // 2
-                if chr_peaks[mid][0] >= end:
-                    hi = mid
-                else:
-                    lo = mid + 1
-            k = lo - 1
-            while k >= 0 and chr_peaks[k][0] < end:
-                ps, pe, pj = chr_peaks[k]
-                if pe > start:
-                    rows.append(i); cols.append(pj); data.append(cnt)
-                k -= 1
+            # "fragment": overlap all peaks intersecting [start, end).
+            # Vectorised: for each peak, find fragments in [start, end).
+            # Simpler: iterate peaks per-chrom — usually n_peaks_chrom << n_frag_chrom.
+            # For each peak, use searchsorted on ends_arr > peak_start and
+            # starts_arr < peak_end to find contributing fragments.
+            frag_sort = np.argsort(starts_arr, kind="stable")
+            starts_s = starts_arr[frag_sort]
+            ends_s = ends_arr[frag_sort]
+            bcs_s = bcs_arr[frag_sort]
+            cnts_s = cnts_arr[frag_sort]
+            for k in range(len(ps)):
+                pstart, pend, ppj = int(ps[k]), int(pe[k]), int(pj[k])
+                # Fragments with start < pend
+                right = np.searchsorted(starts_s, pend, side="left")
+                if right == 0:
+                    continue
+                # Of those, fragments with end > pstart
+                mask = ends_s[:right] > pstart
+                if not mask.any():
+                    continue
+                rows_list.append(bcs_s[:right][mask])
+                cols_list.append(np.full(int(mask.sum()), ppj, dtype=np.int64))
+                data_list.append(cnts_s[:right][mask])
+
+    tbx.close()
+
+    if rows_list:
+        rows = np.concatenate(rows_list)
+        cols = np.concatenate(cols_list)
+        data = np.concatenate(data_list).astype(np.int32, copy=False)
+    else:
+        rows = np.array([], dtype=np.int64)
+        cols = np.array([], dtype=np.int64)
+        data = np.array([], dtype=np.int32)
 
     X = sp.coo_matrix(
         (data, (rows, cols)),

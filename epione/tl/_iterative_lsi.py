@@ -341,6 +341,18 @@ def iterative_lsi(
 
     # Resolve source matrix
     X_full = adata.layers[layer] if layer is not None else adata.X
+    # Materialise anndataoom BackedArray → scipy.sparse. Iterative LSI
+    # scans X multiple times (binarisation, feature selection, TF-IDF)
+    # and the lazy BackedArray doesn't implement `X > 0` / arithmetic.
+    if type(X_full).__name__ in ("BackedArray", "_SubsetBackedArray",
+                                  "TransformedBackedArray", "ScaledBackedArray"):
+        parts = []
+        for _, _, chunk in X_full.chunked():
+            parts.append(chunk)
+        if sp.issparse(parts[0]):
+            X_full = sp.vstack(parts).tocsr()
+        else:
+            X_full = np.vstack(parts)
     n_obs, n_vars = X_full.shape
 
     # 1. Binarise if requested
