@@ -17,6 +17,16 @@ _FOOTPRINT_ATTRS = {
     "getFootprints", "plotFootprints",
     "Footprint", "compute_tn5_bias_table",
 }
+_MULTI_SCALE_FP_ATTRS = {
+    "multi_scale_footprint", "MultiScaleFootprint", "footprint_score",
+}
+_MULTI_SCALE_FP_PLOT_ATTRS = {
+    "plot_multi_scale_footprint",
+}
+_MULTI_SCALE_REGION_ATTRS = {
+    "multi_scale_footprint_region", "plot_multi_scale_footprint_region",
+    "rank_sites_by_cut_density", "MultiScaleRegion",
+}
 _SCORE_BIGWIG_ATTRS = {
     "FootprintScorer", "score_bigwig_core", "score_bigwig",
     "calculate_aggregate_scores", "compare_methods",
@@ -33,6 +43,15 @@ def __getattr__(name):
         return getattr(mod, name)
     if name in _FOOTPRINT_ATTRS:
         mod = importlib.import_module("._footprint", __name__)
+        return getattr(mod, name)
+    if name in _MULTI_SCALE_FP_ATTRS:
+        mod = importlib.import_module("._multi_scale_footprint", __name__)
+        return getattr(mod, name)
+    if name in _MULTI_SCALE_FP_PLOT_ATTRS:
+        mod = importlib.import_module("._multi_scale_footprint_plot", __name__)
+        return getattr(mod, name)
+    if name in _MULTI_SCALE_REGION_ATTRS:
+        mod = importlib.import_module("._multi_scale_region", __name__)
         return getattr(mod, name)
     if name in _SCORE_BIGWIG_ATTRS:
         mod = importlib.import_module("._score_bigwig", __name__)
@@ -96,6 +115,10 @@ __all__ = [
     "plot_heatmap", "plot_tracks",
     "get_footprints", "plot_footprints", "FootprintResult",
     "getFootprints", "plotFootprints",
+    "multi_scale_footprint", "MultiScaleFootprint",
+    "footprint_score", "plot_multi_scale_footprint",
+    "multi_scale_footprint_region", "plot_multi_scale_footprint_region",
+    "rank_sites_by_cut_density", "MultiScaleRegion",
     "lsi",
     "iterative_lsi",
     "integrate",

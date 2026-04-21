@@ -14,9 +14,21 @@ def plot_footprints(*args, **kwargs):
     from ..tl._footprint import plot_footprints as _fp
     return _fp(*args, **kwargs)
 
+
+def plot_multi_scale_footprint(*args, **kwargs):
+    from ..tl._multi_scale_footprint_plot import plot_multi_scale_footprint as _fp
+    return _fp(*args, **kwargs)
+
+
+def plot_multi_scale_footprint_region(*args, **kwargs):
+    from ..tl._multi_scale_region import plot_multi_scale_footprint_region as _fp
+    return _fp(*args, **kwargs)
+
 __all__ = [
     "frag_size_distr", "tss_enrichment", "fragment_histogram", "plot_joint",
     "embedding", "umap", "tsne", "pca", "diffmap", "draw_graph",
     "plot_peak2gene",
     "plot_footprints",
+    "plot_multi_scale_footprint",
+    "plot_multi_scale_footprint_region",
 ]
