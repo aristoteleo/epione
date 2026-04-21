@@ -762,15 +762,37 @@ def plot_footprints(
     *,
     motif: Optional[str] = None,
     groups: Optional[Sequence[str]] = None,
-    palette: Optional[Sequence[str]] = None,
+    order: Optional[Sequence[str]] = None,
+    palette: Optional[Union[Sequence[str], Dict[str, str]]] = None,
     show_bias: bool = True,
+    show_ribbon: bool = True,
     figsize: Tuple[float, float] = (6.0, 4.5),
+    title: Optional[str] = None,
     show: bool = True,
 ):
-    """ArchR-style footprint plot.
+    """ArchR-style single-motif footprint plot.
 
-    One aggregate curve per group on the main axis; below it an
-    optional Tn5 bias track (light grey). Returns ``(fig, axes)``.
+    Parameters
+    ----------
+    footprints
+        Either a single :class:`Footprint` or a ``{motif: Footprint}``
+        mapping (then ``motif=`` must be set unless there's only one).
+    groups
+        Restrict plot to this subset of cell-type groups.
+    order
+        Plot order (stacking order of curves). Defaults to alphabetic.
+    palette
+        Either a list of colours or a ``{group: colour}`` dict.
+        Default: matplotlib's current ``axes.prop_cycle``. For a
+        domain-specific palette (e.g. ArchR's stallion for heme
+        celltypes), pass your own dict — epione doesn't bake in
+        hematopoiesis-specific colour choices.
+    show_ribbon
+        Draw a ± SE ribbon around each curve (alpha=0.25). Default True.
+
+    Returns
+    -------
+    ``(fig, axes)`` tuple.
     """
     import matplotlib.pyplot as plt
 
@@ -781,21 +803,26 @@ def plot_footprints(
             if len(footprints) == 1:
                 motif = next(iter(footprints))
             else:
-                raise ValueError(
-                    f"pass motif= one of {list(footprints)}"
-                )
+                raise ValueError(f"pass motif= one of {list(footprints)}")
         fp = footprints[motif]
 
-    g_order = list(groups) if groups is not None else fp.groups
-    if palette is None:
-        try:
-            from ..pl._palette import ARCHR_STALLION
-            palette = ARCHR_STALLION
-        except Exception:
-            palette = plt.rcParams["axes.prop_cycle"].by_key()["color"]
-    colors = {g: palette[i % len(palette)] for i, g in enumerate(g_order)}
+    usable = [g for g in fp.groups if (groups is None or g in groups)]
+    if order is not None:
+        plot_order = [g for g in order if g in usable]
+    else:
+        plot_order = sorted(usable)
 
-    has_bias = show_bias and fp.Tn5Bias is not None
+    # Palette → {group: colour}
+    if isinstance(palette, dict):
+        cycle = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+        colors = {g: palette.get(g, cycle[i % len(cycle)])
+                  for i, g in enumerate(plot_order)}
+    else:
+        pal = list(palette) if palette is not None \
+              else plt.rcParams["axes.prop_cycle"].by_key()["color"]
+        colors = {g: pal[i % len(pal)] for i, g in enumerate(plot_order)}
+
+    has_bias = show_bias and fp.Tn5BiasNormalized is not None
     if has_bias:
         fig, (ax, bias_ax) = plt.subplots(
             2, 1, figsize=figsize, sharex=True,
@@ -807,30 +834,38 @@ def plot_footprints(
 
     x = fp.positions
     y_key = fp.normalizedSignal if fp.normalize.lower() != "none" else fp.signal
-    idx = {g: i for i, g in enumerate(fp.groups)}
-    for g in g_order:
-        if g not in idx:
-            continue
-        ax.plot(x, y_key[idx[g], :], color=colors[g], lw=1.2, label=g)
+    se_key = fp.normalizedSignal_se if fp.normalize.lower() != "none" else fp.signal_se
+    idx_map = {g: i for i, g in enumerate(fp.groups)}
+
+    for g in plot_order:
+        i = idx_map.get(g)
+        if i is None: continue
+        y = y_key[i, :]
+        col = colors[g]
+        if show_ribbon and se_key is not None:
+            se = se_key[i, :]
+            ax.fill_between(x, y - se, y + se, color=col, alpha=0.25, linewidth=0)
+        ax.plot(x, y, color=col, lw=1.1, label=g)
 
     ax.axvline(0, color="black", lw=0.4, ls=":")
-    ax.set_ylabel(
-        "Normalized insertions" if fp.normalize.lower() == "subtract"
-        else "Signal / bias" if fp.normalize.lower() == "divide"
-        else "Insertions / site"
-    )
-    ax.set_title(f"{fp.motif}  ({fp.n_sites.get(fp.groups[0], 0):,} sites)")
-    ax.legend(frameon=False, fontsize=8, loc="upper right", ncol=1)
+    ylabel = {
+        "subtract": "Tn5 Bias Subtracted\nNormalized Insertions",
+        "divide":   "Tn5 Bias Divided\nNormalized Insertions",
+        "none":     "Insertions / site",
+    }[fp.normalize.lower()]
+    ax.set_ylabel(ylabel)
+    ax.set_title(title or f"{fp.motif}  ({next(iter(fp.n_sites.values())):,} sites)")
+    ax.legend(frameon=False, fontsize=7, loc="upper right", ncol=2)
     ax.spines[["top", "right"]].set_visible(False)
 
     if has_bias:
-        bias_ax.plot(x, fp.Tn5Bias, color="#888888", lw=1.0)
+        bias_ax.plot(x, fp.Tn5BiasNormalized, color="#555", lw=1.0)
         bias_ax.axvline(0, color="black", lw=0.4, ls=":")
-        bias_ax.set_xlabel("Distance to motif centre (bp)")
+        bias_ax.set_xlabel("Distance to motif center (bp)")
         bias_ax.set_ylabel("Tn5 bias")
         bias_ax.spines[["top", "right"]].set_visible(False)
     else:
-        ax.set_xlabel("Distance to motif centre (bp)")
+        ax.set_xlabel("Distance to motif center (bp)")
 
     if show:
         plt.tight_layout()
