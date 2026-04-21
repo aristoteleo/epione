@@ -234,6 +234,7 @@ def _positions_from_motif_database(
     *,
     chroms: Optional[Sequence[str]] = None,
     score_threshold: Optional[float] = None,
+    peaks: Optional[pd.DataFrame] = None,
 ) -> Dict[str, pd.DataFrame]:
     """Pull PWM match coordinates directly from a motif-database built
     by :func:`epione.tl.build_motif_database`.
@@ -257,6 +258,14 @@ def _positions_from_motif_database(
     score_threshold
         Optional minimum PWM score filter on top of the database's
         own p-value cutoff.
+    peaks
+        Optional DataFrame with ``chrom / start / end`` — motif hits
+        are restricted to those whose centre falls inside a peak
+        (ArchR ``getPositions(proj, 'Motif')`` restricts PWM matches
+        to the peak set produced by ``addReproduciblePeakSet``).
+        This is the single biggest driver of footprint amplitude:
+        genome-wide PWM hits are ~95 % noise, whereas peak-
+        restricted hits are real TF-binding candidates.
 
     Returns
     -------
@@ -288,6 +297,18 @@ def _positions_from_motif_database(
 
     use_chroms = list(chroms) if chroms is not None else meta["chroms"]
 
+    # Build per-chrom sorted peak intervals for overlap filter.
+    peaks_by_chrom: Dict[str, np.ndarray] = {}
+    if peaks is not None:
+        pk = peaks.copy()
+        pk.columns = [c.lower() for c in pk.columns]
+        for c, grp in pk.groupby("chrom", sort=False):
+            arr = np.asarray(
+                sorted(zip(grp["start"].astype(int).values,
+                            grp["end"].astype(int).values))
+            )
+            peaks_by_chrom[str(c)] = arr
+
     # Accumulate per-motif positions.
     out: Dict[str, list[pd.DataFrame]] = {n: [] for n in motifs}
     for chrom in use_chroms:
@@ -303,10 +324,24 @@ def _positions_from_motif_database(
                 continue
             sub = sub.copy()
             sub["chrom"] = chrom
-            # Parquet stores 0-based half-open BED coords.
             sub["center"] = ((sub["start"] + sub["end"]) // 2).astype(int)
             strand_map = {1: "+", -1: "-", "1": "+", "-1": "-"}
             sub["strand"] = sub["strand"].map(strand_map).fillna("+")
+
+            # Peak-restrict: keep motif hits whose CENTRE falls inside a
+            # peak (mirrors ArchR's getPositions(proj, 'Motif')).
+            if peaks is not None:
+                arr = peaks_by_chrom.get(chrom)
+                if arr is None or arr.size == 0:
+                    continue
+                cent = sub["center"].to_numpy()
+                # searchsorted on peak starts; check end > centre.
+                i = np.searchsorted(arr[:, 0], cent, side="right") - 1
+                keep = (i >= 0) & (arr[np.clip(i, 0, None), 1] > cent)
+                sub = sub.loc[keep]
+                if sub.empty:
+                    continue
+
             out[name].append(sub[["chrom", "center", "start", "end", "strand"]])
 
     return {
@@ -409,6 +444,7 @@ def get_footprints(
     motifs: Optional[Sequence[str]] = None,
     motif_key: str = "motif",
     motif_database: Optional[Union[str, Path]] = None,
+    peaks: Optional[Union[pd.DataFrame, str, Path]] = None,
     groupby: str,
     genome: Union[Genome, str, Path, None] = None,
     flank: int = 250,
@@ -490,13 +526,29 @@ def get_footprints(
                          "epi.pp.import_fragments first")
     frag_file = str(adata.uns["files"]["fragments"])
 
+    # Resolve peaks (DataFrame / BED / peak_mat labels).
+    peaks_df = None
+    if peaks is not None:
+        if isinstance(peaks, pd.DataFrame):
+            peaks_df = peaks
+        else:
+            p = Path(peaks)
+            if p.suffix.lower() in (".bed", ".gz") or p.suffix == "":
+                peaks_df = pd.read_csv(p, sep="\t", header=None,
+                                        names=["chrom", "start", "end"],
+                                        usecols=[0, 1, 2])
+            else:
+                peaks_df = pd.read_csv(p, sep="\t")
+
     # Normalise positions input.
     if positions is None:
         if motif_database is not None:
             # True PWM match coordinates from the cached database —
-            # ArchR getPositions(proj, 'Motif') equivalent.
+            # ArchR getPositions(proj, 'Motif') equivalent. Peak-
+            # restricted when ``peaks`` is given (mirrors ArchR's
+            # peak-set intersection).
             pos_raw = _positions_from_motif_database(
-                motif_database, motifs=motifs,
+                motif_database, motifs=motifs, peaks=peaks_df,
             )
         else:
             # Fallback: peak centers of varm[motif_key] hits. This is
