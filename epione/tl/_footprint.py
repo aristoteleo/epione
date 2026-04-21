@@ -223,10 +223,98 @@ def _parse_positions(pos_df: pd.DataFrame) -> pd.DataFrame:
     return df[["chrom", "center", "strand"]].reset_index(drop=True)
 
 
+def _positions_from_motif_matrix(
+    adata,
+    motif_key: str,
+    motifs: Optional[Sequence[str]] = None,
+) -> Dict[str, pd.DataFrame]:
+    """Turn ``adata.varm[motif_key]`` (peak × motif bool) into a
+    ``{motif_name: positions_df}`` dict suitable for ``get_footprints``.
+
+    The peak set used by :func:`epione.tl.add_motif_matrix` is
+    ``adata.var_names`` (``chrom:start-end`` strings). For each motif
+    column we extract the peak labels where the motif has a hit and
+    use the peak centre as the motif position (ArchR-compatible
+    coarse localisation — sufficient for ±250 bp footprint windows).
+
+    Parameters
+    ----------
+    adata
+        AnnData with ``varm[motif_key]`` and ``uns[motif_key + '_names']``.
+    motif_key
+        Key under ``varm`` / ``uns[..._names]`` (default ``'motif'``).
+    motifs
+        Optional subset of motif names. If ``None`` returns positions
+        for all motifs.
+
+    Returns
+    -------
+    dict
+        ``{motif_name: DataFrame(chrom / center / strand)}``.
+    """
+    if motif_key not in adata.varm:
+        raise KeyError(
+            f"adata.varm[{motif_key!r}] missing — run epi.tl.add_motif_matrix first"
+        )
+    if f"{motif_key}_names" not in adata.uns:
+        raise KeyError(
+            f"adata.uns[{motif_key!r}_names] missing"
+        )
+    M = adata.varm[motif_key]
+    names = np.asarray(adata.uns[f"{motif_key}_names"], dtype=object)
+    if motifs is not None:
+        motifs = list(motifs)
+        idx = [i for i, n in enumerate(names) if n in motifs]
+        if not idx:
+            raise ValueError(
+                f"none of {motifs!r} found in motif names "
+                f"(first 10: {list(names[:10])!r})"
+            )
+        M = M[:, idx]
+        names = names[idx]
+
+    import scipy.sparse as _sp
+    if _sp.issparse(M):
+        M = M.tocsc()
+    import re
+    pat = re.compile(r"^([^:]+):(\d+)-(\d+)$|^([^-]+)-(\d+)-(\d+)$")
+    chrom_arr, start_arr, end_arr = [], [], []
+    for label in adata.var_names:
+        m = pat.match(str(label))
+        if not m:
+            chrom_arr.append(None); start_arr.append(-1); end_arr.append(-1)
+            continue
+        c = m.group(1) or m.group(4)
+        s = int(m.group(2) or m.group(5))
+        e = int(m.group(3) or m.group(6))
+        chrom_arr.append(c); start_arr.append(s); end_arr.append(e)
+    chrom_arr = np.asarray(chrom_arr, dtype=object)
+    start_arr = np.asarray(start_arr, dtype=np.int64)
+    end_arr = np.asarray(end_arr, dtype=np.int64)
+    center_arr = ((start_arr + end_arr) // 2).astype(np.int64)
+
+    out = {}
+    for j, name in enumerate(names):
+        if _sp.issparse(M):
+            peak_idx = M[:, j].nonzero()[0]
+        else:
+            peak_idx = np.where(np.asarray(M[:, j]).ravel())[0]
+        if len(peak_idx) == 0:
+            continue
+        out[str(name)] = pd.DataFrame({
+            "chrom":  chrom_arr[peak_idx],
+            "center": center_arr[peak_idx],
+            "strand": np.full(len(peak_idx), "+", dtype=object),
+        })
+    return out
+
+
 def get_footprints(
     adata,
     *,
-    positions: Union[pd.DataFrame, Mapping[str, pd.DataFrame]],
+    positions: Union[pd.DataFrame, Mapping[str, pd.DataFrame], None] = None,
+    motifs: Optional[Sequence[str]] = None,
+    motif_key: str = "motif",
     groupby: str,
     genome: Union[Genome, str, Path, None] = None,
     flank: int = 250,
@@ -251,12 +339,25 @@ def get_footprints(
         ``uns['files']['fragments']`` (tabix-indexed) and a
         ``groupby`` column in ``obs`` (typically cluster / celltype).
     positions
-        Motif positions. Either:
+        Motif positions (explicit). Either:
 
         * a DataFrame with ``chrom / center / strand`` (or
           ``chrom / start / end`` — ``center = (start+end)//2``), or
         * a dict ``{motif_name: positions_df}`` to aggregate multiple
           motifs in a single sweep of the fragments.
+
+        If ``positions`` is ``None``, positions are auto-derived from
+        ``adata.varm[motif_key]`` (the sparse peak × motif matrix
+        written by :func:`epione.tl.add_motif_matrix`, ArchR
+        ``addMotifAnnotations`` equivalent). Each motif's peaks are
+        centre-coarsened (ArchR also does a peak-level localisation).
+    motifs
+        Optional subset of motif names when ``positions`` is auto-
+        derived from ``varm[motif_key]``. Pass e.g.
+        ``['GATA1', 'CEBPA', 'EBF1']`` to sweep a handful of TFs.
+    motif_key
+        Key under ``adata.varm`` (default ``'motif'``) — matches
+        ``add_motif_matrix(key_added='motif')``.
     groupby
         ``adata.obs`` column labelling the pseudo-bulk groups.
     genome
@@ -295,7 +396,16 @@ def get_footprints(
     frag_file = str(adata.uns["files"]["fragments"])
 
     # Normalise positions input.
-    if isinstance(positions, pd.DataFrame):
+    if positions is None:
+        # Auto-derive from add_motif_matrix output.
+        pos_raw = _positions_from_motif_matrix(adata, motif_key=motif_key, motifs=motifs)
+        positions_dict = {name: _parse_positions(df) for name, df in pos_raw.items()}
+        if not positions_dict:
+            raise ValueError(
+                "no motif positions could be derived; check that "
+                "adata.varm[motif_key] has non-zero columns"
+            )
+    elif isinstance(positions, pd.DataFrame):
         positions_dict = {motif_name: _parse_positions(positions)}
     else:
         positions_dict = {name: _parse_positions(df) for name, df in positions.items()}
@@ -327,7 +437,8 @@ def get_footprints(
     keep_groups = sorted(g for g, n in group_counts.items() if n >= min_cells_per_group)
     if not keep_groups:
         raise ValueError("no groups with >= min_cells_per_group cells")
-    bc_to_group = dict(group_series.items())
+    keep_set = set(keep_groups)
+    bc_to_group = {bc: g for bc, g in group_series.items() if g in keep_set}
 
     window = 2 * flank + 1
     tbx = pysam.TabixFile(frag_file)
