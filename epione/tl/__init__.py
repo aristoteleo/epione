@@ -13,8 +13,9 @@ import importlib
 # ``_footprint`` pulls in ``_bindetect_functions`` (which also needs
 # the Cython ``signals.pyx``).
 _FOOTPRINT_ATTRS = {
-    "get_footprints", "plot_footprints", "FootprintResult",
+    "get_footprints", "plot_footprints",
     "getFootprints", "plotFootprints",
+    "Footprint", "compute_tn5_bias_table",
 }
 _SCORE_BIGWIG_ATTRS = {
     "FootprintScorer", "score_bigwig_core", "score_bigwig",
