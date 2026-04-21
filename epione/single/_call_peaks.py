@@ -101,8 +101,18 @@ def _run_macs3(
     ``<name>_peaks.narrowPeak`` (or ``_broadPeak`` in broad mode)
     into a pandas DataFrame with ``chrom / start / end / name / score / …``.
     """
+    # Resolve ``macs3`` against ``sys.executable``'s sibling bin/ first
+    # (Jupyter kernels spawned with a full-path python don't necessarily
+    # have the env's bin on PATH for subprocess).
+    import shutil as _sh
+    import sys as _sys
+    _macs_path = (
+        os.path.join(os.path.dirname(_sys.executable), "macs3")
+        if os.path.exists(os.path.join(os.path.dirname(_sys.executable), "macs3"))
+        else _sh.which("macs3") or "macs3"
+    )
     cmd = [
-        "macs3", "callpeak",
+        _macs_path, "callpeak",
         "-t", bed_path,
         "-f", "BED",
         "-n", name,

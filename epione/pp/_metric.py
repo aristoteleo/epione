@@ -149,10 +149,13 @@ def tsse(
     from ..utils import read_features
     features = read_features(str(gene_anno))
     console.level1("Computing TSS enrichment score for adata...")
+    # Use all TSSes by default (``tss_enrichment`` expects a positive
+    # integer for ``n_tss``). A very large number effectively disables
+    # the "sample N TSSes" filter.
     result = tss_enrichment(
         adata, features=features,
         extend_upstream=flank_size, extend_downstream=flank_size,
-        n_tss=None, return_tss=True,
+        n_tss=1_000_000, return_tss=True,
     )
     # ``tss_enrichment`` already stores ``tss_score`` in ``obs``.
     # Build the snapATAC2-equivalent exports on top.
