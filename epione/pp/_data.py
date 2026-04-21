@@ -269,6 +269,127 @@ def import_fragments(
     return adata
 
 
+def concat_samples(
+    adatas: list,
+    sample_names: list,
+    fragment_files: list,
+    combined_fragments: Union[str, Path],
+    *,
+    chrom_sizes: Union[Genome, dict, None] = None,
+    sort_memory: str = "2G",
+    force: bool = False,
+) -> AnnData:
+    """Multi-sample concat of fragment-based AnnData objects.
+
+    Takes per-sample ``AnnData`` objects (output of
+    :func:`import_fragments`) and a parallel list of per-sample
+    fragment ``.tsv.gz`` paths, and produces:
+
+    1. One combined bgzipped + tabix-indexed fragments file
+       (``combined_fragments``), with the 4th column renamed to
+       ``<sample>#<barcode>`` (ArchR / snapATAC2 convention) so every
+       cell has a globally-unique ID.
+    2. One in-memory ``AnnData`` with obs stacked across samples,
+       index set to ``<sample>#<barcode>``, a ``sample`` obs column,
+       and ``uns['files']['fragments']`` pointing at the combined BED.
+
+    Downstream ``epi.single.macs3(data, groupby='sample')``,
+    ``epi.pp.make_peak_matrix(data, ...)`` etc. re-read fragments
+    from the combined file transparently.
+
+    Parameters
+    ----------
+    adatas
+        List of per-sample AnnData objects (e.g. ``[ad1, ad2, ad3]``).
+    sample_names
+        Labels (same order as ``adatas``) — used as the prefix in
+        ``<sample>#<barcode>`` and as ``obs['sample']`` values.
+    fragment_files
+        Per-sample fragments ``.tsv.gz`` paths (same order as ``adatas``).
+    combined_fragments
+        Output path for the merged BED. Gets sorted + bgzipped +
+        tabix-indexed (a ``.gz`` suffix is appended if missing, and
+        a ``.tbi`` sibling is written).
+    chrom_sizes
+        Optional ``Genome`` or ``{chrom: length}`` for the combined
+        AnnData's ``uns['reference_sequences']``. If omitted, tries
+        to pull from the first adata's own uns.
+    sort_memory
+        ``sort -S`` buffer size.
+    force
+        Overwrite the combined fragments file if it already exists.
+
+    Returns
+    -------
+    AnnData
+        In-memory ``AnnData`` with concatenated obs, empty X (0 vars)
+        and ``uns['files']['fragments']`` pointing at the indexed BED.
+    """
+    if not (len(adatas) == len(sample_names) == len(fragment_files)):
+        raise ValueError(
+            "adatas, sample_names, fragment_files must have the same length"
+        )
+
+    combined_fragments = Path(combined_fragments)
+    if combined_fragments.suffix != ".gz":
+        # Force a .gz output — pysam.tabix_index wants bgzipped.
+        combined_fragments = combined_fragments.with_suffix(combined_fragments.suffix + ".gz")
+    combined_plain = combined_fragments.with_suffix("")   # strip .gz for intermediate
+    tbi = combined_fragments.with_suffix(combined_fragments.suffix + ".tbi")
+
+    combined_fragments.parent.mkdir(parents=True, exist_ok=True)
+
+    # 1. Write + sort + bgzip + tabix the combined BED (idempotent).
+    if force or not combined_fragments.exists() or not tbi.exists():
+        console.level1(
+            f"concat_samples: writing combined fragments → {combined_fragments}"
+        )
+        with open(combined_plain, "w") as out:
+            for name, frag_path in zip(sample_names, fragment_files):
+                for chrom, s, e, bc, cnt in _open_fragment_file(str(frag_path)):
+                    out.write(f"{chrom}\t{s}\t{e}\t{name}#{bc}\t{cnt}\n")
+        import subprocess
+        subprocess.run(
+            ["sort", "-k1,1", "-k2,2n", "-S", sort_memory,
+             "-o", str(combined_plain), str(combined_plain)],
+            check=True,
+        )
+        import pysam
+        pysam.tabix_index(str(combined_plain), preset="bed",
+                          force=True, keep_original=False)
+        console.level2(f"concat_samples: indexed {combined_fragments}")
+
+    # 2. Build the combined AnnData (obs only — X placeholder).
+    combined_obs_frames = []
+    for name, a in zip(sample_names, adatas):
+        sub = pd.DataFrame(a.obs).copy()
+        sub.index = [f"{name}#{bc}" for bc in a.obs_names]
+        sub["sample"] = name
+        combined_obs_frames.append(sub)
+    combined_obs = pd.concat(combined_obs_frames)
+
+    # Resolve chrom_sizes for uns['reference_sequences'].
+    if chrom_sizes is None:
+        chrom_sizes = (adatas[0].uns.get("reference_sequences", {}) if adatas else {})
+        chrom_sizes = dict(chrom_sizes) if chrom_sizes else {}
+    else:
+        chrom_sizes = _resolve_chrom_sizes(chrom_sizes)
+
+    data = AnnData(
+        X=sp.csr_matrix((combined_obs.shape[0], 0), dtype=np.float32),
+        obs=combined_obs,
+        uns={
+            "files": {"fragments": str(combined_fragments)},
+            "reference_sequences": dict(chrom_sizes),
+        },
+    )
+    console.level2(
+        f"concat_samples: {data.n_obs:,} cells across "
+        f"{len(sample_names)} sample(s)"
+    )
+    return data
+
+
 # ---------------------------------------------------------------------------
 # Tile matrix — fragment BED → cell × 500 bp tile sparse matrix
 # ---------------------------------------------------------------------------

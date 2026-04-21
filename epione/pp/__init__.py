@@ -1,6 +1,6 @@
 from ._data import (
     import_fragments, make_peak_matrix, make_gene_matrix, add_tile_matrix,
-    
+    concat_samples,
 )
 from ._metric import (
     frag_size_distr, tsse, ensure_tabix_index,
@@ -18,6 +18,7 @@ from ._neighbors import (
 
 __all__ = [
     "import_fragments",
+    "concat_samples",
     "frag_size_distr",
     "tsse",
     "make_peak_matrix",
