@@ -221,27 +221,34 @@ def import_fragments(
         if chrom not in valid_chroms and chrom not in chrM_set:
             continue
         if chrom in chrM_set:
-            n_mito[bc] += cnt
+            # Count mito reads (pre-dedup); ArchR's fragments file has
+            # already collapsed PCR duplicates, so cnt here is effectively
+            # the duplicate multiplicity.
+            n_mito[bc] += 1
         else:
-            n_frag[bc] += cnt
-            # For frac_dup: unique fragments vs total fragments.
-            key = (bc, chrom, start, end)
-            if key not in seen:
-                seen.add(key)
-                n_uniq[bc] += 1
+            # ``n_fragment`` = number of *unique* fragment rows for this
+            # cell (one per row of the fragments file). This matches
+            # ArchR's ``nFrags`` metric. The optional 5th column gives
+            # the pre-dedup read count, which we use for frac_dup.
+            n_frag[bc] += 1
+            n_reads = cnt                           # pre-dedup read count
+            # ``frac_dup`` = 1 - (unique fragments / total reads).
+            # Track total-reads per cell in ``n_uniq`` (reused slot); the
+            # name is misleading but keeps the rest of the code unchanged.
+            n_uniq[bc] += n_reads
 
     # Build per-cell DataFrame.
     barcodes = sorted(set(n_frag) | set(n_mito))
     nf = np.asarray([n_frag[b] for b in barcodes], dtype=np.int64)
-    nu = np.asarray([n_uniq[b] for b in barcodes], dtype=np.int64)
+    n_total_reads = np.asarray([n_uniq[b] for b in barcodes], dtype=np.int64)
     nm = np.asarray([n_mito[b] for b in barcodes], dtype=np.int64)
 
     # Apply min fragments filter.
     keep = nf >= int(min_num_fragments)
     barcodes = [b for b, k in zip(barcodes, keep) if k]
-    nf = nf[keep]; nu = nu[keep]; nm = nm[keep]
+    nf = nf[keep]; n_total_reads = n_total_reads[keep]; nm = nm[keep]
 
-    frac_dup = np.where(nf > 0, 1.0 - nu / nf, 0.0)
+    frac_dup = np.where(n_total_reads > 0, 1.0 - nf / n_total_reads, 0.0)
     frac_mito = np.where(nf + nm > 0, nm / (nf + nm), 0.0)
 
     obs = pd.DataFrame({
