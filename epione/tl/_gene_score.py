@@ -144,40 +144,210 @@ def _adata_has_fragments(adata) -> bool:
         return False
 
 
-def _tile_matrix_from_adata_fragments(
+def _gene_score_from_fragments(
     adata,
+    genes: pd.DataFrame,
+    *,
     tile_size: int,
+    extend_upstream: Tuple[int, int],
+    extend_downstream: Tuple[int, int],
+    gene_upstream: int,
+    gene_downstream: int,
+    use_gene_boundaries: bool,
+    gene_scale_factor: float,
+    ceiling: Optional[int],
     verbose: bool,
-) -> Tuple[sp.csr_matrix, pd.DataFrame]:
-    """Build a raw 500 bp tile matrix from ``adata.uns['files']['fragments']``.
-    Runs ``epi.pp.add_tile_matrix`` on a throwaway shallow copy, so the
-    caller's ``adata.X`` is not touched.
-    """
-    from ..pp._data import add_tile_matrix
-    from anndata import AnnData
+) -> np.ndarray:
+    """ArchR-faithful gene score computation — **chromosome-by-chromosome**,
+    never materialising the full genome-wide tile matrix.
 
-    ref_seqs = dict(adata.uns["reference_sequences"])
-    _console(
-        f"building temporary {tile_size} bp raw tile matrix via "
-        f"epi.pp.add_tile_matrix on fragments",
-        verbose,
-    )
-    # Make a minimal AnnData that shares the uns fields add_tile_matrix
-    # needs. We use a plain (in-memory) AnnData because the product is
-    # temporary and we discard it immediately.
-    tmp = AnnData(
-        X=sp.csr_matrix((adata.n_obs, 0), dtype=np.int32),
-        obs=pd.DataFrame(index=pd.Index(list(adata.obs_names), dtype=str)),
-        uns={
-            "files": {"fragments": adata.uns["files"]["fragments"]},
-            "reference_sequences": ref_seqs,
-        },
-    )
-    add_tile_matrix(tmp, bin_size=tile_size, verbose=verbose)
-    X = tmp.X.tocsr() if sp.issparse(tmp.X) else sp.csr_matrix(tmp.X)
-    tile_labels = list(tmp.var_names)
-    tile_df = _parse_tile_labels(tile_labels)
-    return X, tile_df
+    For each chromosome:
+
+    1. Scan the fragment BED once, tile-align every TN5 cut
+       (``start // tile_size * tile_size``, same for ``end``).
+    2. Build ``matGS`` = sparse ``(n_unique_tiles × n_cells)`` with
+       only the tiles that actually saw an insertion as rows.
+    3. Apply the ceiling to cap the per-cell per-tile count.
+    4. For every gene on this chromosome, locate overlapping
+       unique tiles via binary search, compute the distance-decayed
+       weight × per-gene ``geneWeight`` and build a sparse
+       ``(n_genes_on_chrom × n_unique_tiles)`` weight matrix ``W``.
+    5. ``chrom_score = W @ matGS`` — one sparse × sparse matmul.
+    6. Accumulate into the global ``gene_score`` matrix at the
+       right gene columns.
+    """
+    import pysam
+
+    fragment_file = adata.uns["files"]["fragments"]
+    bc_to_idx = {str(b): i for i, b in enumerate(adata.obs_names)}
+    n_cells = len(bc_to_idx)
+    n_genes = len(genes)
+
+    # Per-gene precomputed fields (body_lo / body_hi / geneWeight etc.)
+    # — done once up front, shared across chromosomes.
+    genes_sorted = genes.copy()
+    genes_sorted["gene_idx_global"] = np.arange(n_genes, dtype=np.int64)
+    genes_sorted = genes_sorted.sort_values(
+        ["chrom", "start", "end"], kind="stable"
+    ).reset_index(drop=True)
+
+    # We'll build geneWeight per chromosome (ArchR normalises per-chrom).
+    gene_score = np.zeros((n_cells, n_genes), dtype=np.float64)
+
+    tbx = pysam.TabixFile(str(fragment_file))
+    try:
+        chroms_in_file = set(tbx.contigs)
+    except Exception:
+        chroms_in_file = set(adata.uns.get("reference_sequences", {}))
+
+    chroms_with_genes = [c for c in genes_sorted["chrom"].unique() if c in chroms_in_file]
+
+    try:
+        for chrom in chroms_with_genes:
+            g_chr = genes_sorted[genes_sorted["chrom"] == chrom].reset_index(drop=True)
+            _console(
+                f"chr={chrom}  genes={len(g_chr):,}",
+                verbose,
+            )
+
+            # ------- 1. scan fragments on this chromosome -------
+            rows_i = []          # tile index (into uniq_ins below)
+            cols_i = []          # cell index
+            tile_pos = []        # int start coordinate of each insertion
+            try:
+                it = tbx.fetch(chrom)
+            except Exception:
+                continue
+            # First pass: collect raw tile-aligned positions + cell ids.
+            pos_list = []
+            cell_list = []
+            for line in it:
+                parts = line.rstrip("\n").split("\t")
+                if len(parts) < 4:
+                    continue
+                try:
+                    start = int(parts[1]); end = int(parts[2])
+                except ValueError:
+                    continue
+                bc = parts[3]
+                cell_i = bc_to_idx.get(bc)
+                if cell_i is None:
+                    continue
+                ts = (start // tile_size) * tile_size
+                te = ((end - 1) // tile_size) * tile_size
+                pos_list.append(ts)
+                cell_list.append(cell_i)
+                if te != ts:
+                    pos_list.append(te)
+                    cell_list.append(cell_i)
+
+            if not pos_list:
+                continue
+
+            pos_arr = np.asarray(pos_list, dtype=np.int64)
+            cell_arr = np.asarray(cell_list, dtype=np.int64)
+            del pos_list, cell_list
+
+            # ------- 2. map to unique tile positions -------
+            uniq_ins, inv = np.unique(pos_arr, return_inverse=True)
+            # Build (n_uniq_tiles × n_cells) sparse.
+            matGS = sp.coo_matrix(
+                (np.ones(len(pos_arr), dtype=np.float32), (inv, cell_arr)),
+                shape=(len(uniq_ins), n_cells),
+            ).tocsr()
+            matGS.sum_duplicates()
+            if ceiling is not None and ceiling > 0:
+                np.clip(matGS.data, 0, ceiling, out=matGS.data)
+            del pos_arr, cell_arr, inv
+
+            # ------- 3. compute extended-body / domain for each gene -------
+            strand = g_chr["strand"].to_numpy()
+            is_plus = strand == "+"
+            g_start = g_chr["start"].to_numpy(np.int64)
+            g_end = g_chr["end"].to_numpy(np.int64)
+            body_lo = np.where(is_plus,
+                                g_start - gene_upstream,
+                                g_start - gene_downstream).astype(np.int64)
+            body_hi = np.where(is_plus,
+                                g_end + gene_downstream,
+                                g_end + gene_upstream).astype(np.int64)
+
+            # geneWeight: 1 / extended_width, normalised to [1, gsf]
+            width = (body_hi - body_lo).astype(np.float64)
+            width = np.where(width > 0, width, 1.0)
+            m = 1.0 / width
+            m_lo, m_hi = float(m.min()), float(m.max())
+            if m_hi > m_lo:
+                gene_weight = 1.0 + m * (gene_scale_factor - 1.0) / (m_hi - m_lo)
+            else:
+                gene_weight = np.ones_like(m)
+            gene_weight = np.clip(gene_weight, 1.0, gene_scale_factor).astype(np.float32)
+
+            # ------- 4. domain with optional neighbour-boundary capping -------
+            u_min, u_max = extend_upstream
+            d_min, d_max = extend_downstream
+            five_prime_max = np.where(is_plus, u_max, d_max).astype(np.int64)
+            five_prime_min = np.where(is_plus, u_min, d_min).astype(np.int64)
+            three_prime_max = np.where(is_plus, d_max, u_max).astype(np.int64)
+            three_prime_min = np.where(is_plus, d_min, u_min).astype(np.int64)
+
+            if use_gene_boundaries and len(g_chr) >= 2:
+                prev_body_end = np.concatenate([[-np.inf], body_hi[:-1].astype(float)])
+                next_body_start = np.concatenate([body_lo[1:].astype(float), [np.inf]])
+            else:
+                prev_body_end = np.full(len(g_chr), -np.inf)
+                next_body_start = np.full(len(g_chr), np.inf)
+
+            s_max_reach = (body_lo - five_prime_max).astype(float)
+            dom_lo = np.maximum(prev_body_end + tile_size, s_max_reach)
+            dom_lo = np.minimum((body_lo - five_prime_min).astype(float), dom_lo)
+            e_max_reach = (body_hi + three_prime_max).astype(float)
+            dom_hi = np.minimum(next_body_start - tile_size, e_max_reach)
+            dom_hi = np.maximum((body_hi + three_prime_min).astype(float), dom_hi)
+            dom_lo = np.maximum(dom_lo, 1.0).astype(np.int64)
+            dom_hi = np.maximum(dom_hi.astype(np.int64), dom_lo + 1)
+
+            # ------- 5. per-gene overlap with uniq_ins -------
+            # uniq_ins is the start coordinate of each populated tile.
+            tile_centres = uniq_ins + tile_size // 2
+
+            W_rows = []; W_cols = []; W_vals = []
+            for g in range(len(g_chr)):
+                lo = int(dom_lo[g]); hi = int(dom_hi[g])
+                i0 = np.searchsorted(tile_centres, lo, side="left")
+                i1 = np.searchsorted(tile_centres, hi, side="left")
+                if i1 == i0:
+                    continue
+                c = tile_centres[i0:i1]
+                bl, bh = int(body_lo[g]), int(body_hi[g])
+                x = np.maximum(0, np.maximum(bl - (c + tile_size // 2), (c - tile_size // 2) - bh)).astype(np.float64)
+                w = (np.exp(-x / 5000.0) + np.exp(-1.0)).astype(np.float32) * gene_weight[g]
+                W_rows.extend([g] * (i1 - i0))
+                W_cols.extend(range(i0, i1))
+                W_vals.extend(w.tolist())
+            if not W_rows:
+                continue
+            W = sp.coo_matrix(
+                (np.asarray(W_vals, dtype=np.float32),
+                 (np.asarray(W_rows, dtype=np.int64),
+                  np.asarray(W_cols, dtype=np.int64))),
+                shape=(len(g_chr), len(uniq_ins)),
+            ).tocsr()
+
+            # ------- 6. matmul (n_genes_chr × n_uniq_tiles) @ (n_uniq_tiles × n_cells) -------
+            chrom_score = (W @ matGS).astype(np.float32)
+            if sp.issparse(chrom_score):
+                chrom_score = chrom_score.toarray()
+
+            # ------- 7. accumulate at the correct global gene columns -------
+            g_idx_global = g_chr["gene_idx_global"].to_numpy(np.int64)
+            # chrom_score has shape (n_genes_chr, n_cells) — transpose for our output.
+            gene_score[:, g_idx_global] += chrom_score.T
+            del matGS, W, chrom_score
+    finally:
+        tbx.close()
+
+    return gene_score.astype(np.float32)
 
 
 def _tile_matrix_from_fragment_file(
@@ -595,97 +765,120 @@ def add_gene_score_matrix(
     All other keyword arguments mirror ArchR's ``addGeneScoreMatrix``
     defaults. See module docstring.
     """
-    # ----- 1. resolve tile-count matrix input -----
-    X_tile: sp.csr_matrix
-    tiles: pd.DataFrame
-    source: str
-
+    # ----- 1. decide execution path -----
+    # The ArchR implementation walks fragments **chromosome by chromosome**
+    # and only materialises the tiles that actually saw an insertion — for
+    # hg19 that's ~1-5 M tiles (not 6.27 M). We mirror that path whenever
+    # ``adata.uns['files']['fragments']`` is known, avoiding a full
+    # genome-wide ``(n_cells, 6.27M)`` materialisation of ``adata.X``.
+    #
+    # ``use_x`` keeps the legacy ``adata.X`` path available for callers
+    # that don't have the BED (e.g. already-pruned data).
+    has_fragments = _adata_has_fragments(adata) or (fragment_file is not None)
     x_looks_ok = _adata_x_looks_like_tile(adata, tile_size)
+
     if use_x == "auto":
-        effective_use_x = x_looks_ok
+        use_fragments_path = has_fragments      # prefer fragment path when possible
     elif use_x is True:
+        use_fragments_path = False
         if not x_looks_ok:
             raise ValueError(
                 f"use_x=True but adata.X var_names don't look like "
                 f"{tile_size} bp tiles"
             )
-        effective_use_x = True
     else:
-        effective_use_x = False
+        use_fragments_path = True
 
-    if effective_use_x:
-        _console("input: adata.X (already a tile matrix)", verbose)
-        X = adata.X
-        if not sp.issparse(X):
-            X = sp.csr_matrix(X)
-        X_tile = X.astype(np.float32).tocsr()
-        tiles = _parse_tile_labels(list(adata.var_names))
-        source = "adata.X"
-    elif _adata_has_fragments(adata):
-        X_tile, tiles = _tile_matrix_from_adata_fragments(
-            adata, tile_size, verbose=verbose,
-        )
-        X_tile = X_tile.astype(np.float32)
-        source = "adata fragments"
-    elif fragment_file is not None:
-        if chrom_sizes is None:
-            raise ValueError(
-                "fragment_file path requires chrom_sizes={'chrN': length, ...}"
-            )
-        X_tile, tiles = _tile_matrix_from_fragment_file(
-            fragment_file, adata.obs_names, chrom_sizes, tile_size, verbose,
-        )
-        X_tile = X_tile.astype(np.float32)
-        source = "fragment_file"
+    # Support a ``fragment_file=`` override (for in-memory adata without
+    # the standard ``uns['files']['fragments']`` entry).
+    if use_fragments_path and fragment_file is not None:
+        # Temporarily stash the path so the chrom-by-chrom helper below
+        # picks it up; we restore afterward.
+        old_files = dict(adata.uns.get("files", {}))
+        adata.uns["files"] = {**old_files, "fragments": str(fragment_file)}
+        if chrom_sizes is not None and "reference_sequences" not in adata.uns:
+            adata.uns["reference_sequences"] = dict(chrom_sizes)
+        _restore_files = lambda: adata.uns.__setitem__("files", old_files)
     else:
-        raise ValueError(
-            "no usable input. Supply one of:\n"
-            "  · adata.X with tile_size-wide chrN:s-e var_names, or\n"
-            "  · snapATAC2-backed adata with fragment_paired, or\n"
-            "  · fragment_file= + chrom_sizes="
-        )
+        _restore_files = lambda: None
 
-    n_cells, n_tiles = X_tile.shape
-    _console(
-        f"source={source}  cells={n_cells:,}  tiles={n_tiles:,}  "
-        f"nnz={X_tile.nnz/1e6:.0f}M",
-        verbose,
-    )
-
-    # ----- 2. gene annotation + tile→gene weight matrix -----
+    # ----- 2. gene annotation -----
     genes = _normalise_genes(gene_anno, exclude_chr=exclude_chr)
     _console(
         f"genes: {len(genes):,} on {genes['chrom'].nunique()} chroms "
         f"(after excluding {list(exclude_chr)})",
         verbose,
     )
-    W = _build_tile_gene_weight_matrix(
-        tiles, genes,
-        tile_size=tile_size,
-        extend_upstream=extend_upstream,
-        extend_downstream=extend_downstream,
-        gene_upstream=gene_upstream,
-        gene_downstream=gene_downstream,
-        use_gene_boundaries=use_gene_boundaries,
-        gene_scale_factor=gene_scale_factor,
-        verbose=verbose,
-    )
 
-    # ----- 3. per-tile ceiling + matmul -----
-    if ceiling is not None and ceiling > 0:
-        # ArchR clips per-tile counts at ``ceiling``. This is a *per-cell*
-        # per-tile cap, not a global one — do it on the sparse data array.
-        np.clip(X_tile.data, 0, ceiling, out=X_tile.data)
+    if use_fragments_path:
+        _console(
+            "chrom-by-chrom ArchR path (fragments → uniq_tiles → W @ matGS)",
+            verbose,
+        )
+        score = _gene_score_from_fragments(
+            adata, genes,
+            tile_size=tile_size,
+            extend_upstream=extend_upstream,
+            extend_downstream=extend_downstream,
+            gene_upstream=gene_upstream,
+            gene_downstream=gene_downstream,
+            use_gene_boundaries=use_gene_boundaries,
+            gene_scale_factor=gene_scale_factor,
+            ceiling=ceiling,
+            verbose=verbose,
+        )
+        source = "fragments (chrom-by-chrom)"
+        _restore_files()
+    else:
+        # Legacy path: use ``adata.X`` as the tile matrix. Requires the
+        # full (n_cells × n_tiles) to fit in RAM.
+        _console("input: adata.X (already a tile matrix)", verbose)
+        X = adata.X
+        if type(X).__name__ in (
+            "BackedArray", "_SubsetBackedArray",
+            "TransformedBackedArray", "ScaledBackedArray",
+        ):
+            # Chunked materialise to sparse to avoid 125 GB dense allocation.
+            parts = []
+            for _, _, chunk in X.chunked():
+                if sp.issparse(chunk):
+                    parts.append(chunk)
+                else:
+                    parts.append(sp.csr_matrix(chunk))
+            X = sp.vstack(parts).tocsr()
+        elif not sp.issparse(X):
+            X = sp.csr_matrix(X)
+        X_tile = X.astype(np.float32).tocsr()
+        tiles = _parse_tile_labels(list(adata.var_names))
+        n_cells_x, n_tiles_x = X_tile.shape
+        _console(
+            f"source=adata.X  cells={n_cells_x:,}  tiles={n_tiles_x:,}  "
+            f"nnz={X_tile.nnz/1e6:.0f}M",
+            verbose,
+        )
+        W = _build_tile_gene_weight_matrix(
+            tiles, genes,
+            tile_size=tile_size,
+            extend_upstream=extend_upstream,
+            extend_downstream=extend_downstream,
+            gene_upstream=gene_upstream,
+            gene_downstream=gene_downstream,
+            use_gene_boundaries=use_gene_boundaries,
+            gene_scale_factor=gene_scale_factor,
+            verbose=verbose,
+        )
+        if ceiling is not None and ceiling > 0:
+            np.clip(X_tile.data, 0, ceiling, out=X_tile.data)
+        _console("computing gene_score = X_tile @ W", verbose)
+        score = (X_tile @ W).astype(np.float32)
+        if sp.issparse(score):
+            score = score.toarray()
+        source = "adata.X"
 
-    _console("computing gene_score = X_tile @ W", verbose)
-    score = (X_tile @ W).astype(np.float32)
-    if sp.issparse(score):
-        score = score.toarray()
-
-    # ----- 4. depth normalisation + log -----
+    # ----- 3. depth normalisation + log -----
     row_sums = score.sum(axis=1, keepdims=True)
     row_sums = np.where(row_sums > 0, row_sums, 1.0)
-    score = score * (scale_to / row_sums)
+    score = (score * (scale_to / row_sums)).astype(np.float32)
     if log_transform:
         np.log2(score + 1, out=score)
 
