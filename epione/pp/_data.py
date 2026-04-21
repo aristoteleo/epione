@@ -415,6 +415,7 @@ def make_peak_matrix(
     *,
     counting_strategy: Literal["insertion", "paired-insertion", "fragment"] = "paired-insertion",
     chrM: list = ("chrM", "M", "chrMT", "MT"),
+    ceiling: Optional[int] = 4,
     verbose: bool = True,
 ) -> AnnData:
     """Build a new cell × peak AnnData from the fragment BED.
@@ -423,6 +424,10 @@ def make_peak_matrix(
     a Series of the same, a DataFrame with ``chrom / start / end``
     columns, or a list of 3-tuples. The returned AnnData is a *new*
     object (does not modify ``adata``).
+
+    ``ceiling`` — matches ArchR ``addPeakMatrix(ceiling=...)``. Per-cell
+    per-peak counts are capped at this value. Default 4 (ArchR default).
+    Pass ``None`` to disable capping.
     """
     if "files" not in adata.uns or "fragments" not in adata.uns["files"]:
         raise ValueError("adata.uns['files']['fragments'] missing")
@@ -496,6 +501,10 @@ def make_peak_matrix(
 
         if counting_strategy in ("insertion", "paired-insertion"):
             # Two insertion sites per fragment (TN5 cut at both ends).
+            # Each insertion event contributes 1, NOT ``cnt`` (the 5th
+            # column is the pre-dedup read count, already collapsed to
+            # a single unique fragment per row; ArchR's ``addPeakMatrix``
+            # treats each fragment as 2 insertion events regardless).
             for cut_arr in (starts_arr, ends_arr - 1):
                 idx = np.searchsorted(ps, cut_arr, side="right") - 1
                 valid = idx >= 0
@@ -508,7 +517,7 @@ def make_peak_matrix(
                     continue
                 rows_list.append(bcs_arr[valid])
                 cols_list.append(pj[idx[valid]])
-                data_list.append(cnts_arr[valid])
+                data_list.append(np.ones(int(valid.sum()), dtype=np.int32))
         else:
             # "fragment": overlap all peaks intersecting [start, end).
             # Vectorised: for each peak, find fragments in [start, end).
@@ -532,7 +541,8 @@ def make_peak_matrix(
                     continue
                 rows_list.append(bcs_s[:right][mask])
                 cols_list.append(np.full(int(mask.sum()), ppj, dtype=np.int64))
-                data_list.append(cnts_s[:right][mask])
+                # 1 per overlapping fragment, not ``cnt`` (read dup count).
+                data_list.append(np.ones(int(mask.sum()), dtype=np.int32))
 
     tbx.close()
 
@@ -550,6 +560,9 @@ def make_peak_matrix(
         shape=(n_cells, n_peaks), dtype=np.int32,
     ).tocsr()
     X.sum_duplicates()
+    # ArchR-style per-cell per-peak cap (addPeakMatrix(ceiling=...)).
+    if ceiling is not None and X.nnz > 0:
+        np.minimum(X.data, int(ceiling), out=X.data)
 
     peak_mat = AnnData(
         X=X,
