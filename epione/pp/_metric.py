@@ -109,7 +109,7 @@ def frag_size_distr(
 
 def tsse(
     adata: AnnData,
-    gene_anno: Genome | Path,
+    gene_anno,
     *,
     exclude_chroms: list[str] | str | None = ["chrM", "M", "chrMT", "MT"],
     flank_size: int = 2000,
@@ -127,8 +127,16 @@ def tsse(
     adata
         AnnData with ``uns['files']['fragments']`` set.
     gene_anno
-        A :class:`epione.utils.Genome` or a path to a GTF/GFF annotation
-        file. Used as the TSS source.
+        One of:
+
+        * :class:`epione.utils.Genome` — uses ``.annotation`` (GTF/GFF)
+          and collapses to one strand-aware TSS per gene name (matches
+          ArchR's TSS table).
+        * Path to a GTF/GFF file — same auto-collapse.
+        * :class:`pandas.DataFrame` with columns
+          ``chrom / start / end / strand`` (and optional ``gene_name``).
+          One row per gene. This is the ArchR ``genes`` format and
+          gives a 1:1 comparable TSSe.
     exclude_chroms
         Chromosomes skipped when sampling TSSes.
     flank_size
@@ -142,12 +150,50 @@ def tsse(
     dict | None
         When ``inplace=False`` returns a dict with the four fields above.
     """
-    # Resolve the annotation path (Genome → GTF/GFF path).
-    if isinstance(gene_anno, Genome):
-        gene_anno = gene_anno.annotation
-    # Load features for TSS pileup via tss_enrichment below.
-    from ..utils import read_features
-    features = read_features(str(gene_anno))
+    # Resolve annotation → features DataFrame with one row per TSS.
+    if isinstance(gene_anno, pd.DataFrame):
+        # Accept ArchR-style genes table: chrom/start/end/strand, one per
+        # gene. Normalise column names to ``tss_enrichment`` expectations.
+        df = gene_anno.copy()
+        # Canonicalise column names.
+        rn = {}
+        for c in df.columns:
+            lc = c.lower()
+            if lc == "chrom":    rn[c] = "Chromosome"
+            elif lc == "start":  rn[c] = "Start"
+            elif lc == "end":    rn[c] = "End"
+            elif lc == "strand": rn[c] = "Strand"
+        df = df.rename(columns=rn)
+        features = df
+    else:
+        if isinstance(gene_anno, Genome):
+            gene_anno = gene_anno.annotation
+        # Load GTF, then collapse to one row per gene. read_features gives
+        # ~100k transcript rows with mostly null gene_name — collapse on
+        # (Chromosome, strand-aware TSS coordinate) as a fallback.
+        from ..utils import read_features
+        feats = read_features(str(gene_anno))
+        strand_col = None
+        for c in ("Strand", "strand"):
+            if c in feats.columns:
+                strand_col = c
+                break
+        if strand_col is not None:
+            is_minus = feats[strand_col].astype(str).str.strip().isin(
+                ["-", "minus", "-1"])
+            tss = np.where(is_minus,
+                           feats["End"].astype(int).values - 1,
+                           feats["Start"].astype(int).values)
+        else:
+            tss = feats["Start"].astype(int).values
+        feats = feats.assign(_TSS=tss)
+        features = feats.drop_duplicates(
+            subset=["Chromosome", "_TSS"], keep="first").copy()
+        # Re-home Start/End so that (Start) is the TSS (needed by
+        # ``tss_enrichment``'s strand-aware pileup code).
+        features["Start"] = features["_TSS"].astype(int).values
+        features["End"] = features["_TSS"].astype(int).values + 1
+        features = features.drop(columns="_TSS")
     console.level1("Computing TSS enrichment score for adata...")
     # Use all TSSes by default (``tss_enrichment`` expects a positive
     # integer for ``n_tss``). A very large number effectively disables
@@ -282,24 +328,43 @@ def tss_enrichment(
     chromosomes = fragments.contigs
     features = features[features.Chromosome.isin(chromosomes)]
 
-    # logging.info(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Counting fragments in {n} cells for {features.shape[0]} features...")
+    # Strand-aware TSS: for + strand, TSS = Start; for - strand, TSS = End.
+    # Without this, minus-strand genes are centred on the 3' end, diluting
+    # the centre/flank TSSe ratio by ~2×.
+    strand_col = None
+    for c in ("Strand", "strand"):
+        if c in features.columns:
+            strand_col = c
+            break
+    if strand_col is not None:
+        tss_coord = np.where(
+            features[strand_col].astype(str).str.strip().isin(["-", "minus", "-1"]),
+            features["End"].astype(int).values - 1,
+            features["Start"].astype(int).values,
+        )
+    else:
+        tss_coord = features["Start"].astype(int).values
 
     for i in tqdm(
         range(features.shape[0]), desc="Fetching Regions..."
     ):  # iterate over features (e.g. genes)
         f = features.iloc[i]
-        tss_start = f.Start - extend_upstream  # First position of the TSS region
-        for fr in fragments.fetch(
-            f.Chromosome, f.Start - extend_upstream, f.Start + extend_downstream
-        ):
+        tss = int(tss_coord[i])
+        region_start = tss - extend_upstream
+        region_end = tss + extend_downstream + 1     # inclusive TSS position
+        for fr in fragments.fetch(f.Chromosome, region_start, region_end):
             try:
-                rowind = d[fr.name]  # cell barcode (e.g. GTCAGTCAGTCAGTCA-1)
-                score = int(fr.score)  # number of cuts per fragment (e.g. 2)
-                colind_start = max(fr.start - tss_start, 0)
-                colind_end = min(fr.end - tss_start, n_features)  # ends are non-inclusive in bed
-                mx[rowind, colind_start:colind_end] += score
-            except:
-                pass
+                rowind = d[fr.name]  # cell barcode
+            except KeyError:
+                continue
+            # Match ArchR: count Tn5 insertion events (one at fragment
+            # start, one at end - 1), not fragment coverage. Coverage
+            # pileup "leaks" into the flank region and artificially
+            # lowers the centre/flank TSSe ratio.
+            for cut in (fr.start, fr.end - 1):
+                col = cut - region_start
+                if 0 <= col < n_features:
+                    mx[rowind, col] += 1
 
     fragments.close()
 
@@ -328,7 +393,7 @@ def tss_enrichment(
 
 
 
-def _calculate_tss_score(data, flank_size: int = 100, center_size: int = 1001):
+def _calculate_tss_score(data, flank_size: int = 100, center_size: int = 101):
     """
     Calculate TSS enrichment scores (defined by ENCODE) for each cell.
 
