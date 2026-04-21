@@ -424,20 +424,27 @@ def plot_peak2gene(
     arc_ax.spines[["top", "right", "left", "bottom"]].set_visible(False)
     arc_ax.set_xlim(start, end)
     arc_ax.set_yticks([])
-    arc_ax.text(1.01, 0.5, "Peak2GeneLinks",
+    # Track label at the top-left (the old right-side label forced
+    # the colourbar 18% past the axes, producing a big empty band).
+    arc_ax.text(0.0, 1.0, "Peak2GeneLinks",
                 transform=arc_ax.transAxes, fontsize=9,
-                va="center", ha="left", fontweight="bold")
+                va="bottom", ha="left", fontweight="bold")
 
-    # Colour bar (small, inside the arc track's right margin)
+    # |r| legend: a small horizontal colourbar tucked into the
+    # top-right corner of the arc panel. Kept inside the axes so it
+    # never collides with peak/gene labels or the x-axis ticks, and
+    # so ``tight_layout`` can't push it off-figure.
     from mpl_toolkits.axes_grid1.inset_locator import inset_axes
-    cax_bar = inset_axes(arc_ax, width="1.5%", height="60%",
-                         loc="center right",
-                         bbox_to_anchor=(1.18, 0, 1, 1),
+    cax_bar = inset_axes(arc_ax, width="14%", height="3%",
+                         loc="upper right",
+                         bbox_to_anchor=(0.0, 0.0, 0.985, 0.96),
                          bbox_transform=arc_ax.transAxes, borderpad=0)
     sm = mpl.cm.ScalarMappable(cmap=cmap, norm=mpl.colors.Normalize(0, 1))
-    cb = plt.colorbar(sm, cax=cax_bar)
-    cb.set_label("|r|", fontsize=7)
-    cb.ax.tick_params(labelsize=6)
+    cb = plt.colorbar(sm, cax=cax_bar, orientation="horizontal")
+    cb.set_label("|correlation|", fontsize=7, labelpad=2)
+    cb.ax.tick_params(labelsize=6, length=2, pad=1)
+    cb.ax.xaxis.set_ticks_position("top")
+    cb.ax.xaxis.set_label_position("top")
 
     # ---- Gene row ----------------------------------------------------------
     gene_ax.set_ylim(0, 1.4)
