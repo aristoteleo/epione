@@ -1,9 +1,7 @@
 
 
 from anndata import AnnData
-import snapatac2._snapatac2 as internal
 import numpy as np
-import snapatac2
 import matplotlib.pyplot as plt
 import seaborn as sns
 from ..utils import console
@@ -11,7 +9,14 @@ from typing import Union, Optional
 
 
 def is_anndata(data) -> bool:
-    return isinstance(data, AnnData) or isinstance(data, internal.AnnData) or isinstance(data, internal.AnnDataSet)
+    """Return True for both plain ``anndata.AnnData`` and ``anndataoom``
+    (which inherits / quacks like ``AnnData``).
+    """
+    if isinstance(data, AnnData):
+        return True
+    # anndataoom.AnnDataOOM is a Python class that wraps a Rust backend;
+    # checking the class name avoids a hard dependency.
+    return type(data).__name__ in ("AnnDataOOM",)
 
 
 def frag_size_distr(

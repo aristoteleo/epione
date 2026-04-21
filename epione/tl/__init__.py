@@ -1,19 +1,45 @@
 
-from ._bindetect import bindetect
+# ``_bindetect`` / ``_atacorrect`` / ``_score_bigwig`` depend (directly
+# or transitively) on the Cython ``signals.pyx`` / ``_footprint_cython``
+# extension built against an older numpy ABI. Touching any of them at
+# package-import time prints a numpy 1.x/2.x ABI banner to stderr on
+# modern numpy, which makes the first notebook cell look scary. All of
+# them are therefore lazy-imported so a numpy 2.x environment can still
+# use the core preprocess / chromVAR / gene-score pipeline silently;
+# the extension only loads (and fails informatively) when you actually
+# call into footprint / score_bigwig functionality.
+import importlib
 
-from ._atacorrect import (
-    AtacBias, atacorrect_core, atacorrect, 
-    save_atacorrect_results_to_bigwig
-)
+# ``_footprint`` pulls in ``_bindetect_functions`` (which also needs
+# the Cython ``signals.pyx``).
+_FOOTPRINT_ATTRS = {
+    "get_footprints", "plot_footprints", "FootprintResult",
+    "getFootprints", "plotFootprints",
+}
+_SCORE_BIGWIG_ATTRS = {
+    "FootprintScorer", "score_bigwig_core", "score_bigwig",
+    "calculate_aggregate_scores", "compare_methods",
+}
+_PLOTTING_TOBIAS_ATTRS = {"plot_aggregate", "plot_aggregate_tobias"}
 
-from ._score_bigwig import (
-    FootprintScorer, score_bigwig_core, score_bigwig,
-    calculate_aggregate_scores, compare_methods
-)
 
-from ._plotting_tobias import (
-    plot_aggregate, plot_aggregate_tobias
-)
+def __getattr__(name):
+    if name == "bindetect":
+        return importlib.import_module("._bindetect", __name__).bindetect
+    if name in ("AtacBias", "atacorrect_core", "atacorrect",
+                "save_atacorrect_results_to_bigwig"):
+        mod = importlib.import_module("._atacorrect", __name__)
+        return getattr(mod, name)
+    if name in _FOOTPRINT_ATTRS:
+        mod = importlib.import_module("._footprint", __name__)
+        return getattr(mod, name)
+    if name in _SCORE_BIGWIG_ATTRS:
+        mod = importlib.import_module("._score_bigwig", __name__)
+        return getattr(mod, name)
+    if name in _PLOTTING_TOBIAS_ATTRS:
+        mod = importlib.import_module("._plotting_tobias", __name__)
+        return getattr(mod, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 from ._motif_tools import (
     MotifMatrix, FormatMotifs, ClusterMotifs,
@@ -29,12 +55,7 @@ from ._plotting import (
     plot_heatmap, plot_tracks
 )
 
-from ._footprint import (
-    get_footprints, plot_footprints, FootprintResult,
-    getFootprints, plotFootprints
-)
-
-from ._reducedimension import lsi, spectral
+from ._reducedimension import lsi
 
 from ._iterative_lsi import iterative_lsi
 
@@ -48,6 +69,7 @@ from ._motif_matrix import add_motif_matrix
 from ._motif_database import build_motif_database, query_motif_database
 from ._background_peaks import add_background_peaks
 from ._chromvar import compute_deviations
+from ._gene_score import add_gene_score_matrix
 
 from ._umap import umap
 
@@ -69,7 +91,7 @@ __all__ = [
     "plot_heatmap", "plot_tracks",
     "get_footprints", "plot_footprints", "FootprintResult",
     "getFootprints", "plotFootprints",
-    "lsi","spectral",
+    "lsi",
     "iterative_lsi",
     "peak_to_gene",
     "coaccessibility",
