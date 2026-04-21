@@ -183,9 +183,12 @@ class Footprint:
     ``getFootprints`` output analogue)."""
     motif: str
     groups: List[str]
-    signal: np.ndarray            # (n_groups, window) raw cut density / site
-    Tn5Bias: Optional[np.ndarray] # (window,) expected cut density / site
-    normalizedSignal: np.ndarray  # signal - Tn5Bias (or signal / Tn5Bias)
+    signal: np.ndarray                       # (n_groups, window) raw cut count per bp per site
+    signal_se: np.ndarray                    # (n_groups, window) standard error of ``signal``
+    Tn5Bias: Optional[np.ndarray]            # (window,) raw bias (fold vs uniform)
+    Tn5BiasNormalized: Optional[np.ndarray]  # (window,) bias / bias_flank_mean
+    normalizedSignal: np.ndarray             # (n_groups, window) Subtract or Divide output
+    normalizedSignal_se: np.ndarray          # (n_groups, window) SE of normalizedSignal
     n_sites: Dict[str, int]
     flank: int
     kmer_length: int
@@ -195,6 +198,8 @@ class Footprint:
     def positions(self) -> np.ndarray:
         """Genomic offsets covered by each column — ``[-flank, …, flank]``."""
         return np.arange(-self.flank, self.flank + 1)
+
+
 
 
 def _parse_positions(pos_df: pd.DataFrame) -> pd.DataFrame:
@@ -407,6 +412,7 @@ def get_footprints(
     groupby: str,
     genome: Union[Genome, str, Path, None] = None,
     flank: int = 250,
+    flank_norm: int = 50,
     normalize: Literal["None", "Subtract", "Divide"] = "Subtract",
     kmer_length: int = 6,
     bias_table: Optional[np.ndarray] = None,
@@ -546,11 +552,16 @@ def get_footprints(
     tbx = pysam.TabixFile(frag_file)
 
     results: Dict[str, Footprint] = {}
+    n_groups = len(keep_groups)
+    group_to_row = {g: i for i, g in enumerate(keep_groups)}
     for motif, pos_df in positions_dict.items():
         console.level1(
-            f"footprint: {motif} — {len(pos_df):,} positions × {len(keep_groups)} groups"
+            f"footprint: {motif} — {len(pos_df):,} positions × {n_groups} groups"
         )
-        signal = {g: np.zeros(window, dtype=np.float64) for g in keep_groups}
+        # Running sums for per-site variance (Welford-style).
+        signal    = np.zeros((n_groups, window), dtype=np.float64)  # Σ per-site counts
+        signal_sq = np.zeros((n_groups, window), dtype=np.float64)  # Σ (per-site counts)^2
+        site_buf  = np.zeros((n_groups, window), dtype=np.float64)  # temp per-site aggregate
         n_sites = {g: 0 for g in keep_groups}
         bias_accum = np.zeros(window, dtype=np.float64)
         n_bias_sites = 0
@@ -571,9 +582,6 @@ def get_footprints(
 
                 # Bias profile — expected cut rate per bp from local k-mer.
                 if do_bias and seq_cache is not None:
-                    # Need codes[cut-half_k : cut+(k-half_k)] for each cut
-                    # in [lo, hi). Equivalent to sliding kmers over
-                    # codes[lo-half_k : hi + (k-half_k) - 1].
                     seq_lo = lo - half_k
                     seq_hi = hi + (k - half_k) - 1
                     if 0 <= seq_lo and seq_hi <= len(seq_cache):
@@ -588,7 +596,8 @@ def get_footprints(
                             bias_accum += bp_bias
                             n_bias_sites += 1
 
-                # Cut density per group.
+                # Per-site cut density into site_buf, then fold into running Σ + Σ^2.
+                site_buf[:] = 0.0
                 for line in tbx.fetch(chrom_name, lo, hi):
                     parts = line.split("\t")
                     if len(parts) < 4:
@@ -601,45 +610,83 @@ def get_footprints(
                         s = int(parts[1]); e = int(parts[2])
                     except ValueError:
                         continue
+                    grow = group_to_row[g]
                     for cut in (s, e - 1):
                         if lo <= cut < hi:
                             idx = cut - lo if strand == "+" else (hi - 1 - cut)
-                            signal[g][idx] += 1.0
+                            site_buf[grow, idx] += 1.0
+
+                # Fold this site's per-bp count into Σ and Σ^2 — later these
+                # give per-bp variance across motif sites, hence SE of the
+                # mean profile (like ArchR's replicate-based SE ribbon).
+                signal    += site_buf
+                signal_sq += site_buf * site_buf
                 for g in keep_groups:
                     n_sites[g] += 1
 
-        # Per-site average.
-        sig_mat = np.vstack([
-            signal[g] / max(n_sites[g], 1) for g in keep_groups
-        ])
+        # Per-site mean + standard error of the mean.
+        sig_mat = np.zeros_like(signal)
+        se_mat  = np.zeros_like(signal)
+        for i, g in enumerate(keep_groups):
+            n = max(n_sites[g], 1)
+            mean = signal[i] / n
+            # var = E[X^2] - (E[X])^2
+            var = np.maximum(signal_sq[i] / n - mean * mean, 0.0)
+            sig_mat[i] = mean
+            se_mat[i]  = np.sqrt(var / n)
         bias_prof = bias_accum / max(n_bias_sites, 1) if n_bias_sites else None
 
         if smooth and smooth > 1:
             w = int(smooth)
             ker = np.ones(w, dtype=np.float64) / w
             sig_mat = np.vstack([np.convolve(row, ker, mode="same") for row in sig_mat])
+            # Smoothing a mean also smooths its SE (var of a rolling mean of
+            # independent samples is the mean of their vars / w).
+            se_mat = np.vstack([
+                np.sqrt(np.convolve(row * row, ker, mode="same") / max(w, 1))
+                for row in se_mat
+            ])
             if bias_prof is not None:
                 bias_prof = np.convolve(bias_prof, ker, mode="same")
 
-        if normalize.lower() == "subtract" and bias_prof is not None:
-            # Match rate levels: bias track (fold-enrichment) is dimensionless,
-            # so scale it to the mean of signal's flanks before subtracting.
-            flank_idx = np.r_[np.arange(0, flank // 2), np.arange(window - flank // 2, window)]
-            sig_mean_flank = sig_mat[:, flank_idx].mean(axis=1, keepdims=True)
-            bias_mean_flank = bias_prof[flank_idx].mean() or 1e-9
-            bias_scaled = (bias_prof / bias_mean_flank) * sig_mean_flank
-            normalized = sig_mat - bias_scaled
-        elif normalize.lower() == "divide" and bias_prof is not None:
-            normalized = sig_mat / np.maximum(bias_prof[None, :], 1e-9)
+        # --- ArchR-style normalization ---
+        # ArchR plotFootprints defaults: flank=250, flankNorm=50. The
+        # baseline used to normalise each column is the mean signal
+        # over bp positions with ``|x| >= flank - flankNorm`` — i.e.
+        # only the outer 50 bp at each edge of the window (not the
+        # whole flank half). This is 20 % of the window, not 50 %, so
+        # the footprint dome lands on a much higher normalised scale.
+        center_idx = flank
+        abs_offsets = np.arange(window) - center_idx      # signed bp offsets
+        flank_mask = np.abs(abs_offsets) >= (flank - flank_norm)
+        flank_idx = np.where(flank_mask)[0]
+        sig_mean_flank = sig_mat[:, flank_idx].mean(axis=1, keepdims=True)
+        sig_flank_safe = np.where(sig_mean_flank > 0, sig_mean_flank, 1e-9)
+        bias_norm_prof = None
+        if bias_prof is not None:
+            bias_mean_flank = bias_prof[flank_idx].mean()
+            if bias_mean_flank > 0:
+                bias_norm_prof = bias_prof / bias_mean_flank
+
+        if normalize.lower() == "subtract" and bias_norm_prof is not None:
+            normalized    = (sig_mat / sig_flank_safe) - bias_norm_prof[None, :]
+            normalized_se = se_mat / sig_flank_safe
+        elif normalize.lower() == "divide" and bias_norm_prof is not None:
+            normalized    = (sig_mat / sig_flank_safe) / np.maximum(bias_norm_prof[None, :], 1e-9)
+            normalized_se = se_mat / sig_flank_safe / np.maximum(bias_norm_prof[None, :], 1e-9)
         else:
-            normalized = sig_mat
+            normalized    = sig_mat
+            normalized_se = se_mat
 
         results[motif] = Footprint(
             motif=motif,
             groups=list(keep_groups),
             signal=sig_mat,
+            signal_se=se_mat,
             Tn5Bias=bias_prof,
+            Tn5BiasNormalized=bias_norm_prof,
             normalizedSignal=normalized,
+            normalizedSignal_se=normalized_se,
             n_sites=dict(n_sites),
             flank=flank,
             kmer_length=k,
