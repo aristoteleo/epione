@@ -1,500 +1,883 @@
-#!/usr/bin/env python
+"""ArchR-style footprint analysis: per-group Tn5 cut density aggregation
+around motif positions, with hexamer bias correction.
 
+Produces three layers per motif (mirrors ArchR ``getFootprints`` output):
+
+1. ``signal``          — raw Tn5 cut count per group × per bp in window
+2. ``Tn5Bias``         — expected cut density from local hexamer × global
+                         kmer bias table (genome-wide baseline)
+3. ``normalizedSignal``— ``signal - Tn5Bias``  (or ``signal / Tn5Bias`` if
+                         ``normalize='Divide'``)
+
+Plotting mirrors ArchR ``plotFootprints`` — aggregate profile per group
+with optional bias track below.
 """
-Footprint aggregation utilities inspired by ArchR's getFootprints/plotFootprints.
-
-These routines operate directly on cutsite bigwig files (such as those produced
-by `pseudobulk_with_fragments(..., bigwig_strategy="cutsite")`) and motif
-regions, returning aggregate insertion profiles per condition & motif.
-
-Bias correction (Tn5 k-mer) is not performed here; profiles represent the raw
-average cutsite signal. The plotting helper mirrors ArchR's controls for
-normalisation and smoothing.
-"""
-
 from __future__ import annotations
 
-import os
-import math
-from dataclasses import dataclass, field
-from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, List, Literal, Mapping, Optional, Sequence, Tuple, Union
 
 import numpy as np
-import pyBigWig
-import pysam
+import pandas as pd
 
-import matplotlib
-
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-
-from ..utils.regions import RegionList, OneRegion
-from ..utils.motifs import MotifList
 from ..utils import console
-from ._bindetect_functions import quantile_normalization, ArrayNorm
-
-try:
-    from tqdm import tqdm
-except ImportError:  # fallback when tqdm unavailable
-    def _progress_iter(iterable, **kwargs):
-        return iterable
-else:
-    def _progress_iter(iterable, **kwargs):
-        return tqdm(iterable, **kwargs)
+from ..utils._genome import Genome
 
 
-def _ensure_dict(obj: Mapping[str, str] | Sequence[str]) -> Dict[str, str]:
-    if isinstance(obj, Mapping):
-        return dict(obj)
-    if isinstance(obj, Sequence):
-        return {os.path.splitext(os.path.basename(path))[0]: path for path in obj}
-    raise TypeError("score_files must be a mapping or sequence of paths.")
+# ---------------------------------------------------------------------------
+# k-mer helpers
+# ---------------------------------------------------------------------------
+
+_BASE_TO_INT = np.full(256, 255, dtype=np.uint8)
+for _b, _v in zip(b"ACGT", (0, 1, 2, 3)):
+    _BASE_TO_INT[_b] = _v
+    _BASE_TO_INT[ord(chr(_b).lower())] = _v
 
 
-def _ensure_region_list(obj) -> RegionList:
-    if isinstance(obj, RegionList):
-        return obj
-    rl = RegionList()
-    if isinstance(obj, Iterable):
-        for elem in obj:
-            if isinstance(elem, OneRegion):
-                rl.append(elem)
-            elif isinstance(elem, (list, tuple)) and len(elem) >= 3:
-                rl.append(OneRegion(list(elem)))
-            else:
-                raise ValueError(f"Unsupported motif position entry: {elem}")
-        return rl
-    raise TypeError("Positions must be RegionList or iterable of regions.")
+def _seq_to_codes(seq: str) -> np.ndarray:
+    """ACGT string → numpy int codes (A=0, C=1, G=2, T=3, other=255)."""
+    arr = np.frombuffer(seq.encode("ascii"), dtype=np.uint8)
+    return _BASE_TO_INT[arr]
 
 
-def _running_mean(arr: np.ndarray, window: int) -> np.ndarray:
-    if window <= 1:
-        return arr
-    window = min(window, arr.size)
-    kernel = np.ones(window, dtype=np.float64) / window
-    return np.convolve(arr, kernel, mode="same")
+def _codes_to_kmers(codes: np.ndarray, k: int) -> np.ndarray:
+    """Rolling k-mer encoded as base-4 integer. Invalid windows → -1."""
+    n = len(codes) - k + 1
+    if n <= 0:
+        return np.empty(0, dtype=np.int64)
+    kmers = np.zeros(n, dtype=np.int64)
+    valid = np.ones(n, dtype=bool)
+    for i in range(k):
+        col = codes[i : i + n]
+        kmers = kmers * 4 + col.astype(np.int64)
+        valid &= col < 4
+    kmers = np.where(valid, kmers, -1)
+    return kmers
 
 
-def _normalise_profile(profile: np.ndarray, method: str, flank_norm: int, eps: float = 1e-9) -> np.ndarray:
-    method = method.lower()
-    if method == "none":
-        return profile
+# ---------------------------------------------------------------------------
+# Tn5 bias table — genome-wide k-mer insertion rate
+# ---------------------------------------------------------------------------
 
-    flank_norm = max(1, min(flank_norm, profile.size // 2))
-    flank_idx = np.concatenate(
-        [
-            np.arange(0, flank_norm, dtype=int),
-            np.arange(profile.size - flank_norm, profile.size, dtype=int),
-        ]
+def compute_tn5_bias_table(
+    fragment_file: Union[str, Path],
+    genome_fasta: Union[str, Path],
+    *,
+    kmer_length: int = 6,
+    max_fragments: int = 5_000_000,
+    exclude_chroms: Sequence[str] = ("chrM", "chrMT", "M", "MT"),
+    chroms: Optional[Sequence[str]] = None,
+) -> np.ndarray:
+    """Per-k-mer Tn5 bias table, defined as
+    ``observed_rate / expected_rate`` where *expected* is the global
+    cut-rate times the genome-wide k-mer frequency.
+
+    Parameters
+    ----------
+    fragment_file
+        Tabix-indexed fragments ``.tsv.gz`` (output of
+        :func:`epione.pp.import_fragments` or similar).
+    genome_fasta
+        Matching genome FASTA (can be ``.gz`` — pyfaidx handles it).
+    kmer_length
+        k-mer size centred on the cut position (ArchR default: 6).
+    max_fragments
+        Stop scanning after this many fragments (2 cuts each). Set to
+        ``math.inf`` for the full file.
+    exclude_chroms
+        Chromosomes skipped (default mitochondria).
+    chroms
+        Restrict to this chromosome list (default: all in tabix index).
+
+    Returns
+    -------
+    ndarray of shape ``(4**kmer_length,)`` — ``bias[kmer_idx]`` is the
+    insertion fold-enrichment of that hexamer relative to uniform. Save
+    with ``np.savez_compressed`` for reuse.
+    """
+    import pyfaidx
+    import pysam
+
+    k = int(kmer_length)
+    half_k = k // 2
+
+    fa = pyfaidx.Fasta(str(genome_fasta))
+    tbx = pysam.TabixFile(str(fragment_file))
+
+    exclude = set(exclude_chroms)
+    use_chroms = [c for c in (chroms or tbx.contigs) if c not in exclude]
+
+    size = 4 ** k
+    cut_counts = np.zeros(size, dtype=np.int64)
+    kmer_counts = np.zeros(size, dtype=np.int64)
+
+    n_frags = 0
+    for chrom in use_chroms:
+        if chrom not in fa:
+            continue
+        seq = str(fa[chrom]).upper()
+        codes = _seq_to_codes(seq)
+
+        # Genome-wide k-mer frequency for this chrom.
+        kmer_arr = _codes_to_kmers(codes, k)
+        valid_kmers = kmer_arr >= 0
+        if valid_kmers.any():
+            np.add.at(kmer_counts, kmer_arr[valid_kmers], 1)
+
+        # Fragment cuts: 2 insertion events per fragment.
+        if chrom not in tbx.contigs:
+            continue
+        for line in tbx.fetch(chrom):
+            parts = line.split("\t")
+            if len(parts) < 3:
+                continue
+            try:
+                s = int(parts[1]); e = int(parts[2])
+            except ValueError:
+                continue
+            for cut in (s, e - 1):
+                lo = cut - half_k
+                hi = cut + (k - half_k)
+                if 0 <= lo and hi <= len(codes):
+                    sub = codes[lo:hi]
+                    if (sub < 4).all():
+                        idx = 0
+                        for v in sub:
+                            idx = idx * 4 + int(v)
+                        cut_counts[idx] += 1
+            n_frags += 1
+            if n_frags >= max_fragments:
+                break
+        if n_frags >= max_fragments:
+            break
+
+    tbx.close()
+
+    total_cuts = int(cut_counts.sum())
+    total_kmers = int(kmer_counts.sum())
+    if total_cuts == 0:
+        raise ValueError("no fragments were scanned — check fragment file")
+    if total_kmers == 0:
+        raise ValueError("no valid k-mers in genome — check FASTA")
+
+    expected = kmer_counts * (total_cuts / total_kmers)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        bias = np.where(expected > 0, cut_counts / expected, 1.0)
+    # Clip extreme outliers (rare kmers) for numerical stability.
+    bias = np.clip(bias, 1e-3, 1e3).astype(np.float64)
+    console.level2(
+        f"Tn5 bias: scanned {n_frags:,} fragments, {total_cuts:,} cuts; "
+        f"k={k}, bias range [{bias.min():.3f}, {bias.max():.3f}]"
     )
-    baseline = np.mean(profile[flank_idx]) if flank_idx.size > 0 else 0.0
+    return bias
 
-    if method == "subtract":
-        return profile - baseline
-    if method == "divide":
-        denom = baseline if baseline > eps else eps
-        return profile / denom
-    raise ValueError("normMethod must be one of {'None','Subtract','Divide'}.")
 
+# ---------------------------------------------------------------------------
+# Footprint aggregation
+# ---------------------------------------------------------------------------
 
 @dataclass
-class FootprintResult:
-    motifs: List[str]
-    conditions: List[str]
+class Footprint:
+    """Per-motif aggregate footprint across groups (ArchR
+    ``getFootprints`` output analogue)."""
+    motif: str
+    groups: List[str]
+    signal: np.ndarray                       # (n_groups, window) raw cut count per bp per site
+    signal_se: np.ndarray                    # (n_groups, window) standard error of ``signal``
+    Tn5Bias: Optional[np.ndarray]            # (window,) raw bias (fold vs uniform)
+    Tn5BiasNormalized: Optional[np.ndarray]  # (window,) bias / bias_flank_mean
+    normalizedSignal: np.ndarray             # (n_groups, window) Subtract or Divide output
+    normalizedSignal_se: np.ndarray          # (n_groups, window) SE of normalizedSignal
+    n_sites: Dict[str, int]
     flank: int
-    profiles_: Dict[str, Dict[str, np.ndarray]] = field(default_factory=dict)
-    counts_: Dict[str, Dict[str, int]] = field(default_factory=dict)
-    site_counts: Dict[str, int] = field(default_factory=dict)
-    metadata: Dict[str, any] = field(default_factory=dict)
+    kmer_length: int
+    normalize: str
 
-    def get_profile(
-        self,
-        motif: str,
-        condition: str,
-        norm_method: str = "None",
-        flank_norm: Optional[int] = None,
-        smooth_window: int = 1,
-    ) -> np.ndarray:
-        if motif not in self.profiles_:
-            raise KeyError(f"Motif '{motif}' not found.")
-        if condition not in self.profiles_[motif]:
-            raise KeyError(f"Condition '{condition}' not found for motif '{motif}'.")
+    @property
+    def positions(self) -> np.ndarray:
+        """Genomic offsets covered by each column — ``[-flank, …, flank]``."""
+        return np.arange(-self.flank, self.flank + 1)
 
-        profile = self.profiles_[motif][condition]
-        norm_method = norm_method.lower()
-        flank_norm = flank_norm if flank_norm is not None else max(1, self.flank // 2)
-        out = _normalise_profile(profile, norm_method, flank_norm)
-        if smooth_window > 1:
-            out = _running_mean(out, smooth_window)
-        return out
 
-    def condition_counts(self, motif: str, condition: Optional[str] = None) -> int | Dict[str, int]:
-        if motif not in self.counts_:
-            raise KeyError(f"Motif '{motif}' not found.")
-        if condition is None:
-            return self.counts_[motif]
-        return self.counts_[motif].get(condition, 0)
+
+
+def _parse_positions(pos_df: pd.DataFrame) -> pd.DataFrame:
+    """Normalise a motif positions DataFrame: ensure ``chrom / center
+    / strand`` columns."""
+    df = pos_df.copy()
+    lower = {c.lower(): c for c in df.columns}
+    rename = {}
+    for k in ("chrom", "chromosome", "seqname", "seqnames"):
+        if k in lower:
+            rename[lower[k]] = "chrom"; break
+    for k in ("strand",):
+        if k in lower:
+            rename[lower[k]] = "strand"; break
+    if "center" not in lower:
+        if "start" in lower and "end" in lower:
+            df = df.rename(columns=rename)
+            df["center"] = ((df["start"].astype(int) + df["end"].astype(int)) // 2).astype(int)
+        else:
+            raise ValueError("positions needs either a ``center`` column or both ``start`` + ``end``")
+    else:
+        rename[lower["center"]] = "center"
+        df = df.rename(columns=rename)
+    if "strand" not in df.columns:
+        df["strand"] = "+"
+    return df[["chrom", "center", "strand"]].reset_index(drop=True)
+
+
+def _positions_from_motif_database(
+    motif_database: Union[str, Path],
+    motifs: Optional[Sequence[str]] = None,
+    *,
+    chroms: Optional[Sequence[str]] = None,
+    score_threshold: Optional[float] = None,
+    peaks: Optional[pd.DataFrame] = None,
+) -> Dict[str, pd.DataFrame]:
+    """Pull PWM match coordinates directly from a motif-database built
+    by :func:`epione.tl.build_motif_database`.
+
+    The database stores **genome-wide motif hits** (one row per PWM
+    match: ``motif_idx / chrom / start / end / score / strand``) —
+    exactly what ``get_footprints`` needs. This is the ArchR
+    ``getPositions(proj, 'Motif')`` analogue.
+
+    Parameters
+    ----------
+    motif_database
+        Path to the database directory (contains ``_meta.json`` and
+        per-chrom ``{chrom}.parquet`` files).
+    motifs
+        Optional list of motif names (substring-matched against
+        ``meta['motif_names']``; first hit wins). ``None`` returns
+        every motif.
+    chroms
+        Optional chromosome whitelist (defaults to all in ``meta``).
+    score_threshold
+        Optional minimum PWM score filter on top of the database's
+        own p-value cutoff.
+    peaks
+        Optional DataFrame with ``chrom / start / end`` — motif hits
+        are restricted to those whose centre falls inside a peak
+        (ArchR ``getPositions(proj, 'Motif')`` restricts PWM matches
+        to the peak set produced by ``addReproduciblePeakSet``).
+        This is the single biggest driver of footprint amplitude:
+        genome-wide PWM hits are ~95 % noise, whereas peak-
+        restricted hits are real TF-binding candidates.
+
+    Returns
+    -------
+    dict
+        ``{motif_name: DataFrame(chrom / center / start / end / strand)}``
+    """
+    import json
+    from pathlib import Path as _Path
+    base = _Path(motif_database)
+    meta = json.load(open(base / "_meta.json"))
+    motif_names = list(meta["motif_names"])
+
+    if motifs is not None:
+        resolved = []
+        for m in motifs:
+            cand = [n for n in motif_names if m in n or n.startswith(m + "_")]
+            if not cand:
+                raise ValueError(
+                    f"motif {m!r} not found in database "
+                    f"(first 10 names: {motif_names[:10]!r})"
+                )
+            resolved.append(cand[0])
+        motifs = resolved
+    else:
+        motifs = motif_names
+
+    name_to_idx = {n: i for i, n in enumerate(motif_names)}
+    target_idx = {name_to_idx[n]: n for n in motifs}
+
+    use_chroms = list(chroms) if chroms is not None else meta["chroms"]
+
+    # Build per-chrom sorted peak intervals for overlap filter.
+    peaks_by_chrom: Dict[str, np.ndarray] = {}
+    if peaks is not None:
+        pk = peaks.copy()
+        pk.columns = [c.lower() for c in pk.columns]
+        for c, grp in pk.groupby("chrom", sort=False):
+            arr = np.asarray(
+                sorted(zip(grp["start"].astype(int).values,
+                            grp["end"].astype(int).values))
+            )
+            peaks_by_chrom[str(c)] = arr
+
+    # Accumulate per-motif positions.
+    out: Dict[str, list[pd.DataFrame]] = {n: [] for n in motifs}
+    for chrom in use_chroms:
+        p = base / f"{chrom}.parquet"
+        if not p.exists():
+            continue
+        df = pd.read_parquet(p)
+        if score_threshold is not None:
+            df = df[df["score"] >= score_threshold]
+        for idx, name in target_idx.items():
+            sub = df[df["motif_idx"] == idx]
+            if sub.empty:
+                continue
+            sub = sub.copy()
+            sub["chrom"] = chrom
+            sub["center"] = ((sub["start"] + sub["end"]) // 2).astype(int)
+            strand_map = {1: "+", -1: "-", "1": "+", "-1": "-"}
+            sub["strand"] = sub["strand"].map(strand_map).fillna("+")
+
+            # Peak-restrict: keep motif hits whose CENTRE falls inside a
+            # peak (mirrors ArchR's getPositions(proj, 'Motif')).
+            if peaks is not None:
+                arr = peaks_by_chrom.get(chrom)
+                if arr is None or arr.size == 0:
+                    continue
+                cent = sub["center"].to_numpy()
+                # searchsorted on peak starts; check end > centre.
+                i = np.searchsorted(arr[:, 0], cent, side="right") - 1
+                keep = (i >= 0) & (arr[np.clip(i, 0, None), 1] > cent)
+                sub = sub.loc[keep]
+                if sub.empty:
+                    continue
+
+            out[name].append(sub[["chrom", "center", "start", "end", "strand"]])
+
+    return {
+        name: pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame(
+            columns=["chrom", "center", "start", "end", "strand"])
+        for name, dfs in out.items()
+    }
+
+
+def _positions_from_motif_matrix(
+    adata,
+    motif_key: str,
+    motifs: Optional[Sequence[str]] = None,
+) -> Dict[str, pd.DataFrame]:
+    """Turn ``adata.varm[motif_key]`` (peak × motif bool) into a
+    ``{motif_name: positions_df}`` dict suitable for ``get_footprints``.
+
+    The peak set used by :func:`epione.tl.add_motif_matrix` is
+    ``adata.var_names`` (``chrom:start-end`` strings). For each motif
+    column we extract the peak labels where the motif has a hit and
+    use the peak centre as the motif position (ArchR-compatible
+    coarse localisation — sufficient for ±250 bp footprint windows).
+
+    Parameters
+    ----------
+    adata
+        AnnData with ``varm[motif_key]`` and ``uns[motif_key + '_names']``.
+    motif_key
+        Key under ``varm`` / ``uns[..._names]`` (default ``'motif'``).
+    motifs
+        Optional subset of motif names. If ``None`` returns positions
+        for all motifs.
+
+    Returns
+    -------
+    dict
+        ``{motif_name: DataFrame(chrom / center / strand)}``.
+    """
+    if motif_key not in adata.varm:
+        raise KeyError(
+            f"adata.varm[{motif_key!r}] missing — run epi.tl.add_motif_matrix first"
+        )
+    if f"{motif_key}_names" not in adata.uns:
+        raise KeyError(
+            f"adata.uns[{motif_key!r}_names] missing"
+        )
+    M = adata.varm[motif_key]
+    names = np.asarray(adata.uns[f"{motif_key}_names"], dtype=object)
+    if motifs is not None:
+        motifs = list(motifs)
+        idx = [i for i, n in enumerate(names) if n in motifs]
+        if not idx:
+            raise ValueError(
+                f"none of {motifs!r} found in motif names "
+                f"(first 10: {list(names[:10])!r})"
+            )
+        M = M[:, idx]
+        names = names[idx]
+
+    import scipy.sparse as _sp
+    if _sp.issparse(M):
+        M = M.tocsc()
+    import re
+    pat = re.compile(r"^([^:]+):(\d+)-(\d+)$|^([^-]+)-(\d+)-(\d+)$")
+    chrom_arr, start_arr, end_arr = [], [], []
+    for label in adata.var_names:
+        m = pat.match(str(label))
+        if not m:
+            chrom_arr.append(None); start_arr.append(-1); end_arr.append(-1)
+            continue
+        c = m.group(1) or m.group(4)
+        s = int(m.group(2) or m.group(5))
+        e = int(m.group(3) or m.group(6))
+        chrom_arr.append(c); start_arr.append(s); end_arr.append(e)
+    chrom_arr = np.asarray(chrom_arr, dtype=object)
+    start_arr = np.asarray(start_arr, dtype=np.int64)
+    end_arr = np.asarray(end_arr, dtype=np.int64)
+    center_arr = ((start_arr + end_arr) // 2).astype(np.int64)
+
+    out = {}
+    for j, name in enumerate(names):
+        if _sp.issparse(M):
+            peak_idx = M[:, j].nonzero()[0]
+        else:
+            peak_idx = np.where(np.asarray(M[:, j]).ravel())[0]
+        if len(peak_idx) == 0:
+            continue
+        out[str(name)] = pd.DataFrame({
+            "chrom":  chrom_arr[peak_idx],
+            "center": center_arr[peak_idx],
+            "strand": np.full(len(peak_idx), "+", dtype=object),
+        })
+    return out
 
 
 def get_footprints(
-    score_files: Mapping[str, str] | Sequence[str],
-    positions: Mapping[str, RegionList | Sequence],
-    motif_file: Optional[str] = None,
-    genome_fasta: Optional[str] = None,
+    adata,
+    *,
+    positions: Union[pd.DataFrame, Mapping[str, pd.DataFrame], None] = None,
+    motifs: Optional[Sequence[str]] = None,
+    motif_key: str = "motif",
+    motif_database: Optional[Union[str, Path]] = None,
+    peaks: Optional[Union[pd.DataFrame, str, Path]] = None,
+    groupby: str,
+    genome: Union[Genome, str, Path, None] = None,
     flank: int = 250,
-    min_sites: int = 25,
-    verbose: int = 2,
-    normalize_background: bool = False,
-    background_sampling_window: int = 200,
-    aggregate: str = "sum",
-) -> FootprintResult:
-    """
-    Aggregate cutsite signals around motif instances per condition.
+    flank_norm: int = 50,
+    normalize: Literal["None", "Subtract", "Divide"] = "Subtract",
+    kmer_length: int = 6,
+    bias_table: Optional[np.ndarray] = None,
+    smooth: int = 0,
+    min_cells_per_group: int = 10,
+    motif_name: str = "motif",
+) -> Dict[str, Footprint]:
+    """Per-group Tn5 footprint aggregation around motif positions.
+
+    Mirrors ArchR ``getFootprints`` — for every motif position, counts
+    Tn5 insertion events in a ``±flank`` window per obs-group, and
+    subtracts an expected profile derived from the local hexamer ×
+    genome-wide Tn5 bias table.
 
     Parameters
     ----------
-    score_files :
-        Mapping condition -> bigwig path, or sequence of paths (names inferred from basenames).
-        Each bigwig must contain cutsite-level signal (1bp coverage).
-    positions :
-        Mapping motif name -> RegionList (or iterable) describing motif instances.
-        Regions should carry start/end (and strand if available). Windows are centred at motif centres.
-    motif_file :
-        Optional motif file to derive consistent naming (JASPAR/MEME via MotifList).
-        When provided, motif prefixes and valid motifs are taken from this file.
-    genome_fasta :
-        Optional FASTA path to verify chromosome boundaries. If provided, ensures windows stay within bounds.
-    flank :
-        Number of base pairs to include on each side of motif centre (window length = 2*flank+1).
-    min_sites :
-        Minimum motif occurrences required to retain an aggregate profile.
-    verbose :
-        Console verbosity (0=silent, 1=level1, 2=level2+).
-    normalize_background : bool
-        Apply quantile normalization across conditions using sampled background
-        cutsite values (similar to ArchR/BINDetect). Default: False, which keeps
-        raw aggregate profiles so relative heights reflect the input bigwigs.
-    background_sampling_window : int
-        Approximate spacing (in bp) between random background samples within each
-        region when `normalize_background=True`. Larger values reduce the number of
-        sampled points. Default: 200.
-    aggregate : str
-        How to combine footprints across motif instances. "sum" (default) mirrors
-        ArchR behavior, preserving absolute cutsite differences. "mean" will average
-        per site.
+    adata
+        AnnData / AnnDataOOM with
+        ``uns['files']['fragments']`` (tabix-indexed) and a
+        ``groupby`` column in ``obs`` (typically cluster / celltype).
+    positions
+        Motif positions (explicit). Either:
+
+        * a DataFrame with ``chrom / center / strand`` (or
+          ``chrom / start / end`` — ``center = (start+end)//2``), or
+        * a dict ``{motif_name: positions_df}`` to aggregate multiple
+          motifs in a single sweep of the fragments.
+
+        If ``positions`` is ``None``, positions are auto-derived from
+        ``adata.varm[motif_key]`` (the sparse peak × motif matrix
+        written by :func:`epione.tl.add_motif_matrix`, ArchR
+        ``addMotifAnnotations`` equivalent). Each motif's peaks are
+        centre-coarsened (ArchR also does a peak-level localisation).
+    motifs
+        Optional subset of motif names when ``positions`` is auto-
+        derived from ``varm[motif_key]``. Pass e.g.
+        ``['GATA1', 'CEBPA', 'EBF1']`` to sweep a handful of TFs.
+    motif_key
+        Key under ``adata.varm`` (default ``'motif'``) — matches
+        ``add_motif_matrix(key_added='motif')``.
+    groupby
+        ``adata.obs`` column labelling the pseudo-bulk groups.
+    genome
+        ``Genome`` / FASTA path — required when ``normalize != 'None'``
+        (bias track needs the genome sequence). Ignored when an
+        explicit ``bias_table`` is supplied.
+    flank
+        Half-window around each motif centre (ArchR default 250).
+    normalize
+        ``'None'`` — return raw signal only.
+        ``'Subtract'`` — ``signal - bias``  (ArchR default).
+        ``'Divide'`` — ``signal / bias``.
+    kmer_length
+        k-mer size for Tn5 bias (ArchR default 6).
+    bias_table
+        Pre-computed hexamer bias (from
+        :func:`compute_tn5_bias_table`). If ``None`` it's built on the
+        fly (slower).
+    smooth
+        Rolling-mean window (bp). 0 = no smoothing.
+    min_cells_per_group
+        Groups with fewer cells than this are dropped.
 
     Returns
     -------
-    FootprintResult
-        Aggregated footprint profiles.
+    dict
+        ``{motif_name: Footprint}`` — call :func:`plot_footprints` to
+        render.
     """
+    import pyfaidx
+    import pysam
 
-    console.verbosity = verbose
-    flank = int(flank)
-    if flank < 1:
-        raise ValueError("flank must be >= 1.")
-    window_len = 2 * flank  # match ArchR/TOBIAS window convention
+    if "files" not in adata.uns or "fragments" not in adata.uns["files"]:
+        raise ValueError("adata.uns['files']['fragments'] missing — run "
+                         "epi.pp.import_fragments first")
+    frag_file = str(adata.uns["files"]["fragments"])
 
-    cond_to_file = _ensure_dict(score_files)
-    conditions = list(cond_to_file.keys())
+    # Resolve peaks (DataFrame / BED / peak_mat labels).
+    peaks_df = None
+    if peaks is not None:
+        if isinstance(peaks, pd.DataFrame):
+            peaks_df = peaks
+        else:
+            p = Path(peaks)
+            if p.suffix.lower() in (".bed", ".gz") or p.suffix == "":
+                peaks_df = pd.read_csv(p, sep="\t", header=None,
+                                        names=["chrom", "start", "end"],
+                                        usecols=[0, 1, 2])
+            else:
+                peaks_df = pd.read_csv(p, sep="\t")
 
-    motif_map: Dict[str, RegionList] = {}
-    for motif, sites in positions.items():
-        rl = _ensure_region_list(sites)
-        if len(rl) > 0:
-            motif_map[str(motif)] = rl
+    # Normalise positions input.
+    if positions is None:
+        if motif_database is not None:
+            # True PWM match coordinates from the cached database —
+            # ArchR getPositions(proj, 'Motif') equivalent. Peak-
+            # restricted when ``peaks`` is given (mirrors ArchR's
+            # peak-set intersection).
+            pos_raw = _positions_from_motif_database(
+                motif_database, motifs=motifs, peaks=peaks_df,
+            )
+        else:
+            # Fallback: peak centers of varm[motif_key] hits. This is
+            # a coarse approximation — for sharp footprints you want
+            # the motif database (see motif_database=...).
+            pos_raw = _positions_from_motif_matrix(
+                adata, motif_key=motif_key, motifs=motifs,
+            )
+        positions_dict = {name: _parse_positions(df)
+                          for name, df in pos_raw.items() if len(df)}
+        if not positions_dict:
+            raise ValueError(
+                "no motif positions could be derived; check that "
+                "either ``motif_database`` is set or "
+                "adata.varm[motif_key] has non-zero columns"
+            )
+    elif isinstance(positions, pd.DataFrame):
+        positions_dict = {motif_name: _parse_positions(positions)}
+    else:
+        positions_dict = {name: _parse_positions(df) for name, df in positions.items()}
 
-    if motif_file:
-        motif_list = MotifList().from_file(motif_file)
-        for motif in motif_list:
-            motif.set_prefix()
-        valid_names = set(motif.prefix for motif in motif_list)
-        motif_map = {name: rl for name, rl in motif_map.items() if name in valid_names}
-        if verbose >= 1:
-            console.level2(f"Filtered motifs using motif_file; retaining {len(motif_map)} motifs.")
+    # Genome FASTA for bias track.
+    do_bias = normalize.lower() != "none"
+    fa = None
+    if do_bias:
+        if bias_table is None:
+            if genome is None:
+                raise ValueError("normalize != 'None' needs a Genome / fasta path or a pre-computed bias_table")
+            gfasta = genome.fasta if isinstance(genome, Genome) else str(genome)
+            bias_table = compute_tn5_bias_table(frag_file, gfasta, kmer_length=kmer_length)
+        if genome is None:
+            raise ValueError("genome is required to evaluate bias per motif position")
+        gfasta = genome.fasta if isinstance(genome, Genome) else str(genome)
+        fa = pyfaidx.Fasta(str(gfasta))
 
-    if not motif_map:
-        raise ValueError("No motif positions available after filtering.")
+    k = int(kmer_length)
+    half_k = k // 2
 
-    chrom_lengths = {}
-    fasta_obj = None
-    if genome_fasta:
-        fasta_obj = pysam.FastaFile(genome_fasta)
-        chrom_lengths = dict(zip(fasta_obj.references, fasta_obj.lengths))
+    # Groups — drop sparse ones, keep ArchR-like sort.
+    group_series = adata.obs[groupby]
+    if not isinstance(group_series, pd.Series):
+        group_series = pd.Series(group_series)
+    group_series = group_series.astype(str)
+    group_series.index = list(adata.obs_names)
+    group_counts = group_series.value_counts()
+    keep_groups = sorted(g for g, n in group_counts.items() if n >= min_cells_per_group)
+    if not keep_groups:
+        raise ValueError("no groups with >= min_cells_per_group cells")
+    keep_set = set(keep_groups)
+    bc_to_group = {bc: g for bc, g in group_series.items() if g in keep_set}
 
-    bigwig_handles = {}
-    for cond, path in cond_to_file.items():
-        if not os.path.exists(path):
-            raise FileNotFoundError(f"Bigwig file not found: {path}")
-        bigwig_handles[cond] = pyBigWig.open(path)
+    window = 2 * flank + 1
+    tbx = pysam.TabixFile(frag_file)
 
-    aggregates: Dict[str, Dict[str, np.ndarray]] = {
-        motif: {cond: np.zeros(window_len, dtype=np.float64) for cond in conditions}
-        for motif in motif_map.keys()
-    }
-    counts: Dict[str, Dict[str, int]] = {
-        motif: {cond: 0 for cond in conditions}
-        for motif in motif_map.keys()
-    }
-    site_counts: Dict[str, int] = {motif: 0 for motif in motif_map.keys()}
-    background_samples: Dict[str, List[float]] = {cond: [] for cond in conditions}
+    results: Dict[str, Footprint] = {}
+    n_groups = len(keep_groups)
+    group_to_row = {g: i for i, g in enumerate(keep_groups)}
+    for motif, pos_df in positions_dict.items():
+        console.level1(
+            f"footprint: {motif} — {len(pos_df):,} positions × {n_groups} groups"
+        )
+        # Running sums for per-site variance (Welford-style).
+        signal    = np.zeros((n_groups, window), dtype=np.float64)  # Σ per-site counts
+        signal_sq = np.zeros((n_groups, window), dtype=np.float64)  # Σ (per-site counts)^2
+        site_buf  = np.zeros((n_groups, window), dtype=np.float64)  # temp per-site aggregate
+        n_sites = {g: 0 for g in keep_groups}
+        bias_accum = np.zeros(window, dtype=np.float64)
+        n_bias_sites = 0
 
-    motif_iter = motif_map.items()
-    if verbose >= 1:
-        motif_iter = _progress_iter(motif_iter, total=len(motif_map), desc="Motifs")
-
-    for motif, sites in motif_iter:
-        site_iter = sites
-        if verbose >= 2:
-            site_iter = _progress_iter(site_iter, total=len(sites), desc=f"{motif} sites")
-
-        for region in site_iter:
-            chrom = getattr(region, "chrom", region[0])
-            start = int(getattr(region, "start", region[1]))
-            end = int(getattr(region, "end", region[2]))
-            strand = getattr(region, "strand", region[5] if len(region) > 5 else "+")
-
-            if chrom_lengths:
-                if chrom not in chrom_lengths:
-                    continue
-                if end > chrom_lengths[chrom]:
-                    continue
-
-            centre = (start + end) // 2
-            window_start = centre - flank
-            window_end = centre + flank
-
-            if window_start < 0:
+        for chrom_name, group_df in pos_df.groupby("chrom", sort=False):
+            if chrom_name not in tbx.contigs:
                 continue
-            if chrom_lengths and window_end > chrom_lengths[chrom]:
-                continue
-
-            windows = {}
-            for cond, handle in bigwig_handles.items():
-                values = handle.values(chrom, window_start, window_end)
-                if values is None:
+            seq_cache = None
+            if do_bias and chrom_name in fa:
+                seq_cache = _seq_to_codes(str(fa[chrom_name]).upper())
+            for _, row in group_df.iterrows():
+                center = int(row["center"])
+                strand = str(row.get("strand", "+"))
+                lo = center - flank
+                hi = center + flank + 1
+                if lo < 0:
                     continue
-                arr = np.array(values, dtype=np.float64)
-                arr = np.nan_to_num(arr, nan=0.0)
-                if arr.shape[0] != window_len:
-                    continue
-                if normalize_background:
-                    sample_step = max(1, window_len // background_sampling_window)
-                    for idx in range(0, window_len, sample_step):
-                        val = arr[idx]
-                        if val > 0:
-                            background_samples[cond].append(val)
-                if strand == "-":
-                    arr = arr[::-1]
-                if np.any(arr > 0):
-                    windows[cond] = arr
 
-            if not windows:
-                continue
+                # Bias profile — expected cut rate per bp from local k-mer.
+                if do_bias and seq_cache is not None:
+                    seq_lo = lo - half_k
+                    seq_hi = hi + (k - half_k) - 1
+                    if 0 <= seq_lo and seq_hi <= len(seq_cache):
+                        sub = seq_cache[seq_lo:seq_hi]
+                        kmers = _codes_to_kmers(sub, k)
+                        if len(kmers) == window:
+                            bp_bias = np.where(
+                                kmers >= 0, bias_table[np.clip(kmers, 0, None)], 1.0
+                            )
+                            if strand == "-":
+                                bp_bias = bp_bias[::-1]
+                            bias_accum += bp_bias
+                            n_bias_sites += 1
 
-            site_counts[motif] += 1
-            for cond, arr in windows.items():
-                aggregates[motif][cond] += arr
-                counts[motif][cond] += 1
+                # Per-site cut density into site_buf, then fold into running Σ + Σ^2.
+                site_buf[:] = 0.0
+                for line in tbx.fetch(chrom_name, lo, hi):
+                    parts = line.split("\t")
+                    if len(parts) < 4:
+                        continue
+                    bc = parts[3]
+                    g = bc_to_group.get(bc)
+                    if g is None:
+                        continue
+                    try:
+                        s = int(parts[1]); e = int(parts[2])
+                    except ValueError:
+                        continue
+                    grow = group_to_row[g]
+                    for cut in (s, e - 1):
+                        if lo <= cut < hi:
+                            idx = cut - lo if strand == "+" else (hi - 1 - cut)
+                            site_buf[grow, idx] += 1.0
 
-    if fasta_obj is not None:
-        fasta_obj.close()
-    for handle in bigwig_handles.values():
-        handle.close()
+                # Fold this site's per-bp count into Σ and Σ^2 — later these
+                # give per-bp variance across motif sites, hence SE of the
+                # mean profile (like ArchR's replicate-based SE ribbon).
+                signal    += site_buf
+                signal_sq += site_buf * site_buf
+                for g in keep_groups:
+                    n_sites[g] += 1
 
-    norm_objects = None
-    if normalize_background:
-        try:
-            arrays = []
-            for cond in conditions:
-                vals = np.array(background_samples[cond], dtype=np.float64)
-                vals = vals[vals > 0]
-                if vals.size == 0:
-                    arrays = []
-                    break
-                arrays.append(vals)
-            if arrays and len(arrays) == len(conditions):
-                norm_objects = quantile_normalization(arrays, conditions)
-        except Exception:
-            norm_objects = None
+        # Per-site mean + standard error of the mean.
+        sig_mat = np.zeros_like(signal)
+        se_mat  = np.zeros_like(signal)
+        for i, g in enumerate(keep_groups):
+            n = max(n_sites[g], 1)
+            mean = signal[i] / n
+            # var = E[X^2] - (E[X])^2
+            var = np.maximum(signal_sq[i] / n - mean * mean, 0.0)
+            sig_mat[i] = mean
+            se_mat[i]  = np.sqrt(var / n)
+        bias_prof = bias_accum / max(n_bias_sites, 1) if n_bias_sites else None
 
-    aggregate = aggregate.lower()
-    if aggregate not in {"sum", "mean"}:
-        raise ValueError("aggregate must be 'sum' or 'mean'.")
+        if smooth and smooth > 1:
+            w = int(smooth)
+            ker = np.ones(w, dtype=np.float64) / w
+            sig_mat = np.vstack([np.convolve(row, ker, mode="same") for row in sig_mat])
+            # Smoothing a mean also smooths its SE (var of a rolling mean of
+            # independent samples is the mean of their vars / w).
+            se_mat = np.vstack([
+                np.sqrt(np.convolve(row * row, ker, mode="same") / max(w, 1))
+                for row in se_mat
+            ])
+            if bias_prof is not None:
+                bias_prof = np.convolve(bias_prof, ker, mode="same")
 
-    avg_profiles: Dict[str, Dict[str, np.ndarray]] = {}
-    for motif, cond_dict in aggregates.items():
-        total_sites = site_counts[motif]
-        if total_sites < min_sites:
-            continue
-        avg_profiles[motif] = {}
-        for cond, arr in cond_dict.items():
-            n = counts[motif][cond]
-            if aggregate == "mean":
-                profile = arr / n if n > 0 else np.zeros(window_len, dtype=np.float64)
-            else:  # sum
-                profile = arr
-            if normalize_background and norm_objects and cond in norm_objects:
-                profile = norm_objects[cond].normalize(profile)
-            avg_profiles[motif][cond] = profile
+        # --- ArchR-style normalization ---
+        # ArchR plotFootprints defaults: flank=250, flankNorm=50. The
+        # baseline used to normalise each column is the mean signal
+        # over bp positions with ``|x| >= flank - flankNorm`` — i.e.
+        # only the outer 50 bp at each edge of the window (not the
+        # whole flank half). This is 20 % of the window, not 50 %, so
+        # the footprint dome lands on a much higher normalised scale.
+        center_idx = flank
+        abs_offsets = np.arange(window) - center_idx      # signed bp offsets
+        flank_mask = np.abs(abs_offsets) >= (flank - flank_norm)
+        flank_idx = np.where(flank_mask)[0]
+        sig_mean_flank = sig_mat[:, flank_idx].mean(axis=1, keepdims=True)
+        sig_flank_safe = np.where(sig_mean_flank > 0, sig_mean_flank, 1e-9)
+        bias_norm_prof = None
+        if bias_prof is not None:
+            bias_mean_flank = bias_prof[flank_idx].mean()
+            if bias_mean_flank > 0:
+                bias_norm_prof = bias_prof / bias_mean_flank
 
-    if not avg_profiles:
-        raise ValueError("No motifs retained after applying min_sites threshold.")
+        if normalize.lower() == "subtract" and bias_norm_prof is not None:
+            normalized    = (sig_mat / sig_flank_safe) - bias_norm_prof[None, :]
+            normalized_se = se_mat / sig_flank_safe
+        elif normalize.lower() == "divide" and bias_norm_prof is not None:
+            normalized    = (sig_mat / sig_flank_safe) / np.maximum(bias_norm_prof[None, :], 1e-9)
+            normalized_se = se_mat / sig_flank_safe / np.maximum(bias_norm_prof[None, :], 1e-9)
+        else:
+            normalized    = sig_mat
+            normalized_se = se_mat
 
-    result = FootprintResult(
-        motifs=list(avg_profiles.keys()),
-        conditions=conditions,
-        flank=flank,
-        profiles_=avg_profiles,
-        counts_={motif: counts[motif] for motif in avg_profiles.keys()},
-        site_counts={motif: site_counts[motif] for motif in avg_profiles.keys()},
-        metadata={
-            "min_sites": min_sites,
-            "window_len": window_len,
-            "conditions": conditions,
-            "total_sites": site_counts,
-            "normalize_background": normalize_background,
-            "background_counts": {cond: len(background_samples[cond]) for cond in conditions},
-        },
-    )
-    return result
+        results[motif] = Footprint(
+            motif=motif,
+            groups=list(keep_groups),
+            signal=sig_mat,
+            signal_se=se_mat,
+            Tn5Bias=bias_prof,
+            Tn5BiasNormalized=bias_norm_prof,
+            normalizedSignal=normalized,
+            normalizedSignal_se=normalized_se,
+            n_sites=dict(n_sites),
+            flank=flank,
+            kmer_length=k,
+            normalize=normalize,
+        )
 
+    tbx.close()
+    return results
+
+
+# Back-compat alias (ArchR name).
+getFootprints = get_footprints
+
+
+# ---------------------------------------------------------------------------
+# Plotting
+# ---------------------------------------------------------------------------
 
 def plot_footprints(
-    footprint_result: FootprintResult,
-    normMethod: str = "None",
-    plotName: str = "Footprints",
-    output_dir: str = ".",
-    addDOC: bool = False,
-    smoothWindow: int = 5,
-    flankNorm: Optional[int] = None,
-    figsize: Tuple[float, float] = (6.0, 3.0),
-) -> str:
-    """
-    Plot aggregate footprints akin to ArchR's plotFootprints.
+    footprints: Union[Footprint, Mapping[str, Footprint]],
+    *,
+    motif: Optional[str] = None,
+    groups: Optional[Sequence[str]] = None,
+    order: Optional[Sequence[str]] = None,
+    palette: Optional[Union[Sequence[str], Dict[str, str]]] = None,
+    show_bias: bool = True,
+    show_ribbon: bool = True,
+    figsize: Tuple[float, float] = (6.0, 4.5),
+    title: Optional[str] = None,
+    show: bool = True,
+):
+    """ArchR-style single-motif footprint plot.
 
     Parameters
     ----------
-    footprint_result :
-        Result returned by `get_footprints`.
-    normMethod :
-        "None", "Subtract", or "Divide".
-    plotName :
-        Base filename (without extension) for the generated PNG figure.
-    output_dir :
-        Directory where the plot will be saved.
-    addDOC :
-        If True, add a secondary axis showing total depth of coverage (sum of profiles).
-    smoothWindow :
-        Size of moving-average smoothing window.
-    flankNorm :
-        Baseline flank size for normalisation. Defaults to flank//2.
-    figsize :
-        Size of each subplot (width, height). Height scaled by number of motifs.
+    footprints
+        Either a single :class:`Footprint` or a ``{motif: Footprint}``
+        mapping (then ``motif=`` must be set unless there's only one).
+    groups
+        Restrict plot to this subset of cell-type groups.
+    order
+        Plot order (stacking order of curves). Defaults to alphabetic.
+    palette
+        Either a list of colours or a ``{group: colour}`` dict.
+        Default: matplotlib's current ``axes.prop_cycle``. For a
+        domain-specific palette (e.g. ArchR's stallion for heme
+        celltypes), pass your own dict — epione doesn't bake in
+        hematopoiesis-specific colour choices.
+    show_ribbon
+        Draw a ± SE ribbon around each curve (alpha=0.25). Default True.
 
     Returns
     -------
-    str
-        Path to generated PNG file.
+    ``(fig, axes)`` tuple.
     """
+    import matplotlib.pyplot as plt
 
-    os.makedirs(output_dir, exist_ok=True)
-    motifs = footprint_result.motifs
-    conditions = footprint_result.conditions
-    flank = footprint_result.flank
+    if isinstance(footprints, Footprint):
+        fp = footprints
+    else:
+        if motif is None:
+            if len(footprints) == 1:
+                motif = next(iter(footprints))
+            else:
+                raise ValueError(f"pass motif= one of {list(footprints)}")
+        fp = footprints[motif]
 
-    n_motifs = len(motifs)
-    if n_motifs == 0:
-        raise ValueError("No motifs available for plotting.")
+    usable = [g for g in fp.groups if (groups is None or g in groups)]
+    if order is not None:
+        plot_order = [g for g in order if g in usable]
+    else:
+        plot_order = sorted(usable)
 
-    width, height = figsize
-    total_height = height * n_motifs
-    fig, axes = plt.subplots(
-        n_motifs,
-        1,
-        sharex=True,
-        figsize=(width, total_height),
-        squeeze=False,
-    )
+    # Palette → {group: colour}
+    if isinstance(palette, dict):
+        cycle = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+        colors = {g: palette.get(g, cycle[i % len(cycle)])
+                  for i, g in enumerate(plot_order)}
+    else:
+        pal = list(palette) if palette is not None \
+              else plt.rcParams["axes.prop_cycle"].by_key()["color"]
+        colors = {g: pal[i % len(pal)] for i, g in enumerate(plot_order)}
 
-    x = np.arange(-flank, flank)
-    norm_method = normMethod.lower()
-    flank_norm = flankNorm if flankNorm is not None else max(1, flank // 2)
+    has_bias = show_bias and fp.Tn5BiasNormalized is not None
+    if has_bias:
+        fig, (ax, bias_ax) = plt.subplots(
+            2, 1, figsize=figsize, sharex=True,
+            gridspec_kw=dict(height_ratios=[3.5, 1.0], hspace=0.08),
+        )
+    else:
+        fig, ax = plt.subplots(figsize=figsize)
+        bias_ax = None
 
-    for idx, motif in enumerate(motifs):
-        ax = axes[idx, 0]
-        for cond in conditions:
-            profile = footprint_result.get_profile(
-                motif,
-                cond,
-                norm_method=norm_method,
-                flank_norm=flank_norm,
-                smooth_window=smoothWindow,
-            )
-            ax.plot(
-                x,
-                profile,
-                label=f"{cond} (n={footprint_result.counts_[motif][cond]})",
-                linewidth=1.4,
-            )
+    x = fp.positions
+    y_key = fp.normalizedSignal if fp.normalize.lower() != "none" else fp.signal
+    se_key = fp.normalizedSignal_se if fp.normalize.lower() != "none" else fp.signal_se
+    idx_map = {g: i for i, g in enumerate(fp.groups)}
 
-        ax.axvline(0, color="k", linestyle="--", linewidth=0.8, alpha=0.7)
-        ax.set_ylabel(motif)
-        if norm_method == "none":
-            ax.set_ylabel(f"{motif}\nCuts", rotation=0, labelpad=40)
-        elif norm_method == "subtract":
-            ax.set_ylabel(f"{motif}\nCuts (norm)", rotation=0, labelpad=40)
-        else:
-            ax.set_ylabel(f"{motif}\nRelative", rotation=0, labelpad=40)
+    for g in plot_order:
+        i = idx_map.get(g)
+        if i is None: continue
+        y = y_key[i, :]
+        col = colors[g]
+        if show_ribbon and se_key is not None:
+            se = se_key[i, :]
+            ax.fill_between(x, y - se, y + se, color=col, alpha=0.25, linewidth=0)
+        ax.plot(x, y, color=col, lw=1.1, label=g)
 
-        if addDOC:
-            doc = sum(
-                footprint_result.get_profile(
-                    motif,
-                    cond,
-                    norm_method="none",
-                    flank_norm=flank_norm,
-                    smooth_window=smoothWindow,
-                )
-                for cond in conditions
-            )
-            ax2 = ax.twinx()
-            ax2.plot(x, doc, color="grey", linewidth=1.0, alpha=0.3, label="DOC")
-            ax2.set_ylabel("DOC", color="grey")
-            ax2.tick_params(axis="y", colors="grey")
+    ax.axvline(0, color="black", lw=0.4, ls=":")
+    ylabel = {
+        "subtract": "Tn5 Bias Subtracted\nNormalized Insertions",
+        "divide":   "Tn5 Bias Divided\nNormalized Insertions",
+        "none":     "Insertions / site",
+    }[fp.normalize.lower()]
+    ax.set_ylabel(ylabel)
+    ax.set_title(title or f"{fp.motif}  ({next(iter(fp.n_sites.values())):,} sites)")
+    ax.legend(frameon=False, fontsize=7, loc="upper right", ncol=2)
+    ax.spines[["top", "right"]].set_visible(False)
 
-        if idx == 0:
-            #bottom center
-            ax.legend(
-                loc="lower center", ncol=3, fontsize=8,
-                bbox_to_anchor=(0.5, -0.75),
-                frameon=False,
-            )
-            #ax.legend(loc="upper right", fontsize=8)
+    if has_bias:
+        bias_ax.plot(x, fp.Tn5BiasNormalized, color="#555", lw=1.0)
+        bias_ax.axvline(0, color="black", lw=0.4, ls=":")
+        bias_ax.set_xlabel("Distance to motif center (bp)")
+        bias_ax.set_ylabel("Tn5 bias")
+        bias_ax.spines[["top", "right"]].set_visible(False)
+    else:
+        ax.set_xlabel("Distance to motif center (bp)")
 
-    axes[-1, 0].set_xlabel("Distance to motif centre (bp)")
-    #fig.tight_layout()
-
-    out_path = os.path.join(output_dir, f"{plotName}.png")
-    fig.savefig(out_path, dpi=200)
-    #plt.close(fig)
-    return fig
+    if show:
+        plt.tight_layout()
+    return fig, (ax if not has_bias else (ax, bias_ax))
 
 
-def getFootprints(*args, **kwargs):
-    """CamelCase alias mirroring ArchR naming."""
-    return get_footprints(*args, **kwargs)
-
-
-def plotFootprints(*args, **kwargs):
-    """CamelCase alias mirroring ArchR naming."""
-    return plot_footprints(*args, **kwargs)
+plotFootprints = plot_footprints
 
 
 __all__ = [
-    "get_footprints",
-    "plot_footprints",
-    "FootprintResult",
-    "getFootprints",
-    "plotFootprints",
+    "Footprint",
+    "compute_tn5_bias_table",
+    "get_footprints", "getFootprints",
+    "plot_footprints", "plotFootprints",
 ]

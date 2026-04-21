@@ -7,8 +7,16 @@ from ._embedding import (
 
 from ._peak2gene import plot_peak2gene
 
+# Footprint plot re-exported from tl (same object — plot is the
+# natural consumer of the Footprint dataclass that get_footprints
+# returns). Lazy-import because _footprint pulls pyfaidx/pysam.
+def plot_footprints(*args, **kwargs):
+    from ..tl._footprint import plot_footprints as _fp
+    return _fp(*args, **kwargs)
+
 __all__ = [
     "frag_size_distr", "tss_enrichment", "fragment_histogram", "plot_joint",
     "embedding", "umap", "tsne", "pca", "diffmap", "draw_graph",
     "plot_peak2gene",
+    "plot_footprints",
 ]
