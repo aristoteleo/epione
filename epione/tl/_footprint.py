@@ -223,6 +223,94 @@ def _parse_positions(pos_df: pd.DataFrame) -> pd.DataFrame:
     return df[["chrom", "center", "strand"]].reset_index(drop=True)
 
 
+def _positions_from_motif_database(
+    motif_database: Union[str, Path],
+    motifs: Optional[Sequence[str]] = None,
+    *,
+    chroms: Optional[Sequence[str]] = None,
+    score_threshold: Optional[float] = None,
+) -> Dict[str, pd.DataFrame]:
+    """Pull PWM match coordinates directly from a motif-database built
+    by :func:`epione.tl.build_motif_database`.
+
+    The database stores **genome-wide motif hits** (one row per PWM
+    match: ``motif_idx / chrom / start / end / score / strand``) —
+    exactly what ``get_footprints`` needs. This is the ArchR
+    ``getPositions(proj, 'Motif')`` analogue.
+
+    Parameters
+    ----------
+    motif_database
+        Path to the database directory (contains ``_meta.json`` and
+        per-chrom ``{chrom}.parquet`` files).
+    motifs
+        Optional list of motif names (substring-matched against
+        ``meta['motif_names']``; first hit wins). ``None`` returns
+        every motif.
+    chroms
+        Optional chromosome whitelist (defaults to all in ``meta``).
+    score_threshold
+        Optional minimum PWM score filter on top of the database's
+        own p-value cutoff.
+
+    Returns
+    -------
+    dict
+        ``{motif_name: DataFrame(chrom / center / start / end / strand)}``
+    """
+    import json
+    from pathlib import Path as _Path
+    base = _Path(motif_database)
+    meta = json.load(open(base / "_meta.json"))
+    motif_names = list(meta["motif_names"])
+
+    if motifs is not None:
+        resolved = []
+        for m in motifs:
+            cand = [n for n in motif_names if m in n or n.startswith(m + "_")]
+            if not cand:
+                raise ValueError(
+                    f"motif {m!r} not found in database "
+                    f"(first 10 names: {motif_names[:10]!r})"
+                )
+            resolved.append(cand[0])
+        motifs = resolved
+    else:
+        motifs = motif_names
+
+    name_to_idx = {n: i for i, n in enumerate(motif_names)}
+    target_idx = {name_to_idx[n]: n for n in motifs}
+
+    use_chroms = list(chroms) if chroms is not None else meta["chroms"]
+
+    # Accumulate per-motif positions.
+    out: Dict[str, list[pd.DataFrame]] = {n: [] for n in motifs}
+    for chrom in use_chroms:
+        p = base / f"{chrom}.parquet"
+        if not p.exists():
+            continue
+        df = pd.read_parquet(p)
+        if score_threshold is not None:
+            df = df[df["score"] >= score_threshold]
+        for idx, name in target_idx.items():
+            sub = df[df["motif_idx"] == idx]
+            if sub.empty:
+                continue
+            sub = sub.copy()
+            sub["chrom"] = chrom
+            # Parquet stores 0-based half-open BED coords.
+            sub["center"] = ((sub["start"] + sub["end"]) // 2).astype(int)
+            strand_map = {1: "+", -1: "-", "1": "+", "-1": "-"}
+            sub["strand"] = sub["strand"].map(strand_map).fillna("+")
+            out[name].append(sub[["chrom", "center", "start", "end", "strand"]])
+
+    return {
+        name: pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame(
+            columns=["chrom", "center", "start", "end", "strand"])
+        for name, dfs in out.items()
+    }
+
+
 def _positions_from_motif_matrix(
     adata,
     motif_key: str,
@@ -315,6 +403,7 @@ def get_footprints(
     positions: Union[pd.DataFrame, Mapping[str, pd.DataFrame], None] = None,
     motifs: Optional[Sequence[str]] = None,
     motif_key: str = "motif",
+    motif_database: Optional[Union[str, Path]] = None,
     groupby: str,
     genome: Union[Genome, str, Path, None] = None,
     flank: int = 250,
@@ -397,12 +486,25 @@ def get_footprints(
 
     # Normalise positions input.
     if positions is None:
-        # Auto-derive from add_motif_matrix output.
-        pos_raw = _positions_from_motif_matrix(adata, motif_key=motif_key, motifs=motifs)
-        positions_dict = {name: _parse_positions(df) for name, df in pos_raw.items()}
+        if motif_database is not None:
+            # True PWM match coordinates from the cached database —
+            # ArchR getPositions(proj, 'Motif') equivalent.
+            pos_raw = _positions_from_motif_database(
+                motif_database, motifs=motifs,
+            )
+        else:
+            # Fallback: peak centers of varm[motif_key] hits. This is
+            # a coarse approximation — for sharp footprints you want
+            # the motif database (see motif_database=...).
+            pos_raw = _positions_from_motif_matrix(
+                adata, motif_key=motif_key, motifs=motifs,
+            )
+        positions_dict = {name: _parse_positions(df)
+                          for name, df in pos_raw.items() if len(df)}
         if not positions_dict:
             raise ValueError(
                 "no motif positions could be derived; check that "
+                "either ``motif_database`` is set or "
                 "adata.varm[motif_key] has non-zero columns"
             )
     elif isinstance(positions, pd.DataFrame):
