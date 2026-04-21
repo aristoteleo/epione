@@ -1,10 +1,22 @@
 
-from ._bindetect import bindetect
+# ``_bindetect`` / ``_atacorrect`` depend on a Cython ``signals.pyx``
+# extension built against an older numpy ABI; they're lazy-imported so
+# a numpy 2.x environment can still use the core preprocess / chromVAR
+# / gene-score pipeline. Call ``epi.tl.bindetect(...)`` etc. and the
+# extension will be loaded (and fail informatively) only at that point.
+import importlib
 
-from ._atacorrect import (
-    AtacBias, atacorrect_core, atacorrect, 
-    save_atacorrect_results_to_bigwig
-)
+def __getattr__(name):
+    if name == "bindetect":
+        return importlib.import_module("._bindetect", __name__).bindetect
+    if name in ("AtacBias", "atacorrect_core", "atacorrect",
+                "save_atacorrect_results_to_bigwig"):
+        mod = importlib.import_module("._atacorrect", __name__)
+        return getattr(mod, name)
+    if name in _FOOTPRINT_ATTRS:
+        mod = importlib.import_module("._footprint", __name__)
+        return getattr(mod, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 from ._score_bigwig import (
     FootprintScorer, score_bigwig_core, score_bigwig,
@@ -29,12 +41,14 @@ from ._plotting import (
     plot_heatmap, plot_tracks
 )
 
-from ._footprint import (
-    get_footprints, plot_footprints, FootprintResult,
-    getFootprints, plotFootprints
-)
+# ``_footprint`` also pulls in ``_bindetect_functions`` (which needs the
+# Cython ``signals.pyx``). Lazy-load it for the same reason.
+_FOOTPRINT_ATTRS = {
+    "get_footprints", "plot_footprints", "FootprintResult",
+    "getFootprints", "plotFootprints",
+}
 
-from ._reducedimension import lsi, spectral
+from ._reducedimension import lsi
 
 from ._iterative_lsi import iterative_lsi
 
@@ -70,7 +84,7 @@ __all__ = [
     "plot_heatmap", "plot_tracks",
     "get_footprints", "plot_footprints", "FootprintResult",
     "getFootprints", "plotFootprints",
-    "lsi","spectral",
+    "lsi",
     "iterative_lsi",
     "peak_to_gene",
     "coaccessibility",

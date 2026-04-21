@@ -133,69 +133,50 @@ def _adata_x_looks_like_tile(
     return abs(med - tile_size) <= 1
 
 
-def _is_snap_backed(adata) -> bool:
-    """Heuristic: snapATAC2's backed AnnData has ``obsm['fragment_paired']``
-    plus ``uns['reference_sequences']`` and is usually a different class
-    than ``anndata.AnnData``.
+def _adata_has_fragments(adata) -> bool:
+    """True when ``adata.uns['files']['fragments']`` is set, i.e. the
+    AnnData came from :func:`epi.pp.import_fragments` and we can
+    re-derive a tile matrix from the BED on disk.
     """
-    obsm_keys = getattr(adata.obsm, "keys", None)
-    if callable(obsm_keys):
-        try:
-            keys = list(obsm_keys())
-        except Exception:
-            keys = []
-    else:
-        try:
-            keys = list(adata.obsm.keys())
-        except Exception:
-            keys = []
-    return "fragment_paired" in keys
+    try:
+        return bool(adata.uns.get("files", {}).get("fragments"))
+    except Exception:
+        return False
 
 
-# ---------------------------------------------------------------------------
-# Fragment / snap-backend → tile matrix
-# ---------------------------------------------------------------------------
-
-def _tile_matrix_from_snap_backed(
+def _tile_matrix_from_adata_fragments(
     adata,
     tile_size: int,
-    counting_strategy: str,
-    min_frag_size: Optional[int],
-    max_frag_size: Optional[int],
     verbose: bool,
 ) -> Tuple[sp.csr_matrix, pd.DataFrame]:
-    """Build a 500 bp raw tile matrix from a snapATAC2-backed AnnData,
-    returning ``(X_tile, tile_df)``. ``adata`` is *not* modified.
+    """Build a raw 500 bp tile matrix from ``adata.uns['files']['fragments']``.
+    Runs ``epi.pp.add_tile_matrix`` on a throwaway shallow copy, so the
+    caller's ``adata.X`` is not touched.
     """
-    import snapatac2 as snap
+    from ..pp._data import add_tile_matrix
+    from anndata import AnnData
 
+    ref_seqs = dict(adata.uns["reference_sequences"])
     _console(
         f"building temporary {tile_size} bp raw tile matrix via "
-        f"snap.pp.add_tile_matrix(inplace=False)",
+        f"epi.pp.add_tile_matrix on fragments",
         verbose,
     )
-    # inplace=False → returns a fresh backed AnnData without mutating adata.
-    # We use a temp file and clean up after.
-    with tempfile.NamedTemporaryFile(suffix=".h5ad", delete=False) as tmp:
-        tmp_path = tmp.name
-    try:
-        tile_ad = snap.pp.add_tile_matrix(
-            adata,
-            bin_size=tile_size,
-            inplace=False,
-            file=tmp_path,
-            counting_strategy=counting_strategy,
-            min_frag_size=min_frag_size,
-            max_frag_size=max_frag_size,
-        )
-        X = tile_ad.X[:].tocsr()
-        tile_labels = list(tile_ad.var_names[:])
-        tile_df = _parse_tile_labels(tile_labels)
-    finally:
-        try:
-            os.unlink(tmp_path)
-        except Exception:
-            pass
+    # Make a minimal AnnData that shares the uns fields add_tile_matrix
+    # needs. We use a plain (in-memory) AnnData because the product is
+    # temporary and we discard it immediately.
+    tmp = AnnData(
+        X=sp.csr_matrix((adata.n_obs, 0), dtype=np.int32),
+        obs=pd.DataFrame(index=pd.Index(list(adata.obs_names), dtype=str)),
+        uns={
+            "files": {"fragments": adata.uns["files"]["fragments"]},
+            "reference_sequences": ref_seqs,
+        },
+    )
+    add_tile_matrix(tmp, bin_size=tile_size, verbose=verbose)
+    X = tmp.X.tocsr() if sp.issparse(tmp.X) else sp.csr_matrix(tmp.X)
+    tile_labels = list(tmp.var_names)
+    tile_df = _parse_tile_labels(tile_labels)
     return X, tile_df
 
 
@@ -640,16 +621,12 @@ def add_gene_score_matrix(
         X_tile = X.astype(np.float32).tocsr()
         tiles = _parse_tile_labels(list(adata.var_names))
         source = "adata.X"
-    elif _is_snap_backed(adata):
-        X_tile, tiles = _tile_matrix_from_snap_backed(
-            adata, tile_size,
-            counting_strategy=counting_strategy,
-            min_frag_size=min_frag_size,
-            max_frag_size=max_frag_size,
-            verbose=verbose,
+    elif _adata_has_fragments(adata):
+        X_tile, tiles = _tile_matrix_from_adata_fragments(
+            adata, tile_size, verbose=verbose,
         )
         X_tile = X_tile.astype(np.float32)
-        source = "snap backend fragments"
+        source = "adata fragments"
     elif fragment_file is not None:
         if chrom_sizes is None:
             raise ValueError(
