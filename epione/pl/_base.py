@@ -37,8 +37,8 @@ EMOJI = {
 }
 
 
-def plot_set(verbosity: int = 3, dpi: int = 80, 
-             facecolor: str = 'white', 
+def plot_set(verbosity: int = 3, dpi: int = 80,
+             facecolor: str = 'white',
              font_path: str = None,
              ipython_format: str  = "retina",
              dpi_save: int = 300,
@@ -48,6 +48,7 @@ def plot_set(verbosity: int = 3, dpi: int = 80,
              color_map: Union[str, None] = None,
              figsize: Union[int, None] = None,
              vector_friendly: bool = True,
+             quiet: bool = False,
              ):
     r"""Configure plotting settings for OmicVerse.
     
@@ -68,8 +69,35 @@ def plot_set(verbosity: int = 3, dpi: int = 80,
     Returns:
         None: The function configures global plotting settings and displays initialization information.
     """
-    global _has_printed_logo
+    global _has_printed_logo, _vector_friendly
     import scanpy as sc
+
+    # Quiet mode: skip the decorative tree / logo entirely (the config
+    # still gets applied). Pass ``quiet=False`` to restore the old
+    # verbose "Starting plot initialization ... plot_set complete" banner.
+    if quiet:
+        sc.settings.verbosity = verbosity
+        import builtins
+        if getattr(builtins, "__IPYTHON__", False):
+            from matplotlib_inline.backend_inline import set_matplotlib_formats
+            set_matplotlib_formats(ipython_format)
+        from matplotlib import rcParams
+        if dpi is not None:         rcParams["figure.dpi"] = dpi
+        if dpi_save is not None:    rcParams["savefig.dpi"] = dpi_save
+        if transparent is not None: rcParams["savefig.transparent"] = transparent
+        if facecolor is not None:
+            rcParams["figure.facecolor"] = facecolor
+            rcParams["axes.facecolor"] = facecolor
+        if scanpy:
+            set_rcParams_scanpy(fontsize=fontsize, color_map=color_map)
+        if figsize is not None:     rcParams["figure.figsize"] = figsize
+        _vector_friendly = vector_friendly
+        warnings.simplefilter("ignore", category=UserWarning)
+        warnings.simplefilter("ignore", category=FutureWarning)
+        warnings.simplefilter("ignore", category=DeprecationWarning)
+        import matplotlib.pyplot as plt
+        plt.rcParams['axes.grid'] = False
+        return
 
     console.level1(f"{EMOJI['start']} Starting plot initialization...")
 
@@ -104,8 +132,8 @@ def plot_set(verbosity: int = 3, dpi: int = 80,
     if figsize is not None:
         rcParams["figure.figsize"] = figsize
     
-    # Set global vector_friendly setting
-    global _vector_friendly
+    # Set global vector_friendly setting (``_vector_friendly`` was
+    # already declared ``global`` at the top of this function).
     _vector_friendly = vector_friendly
     #print(f"{EMOJI['done']} Settings applied")
 

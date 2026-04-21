@@ -1,10 +1,27 @@
 
-# ``_bindetect`` / ``_atacorrect`` depend on a Cython ``signals.pyx``
-# extension built against an older numpy ABI; they're lazy-imported so
-# a numpy 2.x environment can still use the core preprocess / chromVAR
-# / gene-score pipeline. Call ``epi.tl.bindetect(...)`` etc. and the
-# extension will be loaded (and fail informatively) only at that point.
+# ``_bindetect`` / ``_atacorrect`` / ``_score_bigwig`` depend (directly
+# or transitively) on the Cython ``signals.pyx`` / ``_footprint_cython``
+# extension built against an older numpy ABI. Touching any of them at
+# package-import time prints a numpy 1.x/2.x ABI banner to stderr on
+# modern numpy, which makes the first notebook cell look scary. All of
+# them are therefore lazy-imported so a numpy 2.x environment can still
+# use the core preprocess / chromVAR / gene-score pipeline silently;
+# the extension only loads (and fails informatively) when you actually
+# call into footprint / score_bigwig functionality.
 import importlib
+
+# ``_footprint`` pulls in ``_bindetect_functions`` (which also needs
+# the Cython ``signals.pyx``).
+_FOOTPRINT_ATTRS = {
+    "get_footprints", "plot_footprints", "FootprintResult",
+    "getFootprints", "plotFootprints",
+}
+_SCORE_BIGWIG_ATTRS = {
+    "FootprintScorer", "score_bigwig_core", "score_bigwig",
+    "calculate_aggregate_scores", "compare_methods",
+}
+_PLOTTING_TOBIAS_ATTRS = {"plot_aggregate", "plot_aggregate_tobias"}
+
 
 def __getattr__(name):
     if name == "bindetect":
@@ -16,16 +33,13 @@ def __getattr__(name):
     if name in _FOOTPRINT_ATTRS:
         mod = importlib.import_module("._footprint", __name__)
         return getattr(mod, name)
+    if name in _SCORE_BIGWIG_ATTRS:
+        mod = importlib.import_module("._score_bigwig", __name__)
+        return getattr(mod, name)
+    if name in _PLOTTING_TOBIAS_ATTRS:
+        mod = importlib.import_module("._plotting_tobias", __name__)
+        return getattr(mod, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-from ._score_bigwig import (
-    FootprintScorer, score_bigwig_core, score_bigwig,
-    calculate_aggregate_scores, compare_methods
-)
-
-from ._plotting_tobias import (
-    plot_aggregate, plot_aggregate_tobias
-)
 
 from ._motif_tools import (
     MotifMatrix, FormatMotifs, ClusterMotifs,
@@ -40,13 +54,6 @@ from ._plotting import (
     FootprintPlotter, PlotTracks,
     plot_heatmap, plot_tracks
 )
-
-# ``_footprint`` also pulls in ``_bindetect_functions`` (which needs the
-# Cython ``signals.pyx``). Lazy-load it for the same reason.
-_FOOTPRINT_ATTRS = {
-    "get_footprints", "plot_footprints", "FootprintResult",
-    "getFootprints", "plotFootprints",
-}
 
 from ._reducedimension import lsi
 
