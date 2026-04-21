@@ -8,7 +8,7 @@ from scipy.io import mmread
 import re
 import gzip
 
-from typing import Union
+from typing import Optional, Union
 from tqdm import tqdm
 
 from ..utils import console
@@ -48,6 +48,136 @@ def read_ATAC_10x(matrix, cell_names='', var_names='', path_file=''):
     adata.uns['omic'] = 'ATAC'
     
     return(adata)
+
+def get_gene_annotation(
+    genome_or_path,
+    *,
+    feature: str = "gene",
+    gene_type: Optional[Union[str, list, tuple, set]] = "protein_coding",
+    exclude_chroms: Optional[Union[list, tuple, set]] = ("chrM", "chrMT"),
+) -> pd.DataFrame:
+    """Return a per-gene DataFrame from a Gencode GTF/GFF3 annotation.
+
+    Columns: ``gene_name / chrom / start / end / strand`` — the format
+    :func:`epi.pp.tsse` and :func:`epi.tl.add_gene_score_matrix` expect.
+    Coordinates are 1-based inclusive (UCSC/GFF convention).
+
+    Parameters
+    ----------
+    genome_or_path
+        A :class:`~epione.utils.genome.Genome` (``.annotation`` resolves
+        the cached GFF3) or a path to a GTF/GFF3 file (``.gz`` ok).
+        This is what auto-downloads the Gencode annotation on first
+        call via pooch — no hardcoded TSV needed.
+    feature
+        GFF/GTF feature type to keep (default ``"gene"`` — one row per
+        gene; use ``"transcript"`` to keep isoforms).
+    gene_type
+        Keep only the specified ``gene_type`` / ``gene_biotype``
+        (default ``"protein_coding"``). Pass ``None`` to keep all.
+    exclude_chroms
+        Chromosomes to drop (default mitochondria).
+
+    Returns
+    -------
+    pandas.DataFrame
+        One row per matching gene with columns
+        ``gene_name``, ``chrom``, ``start``, ``end``, ``strand``.
+
+    Examples
+    --------
+    >>> import epione as epi
+    >>> genes = epi.utils.get_gene_annotation(epi.utils.genome.hg19)
+    >>> epi.pp.tsse(adata, genes)
+    >>> epi.tl.add_gene_score_matrix(adata, gene_anno=genes, use_x="auto")
+    """
+    # Resolve Genome → annotation path.
+    from ._genome import Genome
+    if isinstance(genome_or_path, Genome):
+        path = str(genome_or_path.annotation)
+    else:
+        path = str(genome_or_path)
+
+    # Auto-detect GFF3 vs GTF by file extension or first non-comment line.
+    is_gff3 = ".gff" in path.lower()
+
+    gene_type_set = None
+    if gene_type is not None:
+        if isinstance(gene_type, str):
+            gene_type_set = {gene_type}
+        else:
+            gene_type_set = set(gene_type)
+
+    exclude_set = set(exclude_chroms) if exclude_chroms else set()
+
+    rows = []
+    opener = gzip.open if path.endswith(".gz") else open
+    with opener(path, "rt") as fh:
+        for line in fh:
+            if not line or line[0] == "#":
+                continue
+            parts = line.rstrip("\n").split("\t", 8)
+            if len(parts) < 8:
+                continue
+            if parts[2] != feature:
+                continue
+            chrom = parts[0]
+            if chrom in exclude_set:
+                continue
+            try:
+                start = int(parts[3])
+                end = int(parts[4])
+            except ValueError:
+                continue
+            strand = parts[6]
+            attrs = parts[8] if len(parts) > 8 else ""
+
+            # Parse attributes: GFF3 is ``key=value;``; GTF is ``key "value";``
+            name = None
+            biotype = None
+            if is_gff3:
+                for field in attrs.split(";"):
+                    field = field.strip()
+                    if not field:
+                        continue
+                    eq = field.find("=")
+                    if eq < 0:
+                        continue
+                    k = field[:eq]; v = field[eq+1:]
+                    if k == "gene_name":
+                        name = v
+                    elif k in ("gene_type", "gene_biotype"):
+                        biotype = v
+            else:
+                for field in attrs.split(";"):
+                    field = field.strip()
+                    if not field:
+                        continue
+                    sp = field.split(" ", 1)
+                    if len(sp) != 2:
+                        continue
+                    k, v = sp[0], sp[1].strip().strip('"')
+                    if k == "gene_name":
+                        name = v
+                    elif k in ("gene_type", "gene_biotype"):
+                        biotype = v
+
+            if gene_type_set is not None and biotype is not None \
+                    and biotype not in gene_type_set:
+                continue
+            if name is None:
+                continue
+            rows.append((name, chrom, start, end, strand))
+
+    df = pd.DataFrame(rows, columns=["gene_name", "chrom", "start", "end", "strand"])
+    # For duplicate gene names (rare with ``feature='gene'``), keep the
+    # longest locus to have one canonical row per gene.
+    if df["gene_name"].duplicated().any():
+        df["_len"] = df["end"] - df["start"]
+        df = df.sort_values("_len", ascending=False).drop_duplicates("gene_name", keep="first")
+        df = df.drop(columns="_len").sort_values(["chrom", "start"]).reset_index(drop=True)
+    return df
+
 
 def read_gtf(
     gtf_path,

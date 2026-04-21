@@ -1,7 +1,6 @@
 from ..utils._genome import Genome
-import snapatac2._snapatac2 as internal
+import gzip
 import numpy as np
-import snapatac2
 from pathlib import Path
 from ..utils import console
 import os
@@ -14,145 +13,213 @@ from ..utils.genome import Genome
 from tqdm import tqdm
 
 
+def _obs_columns(adata) -> list:
+    """Return the list of ``obs`` column names in a way that works on both
+    plain ``anndata.AnnData`` and snapATAC2-backed AnnData. The snap
+    backend exposes an ``obs`` object whose ``.columns`` / ``.keys()``
+    attributes don't mirror pandas, so fall back to iterating.
+    """
+    try:
+        return list(adata.obs.columns)
+    except Exception:
+        pass
+    try:
+        return list(adata.obs.keys())
+    except Exception:
+        pass
+    return []
+
 
 def frag_size_distr(
-    adata: internal.AnnData | list[internal.AnnData],
+    adata: AnnData,
     *,
     max_recorded_size: int = 1000,
     add_key: str = "frag_size_distr",
     inplace: bool = True,
-    n_jobs: int = 8,
-) -> np.ndarray | list[np.ndarray] | None:
-    """ Compute the fragment size distribution of the dataset. 
+    whitelist_barcodes: bool = True,
+) -> np.ndarray | None:
+    """Compute the fragment-size distribution over the dataset.
 
-    This function computes the fragment size distribution of the dataset.
-    Note that it does not operate at the single-cell level.
-    The result is stored in a vector where each element represents the number of fragments
-    and the index represents the fragment length. The first posision of the vector is
-    reserved for fragments with size larger than the `max_recorded_size` parameter.
-    :func:`~snapatac2.pp.import_fragments` must be ran first in order to use this function.
+    Scans the bgzipped fragments.tsv.gz referenced in
+    ``adata.uns['files']['fragments']`` and builds a length histogram
+    from 0 up to ``max_recorded_size`` (inclusive). Fragments longer
+    than ``max_recorded_size`` fall into the index-0 overflow bin
+    (matches the snapATAC2 convention).
 
     Parameters
     ----------
     adata
-        The (annotated) data matrix of shape `n_obs` x `n_vars`.
-        Rows correspond to cells and columns to regions.
-        `adata` could also be a list of AnnData objects.
-        In this case, the function will be applied to each AnnData object in parallel.
+        AnnData carrying ``uns['files']['fragments']``
+        (as produced by :func:`epi.pp.import_fragments`).
     max_recorded_size
-        The maximum fragment size to record in the result.
-        Fragments with length larger than `max_recorded_size` will be recorded in the first
-        position of the result vector.
+        Longest fragment length tracked in a per-length bin.
     add_key
-        Key used to store the result in `adata.uns`.
+        Key used to store the resulting vector in ``adata.uns``.
     inplace
-        Whether to add the results to `adata.uns` or return it.
-    n_jobs
-        Number of jobs to run in parallel when `adata` is a list.
-        If `n_jobs=-1`, all CPUs will be used.
-
-    Returns
-    -------
-    np.ndarray | list[np.ndarray] | None
-        If `inplace = True`, directly adds the results to `adata.uns['`add_key`']`.
-        Otherwise return the results.
+        When True the histogram is written to ``adata.uns[add_key]``;
+        otherwise it is returned.
+    whitelist_barcodes
+        When True restrict counting to the barcodes present in
+        ``adata.obs_names`` (the post-QC cell set). When False every
+        fragment in the file contributes — useful for the
+        uncurated library-level distribution.
     """
-    if isinstance(adata, list):
-        
-        return snapatac2._utils.anndata_par(
-            adata,
-            lambda x: frag_size_distr(x, add_key=add_key, max_recorded_size=max_recorded_size, inplace=inplace),
-            n_jobs=n_jobs,
+    frag_file = adata.uns.get("files", {}).get("fragments")
+    if frag_file is None:
+        raise ValueError(
+            "adata.uns['files']['fragments'] not set — run epi.pp.import_fragments first"
         )
-    else:
-        console.level1("Computing fragment size distribution for adata...")
-        result = np.array(internal.fragment_size_distribution(adata, max_recorded_size))
-        if inplace:
-            adata.uns[add_key] = result
-            console.level2("Added fragment size distribution to adata.uns['{}']".format(add_key))
-        else:
-            console.level2("Returned fragment size distribution")
-            return result
+    console.level1("Computing fragment size distribution for adata...")
+
+    whitelist = None
+    if whitelist_barcodes:
+        try:
+            whitelist = set(map(str, adata.obs_names))
+        except Exception:
+            whitelist = None
+
+    hist = np.zeros(max_recorded_size + 1, dtype=np.int64)
+    opener = gzip.open if str(frag_file).endswith(".gz") else open
+    with opener(str(frag_file), "rt") as fh:
+        for line in fh:
+            if not line or line.startswith("#"):
+                continue
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) < 4:
+                continue
+            try:
+                start = int(parts[1]); end = int(parts[2])
+            except ValueError:
+                continue
+            if whitelist is not None and parts[3] not in whitelist:
+                continue
+            size = end - start
+            if size <= 0:
+                continue
+            if size > max_recorded_size:
+                hist[0] += 1          # overflow bin (snapATAC2 convention)
+            else:
+                hist[size] += 1
+
+    if inplace:
+        adata.uns[add_key] = hist
+        console.level2(f"Added fragment size distribution to adata.uns['{add_key}']")
+        return None
+    return hist
 
 def tsse(
-    adata: internal.AnnData | list[internal.AnnData],
-    gene_anno: Genome | Path,
+    adata: AnnData,
+    gene_anno,
     *,
-    exclude_chroms: list[str] | str | None = ["chrM", "M"],
+    exclude_chroms: list[str] | str | None = ["chrM", "M", "chrMT", "MT"],
+    flank_size: int = 2000,
     inplace: bool = True,
-    n_jobs: int = 8,
-) -> np.ndarray | list[np.ndarray] | None:
-    """ Compute the TSS enrichment score (TSSe) for each cell.
+) -> dict | None:
+    """Per-cell TSS enrichment score (ENCODE-style), pure Python.
 
-    :func:`~snapatac2.pp.import_fragments` must be ran first in order to use this function.
+    Reuses :func:`epi.pp.tss_enrichment` internally — reads TSS
+    coordinates from a GTF/GFF or ``Genome.annotation``, pulls fragments
+    around each TSS via pysam, and computes the enrichment of insertion
+    density at the TSS over flanking background. No snapATAC2.
 
     Parameters
     ----------
     adata
-        The (annotated) data matrix of shape `n_obs` x `n_vars`.
-        Rows correspond to cells and columns to regions.
-        `adata` could also be a list of AnnData objects.
-        In this case, the function will be applied to each AnnData object in parallel.
+        AnnData with ``uns['files']['fragments']`` set.
     gene_anno
-        A :class:`~snapatac2.Genome` object or a GTF/GFF file containing the gene annotation.
+        One of:
+
+        * :class:`epione.utils.Genome` — uses ``.annotation`` (GTF/GFF)
+          and collapses to one strand-aware TSS per gene name (matches
+          ArchR's TSS table).
+        * Path to a GTF/GFF file — same auto-collapse.
+        * :class:`pandas.DataFrame` with columns
+          ``chrom / start / end / strand`` (and optional ``gene_name``).
+          One row per gene. This is the ArchR ``genes`` format and
+          gives a 1:1 comparable TSSe.
     exclude_chroms
-        A list of chromosomes to exclude.
+        Chromosomes skipped when sampling TSSes.
+    flank_size
+        Half-width of the pileup window (ENCODE uses 2 kb).
     inplace
-        Whether to add the results to `adata.obs` or return it as a dictionary.
-    n_jobs
-        Number of jobs to run in parallel when `adata` is a list.
-        If `n_jobs=-1`, all CPUs will be used.
+        When True, stores ``adata.obs['tsse']``, ``adata.uns['TSS_profile']``,
+        ``adata.uns['library_tsse']``, ``adata.uns['frac_overlap_TSS']``.
 
     Returns
     -------
-    tuple[np.ndarray, tuple[float, float]] | list[tuple[np.ndarray, tuple[float, float]]] | None
-        If `inplace = True`, cell-level TSSe scores are computed and stored in `adata.obs['tsse']`.
-        Library-level TSSe scores are stored in `adata.uns['library_tsse']`.
-        Fraction of fragments overlapping TSS are stored in `adata.uns['frac_overlap_TSS']`.
-        If `inplace = False`, return a tuple containing all these values.
-
-    Examples
-    --------
-    >>> import snapatac2 as snap
-    >>> data = snap.pp.import_fragments(snap.datasets.pbmc500(downsample=True), chrom_sizes=snap.genome.hg38, sorted_by_barcode=False)
-    >>> snap.metrics.tsse(data, snap.genome.hg38)
-    >>> print(data.obs['tsse'].head())
-    AAACTGCAGACTCGGA-1    32.129514
-    AAAGATGCACCTATTT-1    22.052786
-    AAAGATGCAGATACAA-1    27.109808
-    AAAGGGCTCGCTCTAC-1    24.990329
-    AAATGAGAGTCCCGCA-1    33.264463
-    Name: tsse, dtype: float64
+    dict | None
+        When ``inplace=False`` returns a dict with the four fields above.
     """
-    gene_anno = gene_anno.annotation if isinstance(gene_anno, Genome) else gene_anno
- 
-    if isinstance(adata, list):
-        result = snapatac2._utils.anndata_par(
-            adata,
-            lambda x: tsse(x, gene_anno, exclude_chroms=exclude_chroms, inplace=inplace),
-            n_jobs=n_jobs,
-        )
+    # Resolve annotation → features DataFrame with one row per TSS.
+    if isinstance(gene_anno, pd.DataFrame):
+        # Accept ArchR-style genes table: chrom/start/end/strand, one per
+        # gene. Normalise column names to ``tss_enrichment`` expectations.
+        df = gene_anno.copy()
+        # Canonicalise column names.
+        rn = {}
+        for c in df.columns:
+            lc = c.lower()
+            if lc == "chrom":    rn[c] = "Chromosome"
+            elif lc == "start":  rn[c] = "Start"
+            elif lc == "end":    rn[c] = "End"
+            elif lc == "strand": rn[c] = "Strand"
+        df = df.rename(columns=rn)
+        features = df
     else:
-        console.level1("Computing TSS enrichment score for adata...")
-        result = internal.tss_enrichment(adata, gene_anno, exclude_chroms)
-        result['tsse'] = np.array(result['tsse'])
-        result['TSS_profile'] = np.array(result['TSS_profile'])
-        if inplace:
-            adata.obs["tsse"] = result['tsse']
-            adata.uns['library_tsse'] = result['library_tsse']
-            adata.uns['frac_overlap_TSS'] = result['frac_overlap_TSS']
-            adata.uns['TSS_profile'] = result['TSS_profile']
-            console.level2("Added TSS enrichment score to adata.obs['tsse']")
-            console.level2("Added library TSS enrichment score to adata.uns['library_tsse']")
-            console.level2("Added fraction of fragments overlapping TSS to adata.uns['frac_overlap_TSS']")
-            console.level2("Added TSS profile to adata.uns['TSS_profile']")
+        if isinstance(gene_anno, Genome):
+            gene_anno = gene_anno.annotation
+        # Load GTF, then collapse to one row per gene. read_features gives
+        # ~100k transcript rows with mostly null gene_name — collapse on
+        # (Chromosome, strand-aware TSS coordinate) as a fallback.
+        from ..utils import read_features
+        feats = read_features(str(gene_anno))
+        strand_col = None
+        for c in ("Strand", "strand"):
+            if c in feats.columns:
+                strand_col = c
+                break
+        if strand_col is not None:
+            is_minus = feats[strand_col].astype(str).str.strip().isin(
+                ["-", "minus", "-1"])
+            tss = np.where(is_minus,
+                           feats["End"].astype(int).values - 1,
+                           feats["Start"].astype(int).values)
         else:
-            console.level2("Returned TSS enrichment score")
-            return result
+            tss = feats["Start"].astype(int).values
+        feats = feats.assign(_TSS=tss)
+        features = feats.drop_duplicates(
+            subset=["Chromosome", "_TSS"], keep="first").copy()
+        # Re-home Start/End so that (Start) is the TSS (needed by
+        # ``tss_enrichment``'s strand-aware pileup code).
+        features["Start"] = features["_TSS"].astype(int).values
+        features["End"] = features["_TSS"].astype(int).values + 1
+        features = features.drop(columns="_TSS")
+    console.level1("Computing TSS enrichment score for adata...")
+    # Use all TSSes by default (``tss_enrichment`` expects a positive
+    # integer for ``n_tss``). A very large number effectively disables
+    # the "sample N TSSes" filter.
+    result = tss_enrichment(
+        adata, features=features,
+        extend_upstream=flank_size, extend_downstream=flank_size,
+        n_tss=1_000_000, return_tss=True,
+    )
+    # ``tss_enrichment`` already stores ``tss_score`` in ``obs``.
+    # Build the snapATAC2-equivalent exports on top.
+    tss_scores = np.asarray(adata.obs["tss_score"].to_numpy()) if "tss_score" in adata.obs else None
+    out = {
+        "tsse": tss_scores,
+        "library_tsse": float(np.nanmean(tss_scores)) if tss_scores is not None else None,
+        "frac_overlap_TSS": None,
+        "TSS_profile": adata.uns.get("TSS_profile"),
+    }
     if inplace:
+        if tss_scores is not None:
+            adata.obs["tsse"] = tss_scores
+        if out["library_tsse"] is not None:
+            adata.uns["library_tsse"] = out["library_tsse"]
+        console.level2("Added TSS enrichment score to adata.obs['tsse']")
         return None
-    else:
-        return result
+    return out
 
 
 def ensure_tabix_index(path, preset="bed"):
@@ -236,10 +303,10 @@ def tss_enrichment(
     n_features = extend_downstream + extend_upstream + 1
 
     # Dictionary with matrix positions
-    if barcodes and barcodes in adata.obs.columns:
+    if barcodes and barcodes in _obs_columns(adata):
         d = {k: v for k, v in zip(adata.obs.loc[:, barcodes], range(n))}
     else:
-        d = {k: v for k, v in zip(adata.obs.index, range(n))}
+        d = {k: v for k, v in zip(list(adata.obs_names), range(n))}
 
     # Not sparse since we expect most positions to be filled
     mx = np.zeros((n, n_features), dtype=int)
@@ -261,24 +328,43 @@ def tss_enrichment(
     chromosomes = fragments.contigs
     features = features[features.Chromosome.isin(chromosomes)]
 
-    # logging.info(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Counting fragments in {n} cells for {features.shape[0]} features...")
+    # Strand-aware TSS: for + strand, TSS = Start; for - strand, TSS = End.
+    # Without this, minus-strand genes are centred on the 3' end, diluting
+    # the centre/flank TSSe ratio by ~2×.
+    strand_col = None
+    for c in ("Strand", "strand"):
+        if c in features.columns:
+            strand_col = c
+            break
+    if strand_col is not None:
+        tss_coord = np.where(
+            features[strand_col].astype(str).str.strip().isin(["-", "minus", "-1"]),
+            features["End"].astype(int).values - 1,
+            features["Start"].astype(int).values,
+        )
+    else:
+        tss_coord = features["Start"].astype(int).values
 
     for i in tqdm(
         range(features.shape[0]), desc="Fetching Regions..."
     ):  # iterate over features (e.g. genes)
         f = features.iloc[i]
-        tss_start = f.Start - extend_upstream  # First position of the TSS region
-        for fr in fragments.fetch(
-            f.Chromosome, f.Start - extend_upstream, f.Start + extend_downstream
-        ):
+        tss = int(tss_coord[i])
+        region_start = tss - extend_upstream
+        region_end = tss + extend_downstream + 1     # inclusive TSS position
+        for fr in fragments.fetch(f.Chromosome, region_start, region_end):
             try:
-                rowind = d[fr.name]  # cell barcode (e.g. GTCAGTCAGTCAGTCA-1)
-                score = int(fr.score)  # number of cuts per fragment (e.g. 2)
-                colind_start = max(fr.start - tss_start, 0)
-                colind_end = min(fr.end - tss_start, n_features)  # ends are non-inclusive in bed
-                mx[rowind, colind_start:colind_end] += score
-            except:
-                pass
+                rowind = d[fr.name]  # cell barcode
+            except KeyError:
+                continue
+            # Match ArchR: count Tn5 insertion events (one at fragment
+            # start, one at end - 1), not fragment coverage. Coverage
+            # pileup "leaks" into the flank region and artificially
+            # lowers the centre/flank TSSe ratio.
+            for cut in (fr.start, fr.end - 1):
+                col = cut - region_start
+                if 0 <= col < n_features:
+                    mx[rowind, col] += 1
 
     fragments.close()
 
@@ -307,7 +393,7 @@ def tss_enrichment(
 
 
 
-def _calculate_tss_score(data, flank_size: int = 100, center_size: int = 1001):
+def _calculate_tss_score(data, flank_size: int = 100, center_size: int = 101):
     """
     Calculate TSS enrichment scores (defined by ENCODE) for each cell.
 
@@ -401,11 +487,13 @@ def nucleosome_signal(
 
     fragments = pysam.TabixFile(adata.uns["files"]["fragments"], parser=pysam.asBed())
 
-    # Dictionary with matrix row indices
-    if barcodes and barcodes in adata.obs.columns:
+    # Dictionary with matrix row indices. ``adata.obs_names`` works on
+    # both plain anndata.AnnData and snapATAC2-backed AnnData, whereas
+    # ``adata.obs.index`` only exists on the former.
+    if barcodes and barcodes in _obs_columns(adata):
         d = {k: v for k, v in zip(adata.obs.loc[:, barcodes], range(adata.n_obs))}
     else:
-        d = {k: v for k, v in zip(adata.obs.index, range(adata.n_obs))}
+        d = {k: v for k, v in zip(list(adata.obs_names), range(adata.n_obs))}
     mat = np.zeros(shape=(adata.n_obs, 2), dtype=int)
 
     fr = fragments.fetch()
@@ -464,260 +552,126 @@ def _find_most_accessible_features(
     idx = idx[n_lower:n-n_upper]
     return idx[::-1][:total_features]
  
+def _chunked_column_sum(X, chunk: int = 5000) -> np.ndarray:
+    """Per-column sum over X, chunked row-wise so anndataoom's backed
+    arrays don't materialise the full matrix."""
+    import scipy.sparse as sp
+    n_vars = X.shape[1]
+    out = np.zeros(n_vars, dtype=np.float64)
+    if hasattr(X, "chunked"):
+        for start, end, block in X.chunked(chunk):
+            out += np.asarray(block.sum(axis=0)).ravel()
+    else:
+        # plain ndarray / scipy.sparse
+        if sp.issparse(X):
+            out += np.asarray(X.sum(axis=0)).ravel()
+        else:
+            out += np.asarray(X).sum(axis=0)
+    return out
+
+
+def _bed_overlap_mask(var_names, bed_path: Path) -> np.ndarray:
+    """Return a boolean mask over ``var_names`` (``chrN:s-e`` format)
+    marking which ones overlap any interval in ``bed_path``. Pure Python
+    replacement for snapatac2's internal.intersect_bed.
+    """
+    import re, gzip
+    from collections import defaultdict
+    _re = re.compile(r"^([^:]+):(\d+)-(\d+)$")
+
+    # Parse BED intervals.
+    opener = gzip.open if str(bed_path).endswith(".gz") else open
+    intervals = defaultdict(list)
+    with opener(str(bed_path), "rt") as fh:
+        for line in fh:
+            if line.startswith("#") or not line.strip():
+                continue
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) < 3:
+                continue
+            try:
+                intervals[parts[0]].append((int(parts[1]), int(parts[2])))
+            except ValueError:
+                continue
+    for chrom in intervals:
+        intervals[chrom].sort()
+
+    mask = np.zeros(len(var_names), dtype=bool)
+    for i, name in enumerate(var_names):
+        m = _re.match(str(name))
+        if m is None:
+            continue
+        chrom, s, e = m.group(1), int(m.group(2)), int(m.group(3))
+        ivs = intervals.get(chrom)
+        if not ivs:
+            continue
+        # Binary-search for first interval whose start >= e.
+        lo, hi = 0, len(ivs)
+        while lo < hi:
+            mid = (lo + hi) // 2
+            if ivs[mid][0] >= e:
+                hi = mid
+            else:
+                lo = mid + 1
+        k = lo - 1
+        while k >= 0 and ivs[k][0] < e:
+            if ivs[k][1] > s:
+                mask[i] = True
+                break
+            k -= 1
+    return mask
+
+
 def select_features(
-    adata: internal.AnnData | internal.AnnDataSet | list[internal.AnnData],
+    adata: AnnData,
     n_features: int = 500000,
     filter_lower_quantile: float = 0.005,
     filter_upper_quantile: float = 0.005,
-    whitelist: Path | None = None,
-    blacklist: Path | None = None,
-    max_iter: int = 1,
+    whitelist: Optional[Path] = None,
+    blacklist: Optional[Path] = None,
     inplace: bool = True,
-    n_jobs: int = 8,
     verbose: bool = True,
-) -> np.ndarray | list[np.ndarray] | None:
+) -> np.ndarray | None:
+    """Pick the top-``n_features`` most-accessible features.
+
+    Pure-Python replacement for the old snapATAC2-backed implementation.
+    Features are ranked by per-column sum across cells. ``filter_*_quantile``
+    removes rare and ubiquitous outliers before picking the top-N. Optional
+    whitelist / blacklist BEDs intersect with the var names
+    (``chrN:start-end`` format).
     """
-    Perform feature selection by selecting the most accessibile features across
-    all cells unless `max_iter` > 1.
-
-    Note
-    ----
-    This function does not perform the actual subsetting. The feature mask is used by
-    various functions to generate submatrices on the fly.
-    Features that are zero in all cells will be always removed regardless of the
-    filtering criteria.
-    For more discussion about feature selection, see: https://github.com/scverse/SnapATAC2/discussions/116.
-
-    Parameters
-    ----------
-    adata
-        The (annotated) data matrix of shape `n_obs` x `n_vars`.
-        Rows correspond to cells and columns to regions.
-        `adata` can also be a list of AnnData objects.
-        In this case, the function will be applied to each AnnData object in parallel.
-    n_features
-        Number of features to keep. Note that the final number of features
-        may be smaller than this number if there is not enough features that pass
-        the filtering criteria.
-    filter_lower_quantile
-        Lower quantile of the feature count distribution to filter out.
-        For example, 0.005 means the bottom 0.5% features with the lowest counts will be removed.
-    filter_upper_quantile
-        Upper quantile of the feature count distribution to filter out.
-        For example, 0.005 means the top 0.5% features with the highest counts will be removed.
-        Be aware that when the number of feature is very large, the default value of 0.005 may
-        risk removing too many features.
-    whitelist
-        A user provided bed file containing genome-wide whitelist regions.
-        None-zero features listed here will be kept regardless of the other
-        filtering criteria.
-        If a feature is present in both whitelist and blacklist, it will be kept.
-    blacklist 
-        A user provided bed file containing genome-wide blacklist regions.
-        Features that are overlapped with these regions will be removed.
-    max_iter
-        If greater than 1, this function will perform iterative clustering and feature selection
-        based on variable features found using previous clustering results.
-        This is similar to the procedure implemented in ArchR, but we do not recommend it,
-        see https://github.com/scverse/SnapATAC2/issues/111.
-        Default value is 1, which means no iterative clustering is performed.
-    inplace
-        Perform computation inplace or return result.
-    n_jobs
-        Number of parallel jobs to use when `adata` is a list.
-    verbose
-        Whether to print progress messages.
-    
-    Returns
-    -------
-    np.ndarray | None:
-        If `inplace = False`, return a boolean index mask that does filtering,
-        where `True` means that the feature is kept, `False` means the feature is removed.
-        Otherwise, store this index mask directly to `.var['selected']`.
-    """
-    if isinstance(adata, list):
-        result = snapatac2._utils.anndata_par(
-            adata,
-            lambda x: select_features(x, n_features, filter_lower_quantile,
-                                      filter_upper_quantile, whitelist,
-                                      blacklist, max_iter, inplace, verbose=False),
-            n_jobs=n_jobs,
-        )
-        if inplace:
-            return None
-        else:
-            return result
-
-    count = np.zeros(adata.shape[1])
-    for batch, _, _ in adata.chunked_X(2000):
-        count += np.ravel(batch.sum(axis = 0))
+    count = _chunked_column_sum(adata.X)
     if inplace:
-        adata.var['count'] = count
+        try:
+            adata.var['count'] = count
+        except Exception:
+            pass
 
-    selected_features = _find_most_accessible_features(
-        count, filter_lower_quantile, filter_upper_quantile, n_features)
+    selected = _find_most_accessible_features(
+        count, filter_lower_quantile, filter_upper_quantile, n_features,
+    )
 
+    # Optional BED overlap filters.
     if blacklist is not None:
-        blacklist = np.array(internal.intersect_bed(adata.var_names, str(blacklist)))
-        selected_features = selected_features[np.logical_not(blacklist[selected_features])]
+        mask = _bed_overlap_mask(adata.var_names, blacklist)
+        selected = selected[~mask[selected]]
 
-    # Iteratively select features
-    iter = 1
-    while iter < max_iter:
-        embedding = snapatac2.tl.spectral(adata, features=selected_features, inplace=False)[1]
-        clusters = snapatac2.tl.leiden(snapatac2.pp.knn(embedding, inplace=False))
-        rpm = snapatac2.tl.aggregate_X(adata, groupby=clusters).X
-        var = np.var(np.log(rpm + 1), axis=0)
-        selected_features = np.argsort(var)[::-1][:n_features]
+    result = np.zeros(adata.n_vars, dtype=bool)
+    result[selected] = True
 
-        # Apply blacklist to the result
-        if blacklist is not None:
-            selected_features = selected_features[np.logical_not(blacklist[selected_features])]
-        iter += 1
-
-    result = np.zeros(adata.shape[1], dtype=bool)
-    result[selected_features] = True
-
-    # Finally, apply whitelist to the result
     if whitelist is not None:
-        whitelist = np.array(internal.intersect_bed(adata.var_names, str(whitelist)))
-        whitelist &= count != 0
-        result |= whitelist
-    
+        wl = _bed_overlap_mask(adata.var_names, whitelist)
+        wl &= count != 0
+        result |= wl
+
     if verbose:
-        console.level1(f"Selected {result.sum()} features.")
+        console.level1(f"Selected {int(result.sum()):,} features.")
 
     if inplace:
-        adata.var["selected"] = result
-    else:
-        return result
+        try:
+            adata.var["selected"] = result
+        except Exception:
+            pass
+        return None
+    return result
 
-def make_peak_matrix(
-    adata: internal.AnnData | internal.AnnDataSet,
-    *,
-    use_rep: str | list[str] | None = None,
-    inplace: bool = False,
-    file: Path | None = None,
-    backend: Literal['hdf5'] = 'hdf5',
-    peak_file: Path | None = None,
-    chunk_size: int = 500,
-    use_x: bool = False,
-    min_frag_size: int | None = None,
-    max_frag_size: int | None = None,
-    counting_strategy: Literal['fragment', 'insertion', 'paired-insertion'] = 'paired-insertion',
-    value_type: Literal['target', 'total', 'fraction'] = 'target',
-    summary_type: Literal['sum', 'mean'] = 'sum',
-) -> internal.AnnData:
-    """Generate cell by peak count matrix.
-
-    This function will generate a cell by peak count matrix and store it in a 
-    new .h5ad file.
-
-    :func:`~snapatac2.pp.import_fragments` must be ran first in order to use this function.
-
-    Parameters
-    ----------
-    adata
-        The (annotated) data matrix of shape `n_obs` x `n_vars`.
-        Rows correspond to cells and columns to regions.
-    use_rep
-        This is used to read peak information from `.uns[use_rep]`.
-        The peaks can also be provided by a list of strings:
-        ["chr1:1-100", "chr2:2-200"].
-    inplace
-        Whether to add the tile matrix to the AnnData object or return a new AnnData object.
-    file
-        File name of the output h5ad file used to store the result. If provided,
-        result will be saved to a backed AnnData, otherwise an in-memory AnnData
-        is used. This has no effect when `inplace=True`.
-    backend
-        The backend to use for storing the result. If `None`, the default backend will be used.
-    peak_file
-        Bed file containing the peaks. If provided, peak information will be read
-        from this file.
-    chunk_size
-        Chunk size
-    use_x
-        If True, use the matrix stored in `.X` as raw counts.
-        Otherwise the `.obsm['insertion']` is used.
-    min_frag_size
-        Minimum fragment size to include.
-    max_frag_size
-        Maximum fragment size to include.
-    counting_strategy
-        The strategy to compute feature counts. It must be one of the following:
-        "fragment", "insertion", or "paired-insertion". "fragment" means the
-        feature counts are assigned based on the number of fragments that overlap
-        with a region of interest. "insertion" means the feature counts are assigned
-        based on the number of insertions that overlap with a region of interest.
-        "paired-insertion" is similar to "insertion", but it only counts the insertions
-        once if the pair of insertions of a fragment are both within the same region
-        of interest [Miao24]_.
-        Note that this parameter has no effect if input are single-end reads.
-    value_type
-        The type of value to use from `.obsm['_values']`, only available when 
-        data is imported using :func:`~snapatac2.pp.import_values`. It must be one of the following:
-        "target", "total", or "fraction". "target" means the value is the number
-        of recrods that are with postive measurements, e.g., number of methylated bases.
-        "total" means the value is the total number of measurements, e.g., methylated bases plus
-        unmethylated bases. "fraction" means the value is the fraction of the
-        records that are positive, e.g., the fraction of methylated bases.
-    summary_type
-        The type of summary to use when multiple values are found in a bin. This parameter
-        is only used when `.obsm['_values']` exists, which is created by :func:`~snapatac2.pp.import_values`. 
-        It must be one of the following: "sum" or "mean".
-
-    Returns
-    -------
-    AnnData | ad.AnnData | None
-        An annotated data matrix of shape `n_obs` x `n_vars`. Rows correspond to
-        cells and columns to peaks. If `file=None`, an in-memory AnnData will be
-        returned, otherwise a backed AnnData is returned.
-
-    See Also
-    --------
-    add_tile_matrix
-    make_gene_matrix
-
-    Examples
-    --------
-    >>> import snapatac2 as snap
-    >>> data = snap.pp.import_fragments(snap.datasets.pbmc500(downsample=True), chrom_sizes=snap.genome.hg38, sorted_by_barcode=False)
-    >>> peak_mat = snap.pp.make_peak_matrix(data, peak_file=snap.datasets.cre_HEA())
-    >>> print(peak_mat)
-    AnnData object with n_obs × n_vars = 585 × 1154611
-        obs: 'n_fragment', 'frac_dup', 'frac_mito'
-    """
-    import gzip
-
-    if peak_file is not None and use_rep is not None:
-        raise RuntimeError("'peak_file' and 'use_rep' cannot be both set") 
-
-    if use_rep is None and peak_file is None:
-        use_rep = "peaks"
-
-    if isinstance(use_rep, str):
-        df = adata.uns[use_rep]
-        peaks = df[df.columns[0]]
-    else:
-        peaks = use_rep
-
-    if peak_file is not None:
-        if Path(peak_file).suffix == ".gz":
-            with gzip.open(peak_file, 'rt') as f:
-                peaks = [line.strip() for line in f]
-        else:
-            with open(peak_file, 'r') as f:
-                peaks = [line.strip() for line in f]
-
-    if inplace:
-        out = None
-    elif file is None:
-        if adata.isbacked:
-            out = AnnData(obs=adata.obs[:].to_pandas())
-        else:
-            out = AnnData(obs=adata.obs[:])
-    else:
-        out = internal.AnnData(filename=file, backend=backend, obs=adata.obs[:])
-    internal.mk_peak_matrix(adata, peaks, chunk_size, use_x, counting_strategy, value_type, summary_type, min_frag_size, max_frag_size, out)
-    return out

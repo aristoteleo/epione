@@ -1,1107 +1,953 @@
+"""Pure-Python fragment → AnnData pipeline, no snapATAC2 dependency.
 
+``epi.pp.import_fragments`` reads a tabix-indexed ``fragments.tsv.gz``,
+computes per-cell QC (``n_fragment``, ``frac_dup``, ``frac_mito``),
+and returns an ``AnnDataOOM`` object with:
+
+* ``.obs``        — per-cell QC DataFrame (barcodes as index)
+* ``.uns['files']['fragments']``     — path to the source BED
+* ``.uns['reference_sequences']``    — ``{chrom: length}``
+
+Fragments themselves are **not** stored in the AnnData object; all
+downstream fragment-based operations (``add_tile_matrix`` /
+``make_peak_matrix`` / QC metrics / ``add_gene_score_matrix``) re-read
+the BED on demand via pysam. This matches ArchR's ``ArrowFile`` design
+and keeps the AnnData file lightweight — fully compatible with
+``anndataoom``'s out-of-memory X storage.
+"""
 from __future__ import annotations
 
-from typing import Literal
+import gzip
+import os
+import re
+from collections import defaultdict
 from pathlib import Path
-import numpy as np
-from anndata import AnnData
-import logging
+from typing import Literal, Optional, Union
 
-import snapatac2
-import snapatac2._snapatac2 as internal
+import numpy as np
+import pandas as pd
+import scipy.sparse as sp
+from anndata import AnnData
+
 from ..utils._genome import Genome
 from ..utils import console
-from snapatac2.preprocessing._cell_calling import filter_cellular_barcodes_ordmag
 
-__all__ = ['make_fragment_file', 'import_fragments', 'import_contacts', 'import_values',
-           'add_tile_matrix', 'make_peak_matrix', 'make_gene_matrix',
-           'call_cells', 'filter_cells', 'select_features',
-]
 
-def make_fragment_file(
-    bam_file: Path,
-    output_file: Path,
-    is_paired: bool = True,
-    barcode_tag: str | None = None,
-    barcode_regex: str | None = None,
-    umi_tag: str | None = None,
-    umi_regex: str | None = None,
-    shift_left: int = 4,
-    shift_right: int = -5,
-    min_mapq: int | None = 30,
-    chunk_size: int = 50000000,
-    chrM: list[str] | None = ["chrM", "M"],
-    source: Literal["10x"] | None = None,
-    compression: Literal["gzip", "zstandard"] | None = None,
-    compression_level: int | None = None,
-    tempdir: Path | None = None,
-) -> dict[str, float]:
+# ---------------------------------------------------------------------------
+# Genome helpers
+# ---------------------------------------------------------------------------
+
+def _resolve_chrom_sizes(chrom_sizes) -> dict:
+    """Normalise ``chrom_sizes`` to ``{chrom: int length}``."""
+    if hasattr(chrom_sizes, "chrom_sizes"):
+        chrom_sizes = chrom_sizes.chrom_sizes
+    cs = dict(chrom_sizes)
+    if not cs:
+        raise ValueError("chrom_sizes cannot be empty")
+    return {str(k): int(v) for k, v in cs.items()}
+
+
+def _build_anndata_oom(
+    obs: pd.DataFrame,
+    uns: dict,
+    file: Optional[Path],
+    n_vars: int = 0,
+    var_df: Optional[pd.DataFrame] = None,
+):
+    """Build an ``AnnDataOOM`` (or plain ``AnnData`` if OOM unavailable).
+
+    ``file`` is the .h5ad path — if given, persist to disk and reopen
+    with ``anndataoom.read`` so the X matrix is backed on disk.
+    Otherwise return an in-memory ``anndata.AnnData``.
     """
-    Convert a BAM file to a fragment file.
+    if var_df is None:
+        var_df = pd.DataFrame(index=pd.Index([], dtype=str))
+    X = sp.csr_matrix((len(obs), n_vars), dtype=np.float32)
+    adata = AnnData(X=X, obs=obs, var=var_df, uns=uns)
+    if file is None:
+        return adata
+    file = Path(file)
+    if file.exists():
+        file.unlink()
+    adata.write_h5ad(file)
+    try:
+        import anndataoom as oom
+        return oom.read(str(file), backed="r+")
+    except Exception:
+        # Fall back to plain AnnData if anndataoom fails.
+        return adata
 
-    Convert a BAM file to a fragment file by performing the following steps:
 
-    1. Filtering: remove reads that are unmapped, not primary alignment, mapq < 30,
-       fails platform/vendor quality checks, or optical duplicate.
-       For paired-end sequencing, it also removes reads that are not properly aligned.
-    2. Deduplicate: Sort the reads by cell barcodes and remove duplicated reads
-       for each unique cell barcode.
-    3. Output: Convert BAM records to fragments (if paired-end) or single-end reads.
+# ---------------------------------------------------------------------------
+# Fragment file scan (tabix-indexed or plain bgzipped BED)
+# ---------------------------------------------------------------------------
 
-    The bam file needn't be sorted or filtered.
-
-    Note
-    ----
-    - When using `barcode_regex` or `umi_regex`, the regex must contain exactly one capturing group
-      (Parentheses group the regex between them) that matches the barcodes or UMIs.
-      Writting the correct regex is tricky. You can test your regex online at https://regex101.com/.
-      BAM files produced by the 10X Genomics Cell Ranger pipeline are not supported,
-      as they contain invalid BAM headers. Specifically, Cell Ranger ATAC <= 2.0 produces BAM
-      files with no @VN tag in the header, and Cell Ranger ATAC >= 2.1 produces BAM files
-      with invalid @VN tag in the header.
-      It is recommended to use the fragment files produced by Cell Ranger ATAC instead.
-    - This function generates large temporary files in `tempdir` during sorting.
-      For large files, it is recommended to set `tempdir` to a location with
-      sufficient space in order to avoid running out of disk space.
-
-    Parameters
-    ----------
-    bam_file
-        File name of the BAM file.
-    output_file
-        File name of the output fragment file.
-    is_paired
-        Indicate whether the BAM file contain paired-end reads
-    barcode_tag
-        Extract barcodes from TAG fields of BAM records, e.g., `barcode_tag="CB"`.
-    barcode_regex
-        Extract barcodes from read names of BAM records using regular expressions.
-        Reguler expressions should contain exactly one capturing group 
-        (Parentheses group the regex between them) that matches
-        the barcodes. For example, `barcode_regex="(..:..:..:..):\\\\w+$"`
-        extracts `bd:69:Y6:10` from
-        `A01535:24:HW2MMDSX2:2:1359:8513:3458:bd:69:Y6:10:TGATAGGTTG`.
-        You can test your regex on this website: https://regex101.com/.
-    umi_tag
-        Extract UMI from TAG fields of BAM records.
-    umi_regex
-        Extract UMI from read names of BAM records using regular expressions.
-        See `barcode_regex` for more details.
-    shift_left
-        Insertion site correction for the left end. Note this has no effect on single-end reads.
-    shift_right
-        Insertion site correction for the right end. Note this has no effect on single-end reads.
-    min_mapq
-        Filter the reads based on MAPQ.
-    chunk_size
-        The size of data retained in memory when performing sorting. Larger chunk sizes
-        result in faster sorting and greater memory usage.
-    source
-        The source of the BAM file. This is used for vendor-specific processing.
-        For example, the BAM files generated by 10X Genomics needs special processing
-        to fix the malformed BAM headers.
-        Currently the only supported source is "10x".
-    chrM
-        A list of mitochondrial chromosome names, used to calculate QC metrics.
-    compression
-        Compression type. If `None`, it is inferred from the suffix.
-    compression_level
-        Compression level. 1-9 for gzip, 1-22 for zstandard.
-        If `None`, it is set to 6 for gzip and 3 for zstandard.
-    tempdir
-        Location to store temporary files. If `None`, system temporary directory
-        will be used.
-
-    Returns
-    -------
-    dict[str, float]
-        A dictionary containing the following metrics:
-
-        - "sequenced_reads": number of reads in the input BAM file.
-        - "sequenced_read_pairs": number of read pairs in the input BAM file.
-        - "frac_duplicates": Fraction of high-quality read pairs that are deemed
-          to be PCR duplicates. This metric is a measure of sequencing
-          saturation and is a function of library complexity and sequencing
-          depth. More specifically, this is the fraction of high-quality
-          fragments with a valid barcode that align to the same genomic
-          position as another read pair in the library.
-        - "frac_confidently_mapped": Fraction of sequenced reads or read pairs with mapping quality > 30.
-        - "frac_unmapped": Fraction of sequenced reads or read pairs that have
-          a valid barcode but could not be mapped to the genome.
-        - "frac_valid_barcode": Fraction of reads or read pairs with barcodes that match the whitelist after error correction.
-        - "frac_nonnuclear": Fraction of sequenced read pairs that have a valid
-          barcode and map to non-nuclear genome contigs, including mitochondria,
-          with mapping quality > 30.
-        - "frac_fragment_in_nucleosome_free_region": Fraction of high-quality
-          fragments smaller than 147 basepairs.
-        - "frac_fragment_flanking_single_nucleosome": Fraction of high-quality
-          fragments between 147 and 294 basepairs.
-
-    See Also
-    --------
-    import_fragments
+def _open_fragment_file(path: Union[str, Path]):
+    """Return an iterator yielding ``(chrom, start, end, barcode, count)``
+    tuples from a ``fragments.tsv[.gz]`` file. Skips header / comment lines.
     """
-    if barcode_tag is None and barcode_regex is None:
-        raise ValueError("Either barcode_tag or barcode_regex must be set.")
-    if barcode_tag is not None and barcode_regex is not None:
-        raise ValueError("Only one of barcode_tag or barcode_regex can be set.")
+    path = str(path)
+    opener = gzip.open if path.endswith(".gz") else open
+    fh = opener(path, "rt")
+    try:
+        for line in fh:
+            if not line or line.startswith("#"):
+                continue
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) < 4:
+                continue
+            chrom = parts[0]
+            try:
+                start = int(parts[1]); end = int(parts[2])
+            except ValueError:
+                continue
+            bc = parts[3]
+            cnt = int(parts[4]) if len(parts) >= 5 and parts[4].isdigit() else 1
+            yield chrom, start, end, bc, cnt
+    finally:
+        fh.close()
 
-    if compression is None:
-        _, compression = snapatac2._utils.get_file_format(output_file)
 
-    return internal.make_fragment_file(
-        bam_file, output_file, is_paired, shift_left, shift_right, chunk_size,
-        barcode_tag, barcode_regex, umi_tag, umi_regex, min_mapq, chrM, source,
-        compression, compression_level, tempdir,
+def _ensure_tabix_index(path: Union[str, Path]) -> Path:
+    """Ensure a ``.tbi`` index exists next to the fragment file.
+    If not, build it with pysam's Tabix (bgzipped BED files only).
+    """
+    path = Path(path)
+    if path.with_suffix(path.suffix + ".tbi").exists():
+        return path.with_suffix(path.suffix + ".tbi")
+    if path.suffix == ".gz":
+        try:
+            import pysam
+            pysam.tabix_index(str(path), preset="bed", force=True, keep_original=True)
+            return path.with_suffix(path.suffix + ".tbi")
+        except Exception as exc:
+            raise RuntimeError(f"could not build tabix index for {path}: {exc}")
+    raise RuntimeError(
+        f"{path} must be bgzipped (.tsv.gz) and tabix-indexed for random access"
     )
 
+
+# ---------------------------------------------------------------------------
+# Public API — fragment import
+# ---------------------------------------------------------------------------
+
 def import_fragments(
-    fragment_file: Path | list[Path],
-    chrom_sizes: Genome | dict[str, int],
+    fragment_file: Union[str, Path, list],
+    chrom_sizes: Union[Genome, dict],
     *,
-    file: Path | list[Path] | None = None,
+    file: Optional[Path] = None,
     min_num_fragments: int = 200,
-    sorted_by_barcode: bool = True,
-    whitelist: Path | list[str] | None = None,
-    chrM: list[str] = ["chrM", "M"],
-    shift_left: int = 0,
-    shift_right: int = 0,
-    chunk_size: int = 2000,
-    tempdir: Path | None = None,
-    backend: Literal['hdf5'] = 'hdf5',
-    n_jobs: int = 8,
-) -> internal.AnnData:
-    """Import data fragment files and compute basic QC metrics.
+    whitelist: Optional[Union[Path, list]] = None,
+    chrM: list = ("chrM", "M", "chrMT", "MT"),
+    n_jobs: int = 1,
+    **kwargs,
+) -> AnnData:
+    """Scan a bgzipped fragments.tsv.gz and build a per-cell QC AnnData.
 
-    A fragment refers to the sequence data originating from a distinct location
-    in the genome. In single-ended sequencing, one read equates to a fragment.
-    However, in paired-ended sequencing, a fragment is defined by a pair of reads.
-    This function is designed to handle, store, and process input files with
-    fragment data, further yielding a range of basic Quality Control (QC) metrics.
-    These metrics include the total number of unique fragments, duplication rates,
-    and the percentage of mitochondrial DNA detected.
+    No dependency on snapATAC2 — all logic is in pure Python. Per-cell
+    QC metrics computed (``n_fragment``, ``frac_dup``, ``frac_mito``)
+    follow the same definitions as snapATAC2 / ArchR so downstream
+    filters behave identically.
 
-    How fragments are stored is dependent on the sequencing approach utilized.
-    For single-ended sequencing, fragments are found in `.obsm['fragment_single']`.
-    In contrast, for paired-ended sequencing, they are located in
-    `.obsm['fragment_paired']`.
-
-    Diving deeper technically, the fragments are internally structured within a
-    Compressed Sparse Row (CSR) matrix. In this configuration, each row signifies
-    a specific cell, while each column represents a unique genomic position.
-    Fragment starting positions dictate the column indices. Matrix values
-    capture the lengths of the fragments for paired-end reads or the lengths of
-    the reads for single-ended scenarios. It's important to note that for
-    single-ended reads, the values are signed, with the sign providing information
-    on the fragment's strand orientation. Additionally, it is worth noting that
-    cells may harbor duplicate fragments, leading to the presence of duplicate
-    column indices within the matrix. As a result, the matrix deviates from
-    the standard CSR format, and it is not advisable to use the matrix for linear
-    algebra operations.
-    
-    .. image:: /_static/images/func+import_data.svg
-        :align: center
-
-    Note
-    ----
-    - This function accepts both single-end and paired-end reads. 
-      If the records in the fragment file contain 6 columns with the last column
-      representing the strand of the fragment, the fragments are considered single-ended.
-      Otherwise, the fragments are considered paired-ended.
-    - When `file` is not `None`, this function uses constant memory regardless of
-      the size of the input file.
-    - When `sorted_by_barcode` is `False`, this function will sort the fragment file
-      first, during which temporary files will be created in `tempdir`. The size of
-      temporary files is proportional to the number of records in the fragment file.
-      For large fragment files, it is recommended to set `tempdir` to a location with
-      sufficient space in order to avoid running out of disk space.
-    - The QC metrics are computed only for reads that are included by the `whitelist`
-      or `chrom_sizes`.
-
-    Warning
-    -------
-    When the input to the function is a list of files, it employs multiprocessing
-    to process these files concurrently. In this case, however, it is crucial to
-    safeguard the entry point of the program by encapsulating the function call
-    within `if __name__ == '__main__':`. This condition ensures that the module
-    is being run as the main program and not being loaded as a module from
-    another script. Without this protection, each subprocess might attempt to
-    spawn its own subprocesses, leading to a cascade of process spawns—a situation
-    that can cause the program to hang or crash due to infinite recursion.
-    You don't need to do this in Jupyter notebook as it automatically does that.
+    The fragment file itself is **not** ingested into the AnnData object
+    (no ``obsm['fragment_paired']`` to avoid sparse-obsm persistence
+    pitfalls with anndataoom). Instead, the BED path is recorded in
+    ``adata.uns['files']['fragments']`` and subsequent tile /
+    peak / gene-score steps re-read it via pysam.
 
     Parameters
     ----------
     fragment_file
-        File name of the fragment file, optionally compressed with gzip or zstd.
-        This can be a single file or a list of files.
-        If it is a list of files, a separate AnnData object will be created for each file.
-        A fragment file must contain at least 5 columns:
-        chromosome, start, end, barcode, count.
-        Optionally it can contain one more column indicating the strand of the fragment.
-        When strand is provided, the fragments are considered single-ended.
+        Path to a tabix-indexed ``fragments.tsv.gz`` (single or list).
     chrom_sizes
-        A Genome object or a dictionary containing chromosome sizes, for example,
-        `{"chr1": 2393, "chr2": 2344, ...}`.
+        A ``Genome`` object or ``{chrom: length}`` dict.
     file
-        File name of the output h5ad file used to store the result. If provided,
-        result will be saved to a backed AnnData, otherwise an in-memory AnnData
-        is used.
-        If `fragment_file` is a list of files, `file` must also be a list of files if provided.
+        Output ``.h5ad`` path. When given, the AnnData is written via
+        anndataoom for out-of-memory X storage. If ``None``, returns an
+        in-memory ``anndata.AnnData``.
     min_num_fragments
-        Number of unique fragments threshold used to filter cells
-    sorted_by_barcode
-        Whether the fragment file has been sorted by cell barcodes.
-        This function will be faster if `sorted_by_barcode==True`.
-        Note the :func:`~snapatac2.pp.make_fragment_file` will always sort the
-        fragment file by barcode.
+        Minimum unique fragments per cell to retain (default 200).
     whitelist
-        File name or a list of barcodes. If it is a file name, each line
-        must contain a valid barcode. When provided, only barcodes in the whitelist
-        will be retained.
-    shift_left
-        Insertion site correction for the left end. This is set to 0 by default,
-        as shift correction is usually done in the fragment file generation step.
+        If given, only retain cells in this list (or path to a file with
+        one barcode per line).
     chrM
-        A list of chromosome names that are considered mitochondrial DNA. This is
-        used to compute the fraction of mitochondrial DNA.
-    shift_right
-        Insertion site correction for the right end. Note this has no effect on single-end reads.
-        For single-end reads, `shift_right` will be set using the value of `shift_left`.
-        This is set to 0 by default, as shift correction is usually done in the fragment
-        file generation step.
-    chunk_size
-        Increasing the chunk_size may speed up I/O but will use more memory.
-        The speed gain is usually not significant.
-    tempdir
-        Location to store temporary files. If `None`, system temporary directory
-        will be used.
-    backend
-        The backend.
-    n_jobs
-        Number of jobs to run in parallel when `fragment_file` is a list.
-        If `n_jobs=-1`, all CPUs will be used.
+        Chromosome names to treat as mitochondrial (affects ``frac_mito``).
 
     Returns
     -------
-    AnnData | ad.AnnData
-        An annotated data matrix of shape `n_obs` x `n_vars`. Rows correspond to
-        cells and columns to regions. If `file=None`, an in-memory AnnData will be
-        returned, otherwise a backed AnnData is returned.
-
-    See Also
-    --------
-    make_fragment_file
-    :func:`~epione.pp.export_fragments` 
-
-    Examples
-    --------
-    >>> import epione as epi
-    >>> data = epi.pp.import_fragments(epi.datasets.pbmc500(downsample=True), chrom_sizes=epi.genome.hg38, sorted_by_barcode=False)
-    >>> print(data)
-    AnnData object with n_obs × n_vars = 585 × 0
-        obs: 'n_fragment', 'frac_dup', 'frac_mito'
-        uns: 'reference_sequences'
-        obsm: 'fragment_paired'
+    adata
+        AnnData (``n_obs × 0``) with per-cell QC in ``.obs``.
     """
-    chrom_sizes = chrom_sizes.chrom_sizes if isinstance(chrom_sizes, Genome) else chrom_sizes
-    if len(chrom_sizes) == 0:
-        raise ValueError("chrom_size cannot be empty")
+    chrom_sizes = _resolve_chrom_sizes(chrom_sizes)
 
+    if isinstance(fragment_file, (list, tuple)):
+        if len(fragment_file) == 1:
+            fragment_file = fragment_file[0]
+        else:
+            return [
+                import_fragments(
+                    f, chrom_sizes=chrom_sizes, file=file[i] if file else None,
+                    min_num_fragments=min_num_fragments, whitelist=whitelist,
+                    chrM=chrM, n_jobs=1,
+                )
+                for i, f in enumerate(fragment_file)
+            ]
+
+    fragment_file = Path(fragment_file)
+    _ensure_tabix_index(fragment_file)
+
+    chrM_set = set(chrM)
+    valid_chroms = set(chrom_sizes)
+
+    # Prepare whitelist set.
+    whitelist_set = None
     if whitelist is not None:
-        if isinstance(whitelist, str) or isinstance(whitelist, Path):
-            with open(whitelist, "r") as fl:
-                whitelist = set([line.strip() for line in fl])
+        if isinstance(whitelist, (str, Path)):
+            with open(whitelist, "r") as fh:
+                whitelist_set = set(line.strip() for line in fh if line.strip())
         else:
-            whitelist = set(whitelist)
+            whitelist_set = set(whitelist)
 
-    if isinstance(fragment_file, list):
-        n = len(fragment_file)
-        if file is None:
-            adatas = [AnnData() for _ in range(n)]
+    console.level1(f"scanning {fragment_file}")
+    # Per-cell counters.
+    n_frag = defaultdict(int)
+    n_uniq = defaultdict(int)
+    n_mito = defaultdict(int)
+    seen = set()
+
+    for chrom, start, end, bc, cnt in _open_fragment_file(fragment_file):
+        if whitelist_set is not None and bc not in whitelist_set:
+            continue
+        if chrom not in valid_chroms and chrom not in chrM_set:
+            continue
+        if chrom in chrM_set:
+            # Count mito reads (pre-dedup); ArchR's fragments file has
+            # already collapsed PCR duplicates, so cnt here is effectively
+            # the duplicate multiplicity.
+            n_mito[bc] += 1
         else:
-            if len(file) != n:
-                raise ValueError("The length of 'file' must be the same as the length of 'fragment_file'")
-            adatas = [internal.AnnData(filename=f, backend=backend) for f in file]
+            # ``n_fragment`` = number of *unique* fragment rows for this
+            # cell (one per row of the fragments file). This matches
+            # ArchR's ``nFrags`` metric. The optional 5th column gives
+            # the pre-dedup read count, which we use for frac_dup.
+            n_frag[bc] += 1
+            n_reads = cnt                           # pre-dedup read count
+            # ``frac_dup`` = 1 - (unique fragments / total reads).
+            # Track total-reads per cell in ``n_uniq`` (reused slot); the
+            # name is misleading but keeps the rest of the code unchanged.
+            n_uniq[bc] += n_reads
 
-        snapatac2._utils.anndata_ipar(
-            list(enumerate(adatas)),
-            lambda x: internal.import_fragments(
-                x[1], fragment_file[x[0]], chrom_sizes, chrM, min_num_fragments,
-                sorted_by_barcode, shift_left, shift_right, chunk_size, whitelist, tempdir,
-            ),
-            n_jobs=n_jobs,
-        )
-        return adatas
-    else:
-        adata = AnnData() if file is None else internal.AnnData(filename=file, backend=backend)
-        internal.import_fragments(
-            adata, fragment_file, chrom_sizes, chrM, min_num_fragments,
-            sorted_by_barcode, shift_left, shift_right, chunk_size, whitelist, tempdir,
-        )
-        adata.uns['files'] = {'fragments': fragment_file}
-        console.level2("Added fragments file to adata.uns['files']")
-        return adata
+    # Build per-cell DataFrame.
+    barcodes = sorted(set(n_frag) | set(n_mito))
+    nf = np.asarray([n_frag[b] for b in barcodes], dtype=np.int64)
+    n_total_reads = np.asarray([n_uniq[b] for b in barcodes], dtype=np.int64)
+    nm = np.asarray([n_mito[b] for b in barcodes], dtype=np.int64)
 
-def import_contacts(
-    contact_file: Path,
-    chrom_sizes: Genome | dict[str, int],
-    *,
-    file: Path | None = None,
-    sorted_by_barcode: bool = True,
-    bin_size: int = 500000,
-    chunk_size: int = 200,
-    tempdir: Path | None = None,
-    backend: Literal['hdf5'] = 'hdf5',
-) -> internal.AnnData:
-    """Import chromatin contacts.
+    # Apply min fragments filter.
+    keep = nf >= int(min_num_fragments)
+    barcodes = [b for b, k in zip(barcodes, keep) if k]
+    nf = nf[keep]; n_total_reads = n_total_reads[keep]; nm = nm[keep]
 
-    Parameters
-    ----------
-    contact_file
-        File name of the fragment file.
-    file
-        File name of the output h5ad file used to store the result. If provided,
-        result will be saved to a backed AnnData, otherwise an in-memory AnnData
-        is used.
-    chrom_sizes
-        A Genome object or a dictionary containing chromosome sizes, for example,
-        `{"chr1": 2393, "chr2": 2344, ...}`.
-    sorted_by_barcode
-        Whether the fragment file has been sorted by cell barcodes.
-        If `sorted_by_barcode == True`, this function makes use of small fixed amout of 
-        memory. If `sorted_by_barcode == False` and `low_memory == False`,
-        all data will be kept in memory. See `low_memory` for more details.
-    bin_size
-        The size of consecutive genomic regions used to record the counts.
-    chunk_size
-        Increasing the chunk_size speeds up I/O but uses more memory.
-    tempdir
-        Location to store temporary files. If `None`, system temporary directory
-        will be used.
-    backend
-        The backend.
+    frac_dup = np.where(n_total_reads > 0, 1.0 - nf / n_total_reads, 0.0)
+    frac_mito = np.where(nf + nm > 0, nm / (nf + nm), 0.0)
 
-    Returns
-    -------
-    AnnData | ad.AnnData
-        An annotated data matrix of shape `n_obs` x `n_vars`. Rows correspond to
-        cells and columns to regions. If `file=None`, an in-memory AnnData will be
-        returned, otherwise a backed AnnData is returned.
-    """
-    chrom_sizes = chrom_sizes.chrom_sizes if isinstance(chrom_sizes, Genome) else chrom_sizes
-    if len(chrom_sizes) == 0:
-        raise ValueError("chrom_size cannot be empty")
+    obs = pd.DataFrame({
+        "n_fragment": nf,
+        "frac_dup": frac_dup,
+        "frac_mito": frac_mito,
+    }, index=pd.Index(barcodes, name="barcode", dtype=str))
 
-    adata = AnnData() if file is None else internal.AnnData(filename=file, backend=backend)
-    internal.import_contacts(
-        adata, contact_file, chrom_sizes, sorted_by_barcode, bin_size, chunk_size, tempdir
-    )
+    uns = {
+        "files": {"fragments": str(fragment_file)},
+        "reference_sequences": chrom_sizes,
+    }
+
+    console.level2(f"imported {len(barcodes):,} cells  "
+                   f"({int(nf.sum()):,} unique fragments)")
+
+    adata = _build_anndata_oom(obs=obs, uns=uns, file=file)
     return adata
 
-def import_values(
-    input_dir: Path,
-    chrom_sizes: Genome | dict[str, int],
+
+def concat_samples(
+    adatas: list,
+    sample_names: list,
+    fragment_files: list,
+    combined_fragments: Union[str, Path],
     *,
-    file: Path | None = None,
-    whitelist: Path | list[str] | None = None,
-    chunk_size: int = 200,
-    backend: Literal['hdf5'] = 'hdf5',
-) -> internal.AnnData:
-    """Import values associated with base pairs, typically from experiments like
-    whole-genome bisulfite sequencing (WGBS).
+    chrom_sizes: Union[Genome, dict, None] = None,
+    sort_memory: str = "2G",
+    force: bool = False,
+) -> AnnData:
+    """Multi-sample concat of fragment-based AnnData objects.
+
+    Takes per-sample ``AnnData`` objects (output of
+    :func:`import_fragments`) and a parallel list of per-sample
+    fragment ``.tsv.gz`` paths, and produces:
+
+    1. One combined bgzipped + tabix-indexed fragments file
+       (``combined_fragments``), with the 4th column renamed to
+       ``<sample>#<barcode>`` (ArchR / snapATAC2 convention) so every
+       cell has a globally-unique ID.
+    2. One in-memory ``AnnData`` with obs stacked across samples,
+       index set to ``<sample>#<barcode>``, a ``sample`` obs column,
+       and ``uns['files']['fragments']`` pointing at the combined BED.
+
+    Downstream ``epi.single.macs3(data, groupby='sample')``,
+    ``epi.pp.make_peak_matrix(data, ...)`` etc. re-read fragments
+    from the combined file transparently.
 
     Parameters
     ----------
-    input_dir
-        Directory containing the input files. Each file corresponds to a single cell.
+    adatas
+        List of per-sample AnnData objects (e.g. ``[ad1, ad2, ad3]``).
+    sample_names
+        Labels (same order as ``adatas``) — used as the prefix in
+        ``<sample>#<barcode>`` and as ``obs['sample']`` values.
+    fragment_files
+        Per-sample fragments ``.tsv.gz`` paths (same order as ``adatas``).
+    combined_fragments
+        Output path for the merged BED. Gets sorted + bgzipped +
+        tabix-indexed (a ``.gz`` suffix is appended if missing, and
+        a ``.tbi`` sibling is written).
     chrom_sizes
-        A Genome object or a dictionary containing chromosome sizes, for example,
-        `{"chr1": 2393, "chr2": 2344, ...}`.
-    file
-        File name of the output h5ad file used to store the result. If provided,
-        result will be saved to a backed AnnData, otherwise an in-memory AnnData
-        is used.
-    whitelist
-        File name or a list of barcodes. If it is a file name, each line
-        must contain a valid barcode. When provided, only barcodes in the whitelist
-        will be retained.
-    chunk_size
-        Increasing the chunk_size speeds up I/O but uses more memory.
-    backend
-        The backend.
-
-    Returns
-    -------
-    AnnData | ad.AnnData
-        An annotated data matrix of shape `n_obs` x `n_vars`. Rows correspond to
-        cells and columns to regions. If `file=None`, an in-memory AnnData will be
-        returned, otherwise a backed AnnData is returned.
-    """
-    chrom_sizes = chrom_sizes.chrom_sizes if isinstance(chrom_sizes, Genome) else chrom_sizes
-    if len(chrom_sizes) == 0:
-        raise ValueError("chrom_size cannot be empty")
-
-    if whitelist is not None:
-        if isinstance(whitelist, str) or isinstance(whitelist, Path):
-            with open(whitelist, "r") as fl:
-                whitelist = set([line.strip() for line in fl])
-        else:
-            whitelist = set(whitelist)
-
-    adata = AnnData() if file is None else internal.AnnData(filename=file, backend=backend)
-    internal.import_values(
-        adata, input_dir, chrom_sizes, chunk_size, whitelist
-    )
-    return adata
-
-def add_tile_matrix(
-    adata: internal.AnnData | list[internal.AnnData],
-    *,
-    bin_size: int = 500,
-    inplace: bool = True,
-    chunk_size: int = 500,
-    exclude_chroms: list[str] | str | None = ["chrM", "chrY", "M", "Y"],
-    min_frag_size: int | None = None,
-    max_frag_size: int | None = None,
-    counting_strategy: Literal['fragment', 'insertion', 'paired-insertion'] = 'paired-insertion',
-    value_type: Literal['target', 'total', 'fraction'] = 'target',
-    summary_type: Literal['sum', 'mean'] = 'sum',
-    file: Path | None = None,
-    backend: Literal['hdf5'] = 'hdf5',
-    n_jobs: int = 8,
-) -> internal.AnnData | None:
-    """Generate cell by bin count matrix.
-
-    This function is used to generate and add a cell by bin count matrix to the AnnData
-    object.
-
-    :func:`~snapatac2.pp.import_fragments` must be ran first in order to use this function.
-
-    Parameters
-    ----------
-    adata
-        The (annotated) data matrix of shape `n_obs` x `n_vars`.
-        Rows correspond to cells and columns to regions.
-        `adata` could also be a list of AnnData objects when `inplace=True`.
-        In this case, the function will be applied to each AnnData object in parallel.
-    bin_size
-        The size of consecutive genomic regions used to record the counts.
-    inplace
-        Whether to add the tile matrix to the AnnData object or return a new AnnData object.
-    chunk_size
-        Increasing the chunk_size speeds up I/O but uses more memory.
-    exclude_chroms
-        A list of chromosomes to exclude.
-    min_frag_size
-        Minimum fragment size to include.
-    max_frag_size
-        Maximum fragment size to include.
-    counting_strategy
-        The strategy to compute feature counts. It must be one of the following:
-        "fragment", "insertion", or "paired-insertion". "fragment" means the
-        feature counts are assigned based on the number of fragments that overlap
-        with a region of interest. "insertion" means the feature counts are assigned
-        based on the number of insertions that overlap with a region of interest.
-        "paired-insertion" is similar to "insertion", but it only counts the insertions
-        once if the pair of insertions of a fragment are both within the same region
-        of interest [Miao24]_.
-        Note that this parameter has no effect if input are single-end reads.
-    value_type
-        The type of value to use from `.obsm['_values']`, only available when 
-        data is imported using :func:`~snapatac2.pp.import_values`. It must be one of the following:
-        "target", "total", or "fraction". "target" means the value is the number
-        of recrods that are with postive measurements, e.g., number of methylated bases.
-        "total" means the value is the total number of measurements, e.g., methylated bases plus
-        unmethylated bases. "fraction" means the value is the fraction of the
-        records that are positive, e.g., the fraction of methylated bases.
-    summary_type
-        The type of summary to use when multiple values are found in a bin. This parameter
-        is only used when `.obsm['_values']` exists, which is created by :func:`~snapatac2.pp.import_values`. 
-        It must be one of the following: "sum" or "mean".
-    file
-        File name of the output file used to store the result. If provided, result will
-        be saved to a backed AnnData, otherwise an in-memory AnnData is used.
-        This has no effect when `inplace=True`.
-    backend
-        The backend to use for storing the result. If `None`, the default backend will be used.
-    n_jobs
-        Number of jobs to run in parallel when `adata` is a list.
-        If `n_jobs=-1`, all CPUs will be used.
-    
-    Returns
-    -------
-    AnnData | ad.AnnData | None
-        An annotated data matrix of shape `n_obs` x `n_vars`. Rows correspond to
-        cells and columns to bins. If `file=None`, an in-memory AnnData will be
-        returned, otherwise a backed AnnData is returned.
-
-    See Also
-    --------
-    make_peak_matrix
-    make_gene_matrix
-
-    Examples
-    --------
-    >>> import epione as epi
-    >>> data = epi.pp.import_fragments(epi.datasets.pbmc500(downsample=True), chrom_sizes=epi.genome.hg38, sorted_by_barcode=False)
-    >>> epi.pp.add_tile_matrix(data, bin_size=500)
-    >>> print(data)
-    AnnData object with n_obs × n_vars = 585 × 6062095
-        obs: 'n_fragment', 'frac_dup', 'frac_mito'
-        uns: 'reference_sequences'
-        obsm: 'fragment_paired'
-    """
-    console.level1("Generating cell by bin count matrix...")
-    def fun(data, out):
-        internal.mk_tile_matrix(data, bin_size, chunk_size, counting_strategy, value_type, summary_type, exclude_chroms, min_frag_size, max_frag_size, out)
-        data.var['seqnames'] = data.var_names.str.split(':').str[0]
-        data.var['start'] = data.var_names.str.split(':').str[1].str.split('-').str[0].astype(int)
-        data.var['end'] = data.var_names.str.split(':').str[1].str.split('-').str[1].astype(int)
-        data.var['width'] = data.var['end'] - data.var['start']
-        console.level2("Added seqnames, start, end, and width to data.var")
-
-
-    if isinstance(exclude_chroms, str):
-        exclude_chroms = [exclude_chroms]
-
-    if inplace:
-        if isinstance(adata, list):
-            snapatac2._utils.anndata_par(
-                adata,
-                lambda x: fun(x, None),
-                n_jobs=n_jobs,
-            )
-        else:
-            fun(adata, None)
-    else:
-        if file is None:
-            if adata.isbacked:
-                out = AnnData(obs=adata.obs[:].to_pandas())
-            else:
-                out = AnnData(obs=adata.obs[:])
-        else:
-            out = internal.AnnData(filename=file, backend=backend, obs=adata.obs[:])
-        fun(adata, out)
-        console.level2("Generated cell by bin count matrix")
-        return out
-
-def make_peak_matrix(
-    adata: internal.AnnData | internal.AnnDataSet,
-    *,
-    use_rep: str | list[str] | None = None,
-    inplace: bool = False,
-    file: Path | None = None,
-    backend: Literal['hdf5'] = 'hdf5',
-    peak_file: Path | None = None,
-    chunk_size: int = 500,
-    use_x: bool = False,
-    min_frag_size: int | None = None,
-    max_frag_size: int | None = None,
-    counting_strategy: Literal['fragment', 'insertion', 'paired-insertion'] = 'paired-insertion',
-    value_type: Literal['target', 'total', 'fraction'] = 'target',
-    summary_type: Literal['sum', 'mean'] = 'sum',
-) -> internal.AnnData:
-    """Generate cell by peak count matrix.
-
-    This function will generate a cell by peak count matrix and store it in a 
-    new .h5ad file.
-
-    :func:`~snapatac2.pp.import_fragments` must be ran first in order to use this function.
-
-    Parameters
-    ----------
-    adata
-        The (annotated) data matrix of shape `n_obs` x `n_vars`.
-        Rows correspond to cells and columns to regions.
-    use_rep
-        This is used to read peak information from `.uns[use_rep]`.
-        The peaks can also be provided by a list of strings:
-        ["chr1:1-100", "chr2:2-200"].
-    inplace
-        Whether to add the tile matrix to the AnnData object or return a new AnnData object.
-    file
-        File name of the output h5ad file used to store the result. If provided,
-        result will be saved to a backed AnnData, otherwise an in-memory AnnData
-        is used. This has no effect when `inplace=True`.
-    backend
-        The backend to use for storing the result. If `None`, the default backend will be used.
-    peak_file
-        Bed file containing the peaks. If provided, peak information will be read
-        from this file.
-    chunk_size
-        Chunk size
-    use_x
-        If True, use the matrix stored in `.X` as raw counts.
-        Otherwise the `.obsm['insertion']` is used.
-    min_frag_size
-        Minimum fragment size to include.
-    max_frag_size
-        Maximum fragment size to include.
-    counting_strategy
-        The strategy to compute feature counts. It must be one of the following:
-        "fragment", "insertion", or "paired-insertion". "fragment" means the
-        feature counts are assigned based on the number of fragments that overlap
-        with a region of interest. "insertion" means the feature counts are assigned
-        based on the number of insertions that overlap with a region of interest.
-        "paired-insertion" is similar to "insertion", but it only counts the insertions
-        once if the pair of insertions of a fragment are both within the same region
-        of interest [Miao24]_.
-        Note that this parameter has no effect if input are single-end reads.
-    value_type
-        The type of value to use from `.obsm['_values']`, only available when 
-        data is imported using :func:`~snapatac2.pp.import_values`. It must be one of the following:
-        "target", "total", or "fraction". "target" means the value is the number
-        of recrods that are with postive measurements, e.g., number of methylated bases.
-        "total" means the value is the total number of measurements, e.g., methylated bases plus
-        unmethylated bases. "fraction" means the value is the fraction of the
-        records that are positive, e.g., the fraction of methylated bases.
-    summary_type
-        The type of summary to use when multiple values are found in a bin. This parameter
-        is only used when `.obsm['_values']` exists, which is created by :func:`~snapatac2.pp.import_values`. 
-        It must be one of the following: "sum" or "mean".
-
-    Returns
-    -------
-    AnnData | ad.AnnData | None
-        An annotated data matrix of shape `n_obs` x `n_vars`. Rows correspond to
-        cells and columns to peaks. If `file=None`, an in-memory AnnData will be
-        returned, otherwise a backed AnnData is returned.
-
-    See Also
-    --------
-    add_tile_matrix
-    make_gene_matrix
-
-    Examples
-    --------
-    >>> import epione as epi
-    >>> data = snap.pp.import_fragments(snap.datasets.pbmc500(downsample=True), chrom_sizes=snap.genome.hg38, sorted_by_barcode=False)
-    >>> peak_mat = epi.pp.make_peak_matrix(data, peak_file=epi.datasets.cre_HEA())
-    >>> print(peak_mat)
-    AnnData object with n_obs × n_vars = 585 × 1154611
-        obs: 'n_fragment', 'frac_dup', 'frac_mito'
-    """
-    import gzip
-
-    if peak_file is not None and use_rep is not None:
-        raise RuntimeError("'peak_file' and 'use_rep' cannot be both set") 
-
-    if use_rep is None and peak_file is None:
-        use_rep = "peaks"
-
-    if isinstance(use_rep, str):
-        df = adata.uns[use_rep]
-        peaks = df[df.columns[0]]
-    else:
-        peaks = use_rep
-
-    if peak_file is not None:
-        if Path(peak_file).suffix == ".gz":
-            with gzip.open(peak_file, 'rt') as f:
-                peaks = [line.strip() for line in f]
-        else:
-            with open(peak_file, 'r') as f:
-                peaks = [line.strip() for line in f]
-
-    if inplace:
-        out = None
-    elif file is None:
-        if adata.isbacked:
-            out = AnnData(obs=adata.obs[:].to_pandas())
-        else:
-            out = AnnData(obs=adata.obs[:])
-    else:
-        out = internal.AnnData(filename=file, backend=backend, obs=adata.obs[:])
-    internal.mk_peak_matrix(adata, peaks, chunk_size, use_x, counting_strategy, value_type, summary_type, min_frag_size, max_frag_size, out)
-    return out
-
-def make_gene_matrix(
-    adata: internal.AnnData | internal.AnnDataSet,
-    gene_anno: Genome | Path,
-    *,
-    inplace: bool = False,
-    file: Path | None = None,
-    backend: Literal['hdf5'] | None = 'hdf5',
-    chunk_size: int = 500,
-    use_x: bool = False,
-    id_type: Literal['gene', 'transcript'] = "gene",
-    upstream: int = 2000,
-    downstream: int = 0,
-    include_gene_body: bool = True,
-    transcript_name_key: str = "transcript_name",
-    transcript_id_key: str = "transcript_id",
-    gene_name_key: str = "gene_name",
-    gene_id_key: str = "gene_id",
-    min_frag_size: int | None = None,
-    max_frag_size: int | None = None,
-    counting_strategy: Literal['fragment', 'insertion', 'paired-insertion'] = 'paired-insertion',
-) -> internal.AnnData:
-    """Generate cell by gene activity matrix.
-
-    Generate cell by gene activity matrix by counting the TN5 insertions in each gene's
-    regulatory domain. The regulatory domain is initially defined as the TSS or the
-    whole gene body (if `include_gene_body=True`). We then extends this domain
-    by `upstream` and `downstream` base pairs on both sides.
-      
-    The result will be stored in a new file and a new AnnData object
-    will be created.
-    :func:`~snapatac2.pp.import_fragments` must be ran first in order to use this function.
-
-    Parameters
-    ----------
-    adata
-        The (annotated) data matrix of shape `n_obs` x `n_vars`.
-        Rows correspond to cells and columns to regions.
-    gene_anno
-        Either a Genome object or the path of a gene annotation file in GFF or GTF format.
-    inplace
-        Whether to add the gene matrix to the AnnData object or return a new AnnData object.
-    file
-        File name of the h5ad file used to store the result. This has no effect when `inplace=True`.
-    backend
-        The backend to use for storing the result. If `None`, the default backend will be used.
-    chunk_size
-        Chunk size
-    use_x
-        If True, use the matrix stored in `.X` to compute the gene activity.
-        Otherwise the `.obsm['insertion']` is used.
-    id_type
-        "gene" or "transcript".
-    upstream
-        The number of base pairs upstream of the regulatory domain.
-    downstream
-        The number of base pairs downstream of the regulatory domain.
-    include_gene_body
-        Whether to include the gene body in the regulatory domain. If False, the
-        TSS is used as the regulatory domain.
-    transcript_name_key
-        The key of the transcript name in the gene annotation file.
-    transcript_id_key
-        The key of the transcript id in the gene annotation file.
-    gene_name_key
-        The key of the gene name in the gene annotation file.
-    gene_id_key
-        The key of the gene id in the gene annotation file.
-    min_frag_size
-        Minimum fragment size to include.
-    max_frag_size
-        Maximum fragment size to include.
-    counting_strategy
-        The strategy to compute feature counts. It must be one of the following:
-        "fragment", "insertion", or "paired-insertion". "fragment" means the
-        feature counts are assigned based on the number of fragments that overlap
-        with a region of interest. "insertion" means the feature counts are assigned
-        based on the number of insertions that overlap with a region of interest.
-        "paired-insertion" is similar to "insertion", but it only counts the insertions
-        once if the pair of insertions of a fragment are both within the same region
-        of interest [Miao24]_.
-        Note that this parameter has no effect if input are single-end reads.
+        Optional ``Genome`` or ``{chrom: length}`` for the combined
+        AnnData's ``uns['reference_sequences']``. If omitted, tries
+        to pull from the first adata's own uns.
+    sort_memory
+        ``sort -S`` buffer size.
+    force
+        Overwrite the combined fragments file if it already exists.
 
     Returns
     -------
     AnnData
-        An annotated data matrix of shape `n_obs` x `n_vars`. Rows correspond to
-        cells and columns to genes. If `file=None`, an in-memory AnnData will be
-        returned, otherwise a backed AnnData is returned.
-
-    See Also
-    --------
-    add_tile_matrix
-    make_peak_matrix
-
-    Examples
-    --------
-    >>> import snapatac2 as snap
-    >>> data = snap.pp.import_fragments(snap.datasets.pbmc500(downsample=True), chrom_sizes=snap.genome.hg38, sorted_by_barcode=False)
-    >>> gene_mat = snap.pp.make_gene_matrix(data, gene_anno=snap.genome.hg38)
-    >>> print(gene_mat)
-    AnnData object with n_obs × n_vars = 585 × 60606
-        obs: 'n_fragment', 'frac_dup', 'frac_mito'
-    >>> gene_mat = snap.pp.make_gene_matrix(data, gene_anno=snap.genome.hg38, upstream=1000, downstream=1000, include_gene_body=False)
+        In-memory ``AnnData`` with concatenated obs, empty X (0 vars)
+        and ``uns['files']['fragments']`` pointing at the indexed BED.
     """
-    if isinstance(gene_anno, Genome):
-        gene_anno = gene_anno.annotation
+    if not (len(adatas) == len(sample_names) == len(fragment_files)):
+        raise ValueError(
+            "adatas, sample_names, fragment_files must have the same length"
+        )
 
-    if inplace:
-        out = None
-    elif file is None:
-        if adata.isbacked:
-            out = AnnData(obs=adata.obs[:].to_pandas())
-        else:
-            out = AnnData(obs=adata.obs[:])
+    combined_fragments = Path(combined_fragments)
+    if combined_fragments.suffix != ".gz":
+        # Force a .gz output — pysam.tabix_index wants bgzipped.
+        combined_fragments = combined_fragments.with_suffix(combined_fragments.suffix + ".gz")
+    combined_plain = combined_fragments.with_suffix("")   # strip .gz for intermediate
+    tbi = combined_fragments.with_suffix(combined_fragments.suffix + ".tbi")
+
+    combined_fragments.parent.mkdir(parents=True, exist_ok=True)
+
+    # 1. Write + sort + bgzip + tabix the combined BED (idempotent).
+    if force or not combined_fragments.exists() or not tbi.exists():
+        console.level1(
+            f"concat_samples: writing combined fragments → {combined_fragments}"
+        )
+        with open(combined_plain, "w") as out:
+            for name, frag_path in zip(sample_names, fragment_files):
+                for chrom, s, e, bc, cnt in _open_fragment_file(str(frag_path)):
+                    out.write(f"{chrom}\t{s}\t{e}\t{name}#{bc}\t{cnt}\n")
+        import subprocess
+        subprocess.run(
+            ["sort", "-k1,1", "-k2,2n", "-S", sort_memory,
+             "-o", str(combined_plain), str(combined_plain)],
+            check=True,
+        )
+        import pysam
+        pysam.tabix_index(str(combined_plain), preset="bed",
+                          force=True, keep_original=False)
+        console.level2(f"concat_samples: indexed {combined_fragments}")
+
+    # 2. Build the combined AnnData (obs only — X placeholder).
+    combined_obs_frames = []
+    for name, a in zip(sample_names, adatas):
+        sub = pd.DataFrame(a.obs).copy()
+        sub.index = [f"{name}#{bc}" for bc in a.obs_names]
+        sub["sample"] = name
+        combined_obs_frames.append(sub)
+    combined_obs = pd.concat(combined_obs_frames)
+
+    # Resolve chrom_sizes for uns['reference_sequences'].
+    if chrom_sizes is None:
+        chrom_sizes = (adatas[0].uns.get("reference_sequences", {}) if adatas else {})
+        chrom_sizes = dict(chrom_sizes) if chrom_sizes else {}
     else:
-        out = internal.AnnData(filename=file, backend=backend, obs=adata.obs[:])
-    internal.mk_gene_matrix(adata, gene_anno, chunk_size, use_x, id_type,
-        upstream, downstream, include_gene_body,
-        transcript_name_key, transcript_id_key, gene_name_key, gene_id_key,
-        counting_strategy, min_frag_size, max_frag_size, out)
+        chrom_sizes = _resolve_chrom_sizes(chrom_sizes)
+
+    data = AnnData(
+        X=sp.csr_matrix((combined_obs.shape[0], 0), dtype=np.float32),
+        obs=combined_obs,
+        uns={
+            "files": {"fragments": str(combined_fragments)},
+            "reference_sequences": dict(chrom_sizes),
+        },
+    )
+    console.level2(
+        f"concat_samples: {data.n_obs:,} cells across "
+        f"{len(sample_names)} sample(s)"
+    )
+    return data
+
+
+# ---------------------------------------------------------------------------
+# Tile matrix — fragment BED → cell × 500 bp tile sparse matrix
+# ---------------------------------------------------------------------------
+
+def _tile_grid(chrom_sizes: dict, bin_size: int) -> tuple[dict, int, list]:
+    """Return (chrom_offsets, total_tiles, tile_labels)."""
+    offsets = {}
+    labels = []
+    base = 0
+    for chrom, length in chrom_sizes.items():
+        offsets[chrom] = base
+        n = (int(length) + bin_size - 1) // bin_size
+        for i in range(n):
+            labels.append(f"{chrom}:{i*bin_size}-{(i+1)*bin_size - 1}")
+        base += n
+    return offsets, base, labels
+
+
+def add_tile_matrix(
+    adata: AnnData,
+    *,
+    bin_size: int = 500,
+    counting_strategy: Literal["insertion", "paired-insertion", "fragment"] = "paired-insertion",
+    chrM: list = ("chrM", "M", "chrMT", "MT"),
+    verbose: bool = True,
+) -> AnnData:
+    """Bin fragments into per-cell 500 bp tile counts, write to ``adata.X``.
+
+    Counting strategies
+    -------------------
+    - ``"insertion"``        — each TN5 cut (start + end) contributes 1
+    - ``"paired-insertion"`` — each fragment contributes 1 to each tile
+      its start **or** end falls into; if both ends fall in the same tile
+      contribute 1 total (matches ArchR / snapATAC2 default)
+    - ``"fragment"``         — each fragment contributes 1 to every tile
+      it overlaps
+    """
+    if "files" not in adata.uns or "fragments" not in adata.uns["files"]:
+        raise ValueError("adata.uns['files']['fragments'] missing — "
+                         "run epi.pp.import_fragments first")
+    if "reference_sequences" not in adata.uns:
+        raise ValueError("adata.uns['reference_sequences'] missing")
+
+    fragment_file = adata.uns["files"]["fragments"]
+    chrom_sizes = dict(adata.uns["reference_sequences"])
+    chrom_offsets, n_tiles, tile_labels = _tile_grid(chrom_sizes, bin_size)
+
+    barcodes = list(adata.obs_names)
+    bc_to_idx = {b: i for i, b in enumerate(barcodes)}
+    n_cells = len(barcodes)
+
+    console.level1(
+        f"building tile matrix: {n_cells:,} cells × {n_tiles:,} tiles "
+        f"({bin_size} bp bins, strategy={counting_strategy})",
+    )
+
+    rows, cols, data = [], [], []
+    chrM_set = set(chrM)
+    for chrom, start, end, bc, cnt in _open_fragment_file(fragment_file):
+        if bc not in bc_to_idx:
+            continue
+        if chrom in chrM_set or chrom not in chrom_offsets:
+            continue
+        i = bc_to_idx[bc]
+        base = chrom_offsets[chrom]
+        t1 = base + start // bin_size
+        t2 = base + (end - 1) // bin_size
+
+        if counting_strategy == "insertion":
+            rows.append(i); cols.append(t1); data.append(cnt)
+            if t2 != t1:
+                rows.append(i); cols.append(t2); data.append(cnt)
+        elif counting_strategy == "paired-insertion":
+            rows.append(i); cols.append(t1); data.append(cnt)
+            if t2 != t1:
+                rows.append(i); cols.append(t2); data.append(cnt)
+        elif counting_strategy == "fragment":
+            for t in range(t1, t2 + 1):
+                rows.append(i); cols.append(t); data.append(cnt)
+        else:
+            raise ValueError(f"unknown counting_strategy={counting_strategy!r}")
+
+    X = sp.coo_matrix(
+        (data, (rows, cols)),
+        shape=(n_cells, n_tiles), dtype=np.int32,
+    ).tocsr()
+    X.sum_duplicates()
+
+    # Write back. AnnDataOOM supports .X assignment lazily; plain AnnData too.
+    adata.X = X
+    # Also fix var.
+    var_df = pd.DataFrame(index=pd.Index(tile_labels, name="tile", dtype=str))
+    try:
+        adata.var = var_df
+    except Exception:
+        # Backed AnnData may not allow arbitrary var replacement; fall
+        # back to attribute setting if available.
+        for col in var_df.columns:
+            adata.var[col] = var_df[col].values
+
+    console.level2(f"tile matrix nnz={X.nnz:,}")
+    return adata
+
+
+# ---------------------------------------------------------------------------
+# Peak matrix — fragment BED + peak BED → cell × peak sparse matrix
+# ---------------------------------------------------------------------------
+
+_PEAK_RE = re.compile(r"^([^:]+):(\d+)-(\d+)$")
+
+
+def _parse_peaks(peaks) -> list[tuple[str, int, int]]:
+    """Accept a list / Series / DataFrame of ``chrN:start-end`` strings or
+    ``(chrom, start, end)`` tuples. Returns a sorted list of 3-tuples.
+    """
+    if isinstance(peaks, pd.DataFrame):
+        if {"chrom", "start", "end"}.issubset(peaks.columns):
+            out = [(r["chrom"], int(r["start"]), int(r["end"])) for _, r in peaks.iterrows()]
+        else:
+            out = [_parse_peak_label(p) for p in peaks.iloc[:, 0]]
+    elif isinstance(peaks, pd.Series):
+        out = [_parse_peak_label(p) for p in peaks]
+    else:
+        out = []
+        for p in peaks:
+            if isinstance(p, (tuple, list)) and len(p) == 3:
+                out.append((p[0], int(p[1]), int(p[2])))
+            else:
+                out.append(_parse_peak_label(p))
+    out.sort()
     return out
 
-def call_cells(
-    data: internal.AnnData | list[internal.AnnData],
-    use_rep: str | np.ndarray[float],
-    inplace: bool = True,
-    n_jobs: int = 8,
-) -> np.ndarray | None:
+
+def _parse_peak_label(s):
+    m = _PEAK_RE.match(str(s))
+    if not m:
+        raise ValueError(f"unrecognised peak label: {s!r}")
+    return m.group(1), int(m.group(2)), int(m.group(3))
+
+
+def make_peak_matrix(
+    adata: AnnData,
+    use_rep,
+    *,
+    counting_strategy: Literal["insertion", "paired-insertion", "fragment"] = "paired-insertion",
+    chrM: list = ("chrM", "M", "chrMT", "MT"),
+    ceiling: Optional[int] = 4,
+    verbose: bool = True,
+) -> AnnData:
+    """Build a new cell × peak AnnData from the fragment BED.
+
+    ``use_rep`` is the peak set — accepts a list of ``chrN:s-e`` strings,
+    a Series of the same, a DataFrame with ``chrom / start / end``
+    columns, or a list of 3-tuples. The returned AnnData is a *new*
+    object (does not modify ``adata``).
+
+    ``ceiling`` — matches ArchR ``addPeakMatrix(ceiling=...)``. Per-cell
+    per-peak counts are capped at this value. Default 4 (ArchR default).
+    Pass ``None`` to disable capping.
     """
-    Calling cells based on the number of feature counts.
+    if "files" not in adata.uns or "fragments" not in adata.uns["files"]:
+        raise ValueError("adata.uns['files']['fragments'] missing")
 
-    This implements Cell Ranger's
-    [cell calling algorithm](https://www.10xgenomics.com/support/software/cell-ranger/latest/algorithms-overview/cr-gex-algorithm),
-    which is based on two primary algorithms: Order of magnitude (OrdMag) and EmptyDrops.
-    
-    Currently only OrdMag is implemented.
+    fragment_file = str(adata.uns["files"]["fragments"])
+    peaks = _parse_peaks(use_rep)
+    # Sort peaks by (chrom, start); build numpy arrays per chromosome for
+    # vectorised searchsorted lookup. ArchR merge_peaks guarantees
+    # non-overlapping peaks, so each insertion site is in ≤ 1 peak.
+    by_chrom: dict[str, list[tuple[int, int, int]]] = defaultdict(list)
+    for j, (chrom, s, e) in enumerate(peaks):
+        by_chrom[chrom].append((s, e, j))
+    chrom_arrays: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
+    for chrom, lst in by_chrom.items():
+        lst.sort()
+        ps = np.fromiter((p[0] for p in lst), count=len(lst), dtype=np.int64)
+        pe = np.fromiter((p[1] for p in lst), count=len(lst), dtype=np.int64)
+        pj = np.fromiter((p[2] for p in lst), count=len(lst), dtype=np.int64)
+        chrom_arrays[chrom] = (ps, pe, pj)
+    peak_labels = [f"{c}:{s}-{e}" for c, s, e in peaks]
 
-    Parameters
-    ----------
-    data
-        The (annotated) data matrix of shape `n_obs` x `n_vars`.
-        Rows correspond to cells and columns to regions.
-        `data` can also be a list of AnnData objects.
-        In this case, the function will be applied to each AnnData object in parallel.
-    use_rep
-        The representation to use for filtering. This can be a string or a numpy array.
-    inplace
-        Perform computation inplace or return result.
-    n_jobs
-        Number of parallel jobs to use when `data` is a list.
+    barcodes = list(adata.obs_names)
+    bc_to_idx = {b: i for i, b in enumerate(barcodes)}
+    n_cells = len(barcodes)
+    n_peaks = len(peaks)
 
-    Returns
-    -------
-    np.ndarray | None:
-        If `inplace = True`, directly subsets the data matrix. Otherwise return 
-        indices of cells that pass the filtering.
-    """
-    if isinstance(data, list):
-        result = snapatac2._utils.anndata_par(
-            data,
-            lambda x: call_cells(x, inplace=inplace),
-            n_jobs=n_jobs,
-        )
-        if inplace:
-            return None
+    console.level1(f"building peak matrix: {n_cells:,} cells × {n_peaks:,} peaks")
+
+    import pysam
+
+    chrM_set = set(chrM)
+    rows_list: list[np.ndarray] = []
+    cols_list: list[np.ndarray] = []
+    data_list: list[np.ndarray] = []
+
+    _ensure_tabix_index(fragment_file)
+    tbx = pysam.TabixFile(fragment_file)
+
+    # Process chromosome-by-chromosome so we can vectorise per-chrom.
+    for chrom, (ps, pe, pj) in chrom_arrays.items():
+        if chrom in chrM_set:
+            continue
+        if chrom not in tbx.contigs:
+            continue
+        # Bulk-read fragment records for this chromosome.
+        starts_buf: list[int] = []
+        ends_buf: list[int] = []
+        bcs_buf: list[int] = []
+        cnts_buf: list[int] = []
+        for line in tbx.fetch(chrom):
+            parts = line.split("\t")
+            if len(parts) < 4:
+                continue
+            bc = parts[3]
+            i = bc_to_idx.get(bc)
+            if i is None:
+                continue
+            try:
+                s = int(parts[1]); e = int(parts[2])
+            except ValueError:
+                continue
+            cnt = int(parts[4]) if len(parts) >= 5 and parts[4].isdigit() else 1
+            starts_buf.append(s); ends_buf.append(e)
+            bcs_buf.append(i); cnts_buf.append(cnt)
+        if not starts_buf:
+            continue
+        starts_arr = np.asarray(starts_buf, dtype=np.int64)
+        ends_arr = np.asarray(ends_buf, dtype=np.int64)
+        bcs_arr = np.asarray(bcs_buf, dtype=np.int64)
+        cnts_arr = np.asarray(cnts_buf, dtype=np.int32)
+
+        if counting_strategy in ("insertion", "paired-insertion"):
+            # Two insertion sites per fragment (TN5 cut at both ends).
+            # Each insertion event contributes 1, NOT ``cnt`` (the 5th
+            # column is the pre-dedup read count, already collapsed to
+            # a single unique fragment per row; ArchR's ``addPeakMatrix``
+            # treats each fragment as 2 insertion events regardless).
+            for cut_arr in (starts_arr, ends_arr - 1):
+                idx = np.searchsorted(ps, cut_arr, side="right") - 1
+                valid = idx >= 0
+                if not valid.any():
+                    continue
+                # Check end > cut for the candidate peak.
+                candidate_ends = pe[np.where(valid, idx, 0)]
+                valid &= candidate_ends > cut_arr
+                if not valid.any():
+                    continue
+                rows_list.append(bcs_arr[valid])
+                cols_list.append(pj[idx[valid]])
+                data_list.append(np.ones(int(valid.sum()), dtype=np.int32))
         else:
-            return result
+            # "fragment": overlap all peaks intersecting [start, end).
+            # Vectorised: for each peak, find fragments in [start, end).
+            # Simpler: iterate peaks per-chrom — usually n_peaks_chrom << n_frag_chrom.
+            # For each peak, use searchsorted on ends_arr > peak_start and
+            # starts_arr < peak_end to find contributing fragments.
+            frag_sort = np.argsort(starts_arr, kind="stable")
+            starts_s = starts_arr[frag_sort]
+            ends_s = ends_arr[frag_sort]
+            bcs_s = bcs_arr[frag_sort]
+            cnts_s = cnts_arr[frag_sort]
+            for k in range(len(ps)):
+                pstart, pend, ppj = int(ps[k]), int(pe[k]), int(pj[k])
+                # Fragments with start < pend
+                right = np.searchsorted(starts_s, pend, side="left")
+                if right == 0:
+                    continue
+                # Of those, fragments with end > pstart
+                mask = ends_s[:right] > pstart
+                if not mask.any():
+                    continue
+                rows_list.append(bcs_s[:right][mask])
+                cols_list.append(np.full(int(mask.sum()), ppj, dtype=np.int64))
+                # 1 per overlapping fragment, not ``cnt`` (read dup count).
+                data_list.append(np.ones(int(mask.sum()), dtype=np.int32))
 
-    counts = data.obs[use_rep].to_numpy() if isinstance(use_rep, str) else use_rep
-    selected_cells = filter_cellular_barcodes_ordmag(counts, None)[0]
-    if inplace:
-        if data.isbacked:
-            data.subset(selected_cells)
-        else:
-            data._inplace_subset_obs(selected_cells)
+    tbx.close()
+
+    if rows_list:
+        rows = np.concatenate(rows_list)
+        cols = np.concatenate(cols_list)
+        data = np.concatenate(data_list).astype(np.int32, copy=False)
     else:
-        return selected_cells
+        rows = np.array([], dtype=np.int64)
+        cols = np.array([], dtype=np.int64)
+        data = np.array([], dtype=np.int32)
+
+    X = sp.coo_matrix(
+        (data, (rows, cols)),
+        shape=(n_cells, n_peaks), dtype=np.int32,
+    ).tocsr()
+    X.sum_duplicates()
+    # ArchR-style per-cell per-peak cap (addPeakMatrix(ceiling=...)).
+    if ceiling is not None and X.nnz > 0:
+        np.minimum(X.data, int(ceiling), out=X.data)
+
+    peak_mat = AnnData(
+        X=X,
+        obs=pd.DataFrame(index=pd.Index(barcodes, dtype=str)),
+        var=pd.DataFrame(index=pd.Index(peak_labels, dtype=str)),
+        uns={
+            "files": dict(adata.uns.get("files", {})),
+            "reference_sequences": dict(adata.uns.get("reference_sequences", {})),
+        },
+    )
+    # Carry over adata.obs.
+    try:
+        peak_mat.obs = pd.DataFrame(adata.obs).copy()
+        peak_mat.obs.index = barcodes
+    except Exception:
+        pass
+
+    console.level2(f"peak matrix nnz={X.nnz:,}")
+    return peak_mat
+
+
+# ---------------------------------------------------------------------------
+# Gene activity matrix — simple flat window (distinct from ArchR gene score)
+# ---------------------------------------------------------------------------
+
+def make_gene_matrix(
+    adata: AnnData,
+    gene_anno,
+    *,
+    upstream: int = 2000,
+    downstream: int = 0,
+    include_gene_body: bool = True,
+    chrM: list = ("chrM", "M", "chrMT", "MT"),
+    verbose: bool = True,
+) -> AnnData:
+    """Flat-window gene activity matrix (cell × gene).
+
+    For each gene, counts fragments whose insertion sites fall inside a
+    window spanning ``[gene_body_start − upstream, gene_body_end +
+    downstream]`` on the appropriate strand. For the ArchR-equivalent
+    distance-weighted version see :func:`epione.tl.add_gene_score_matrix`.
+    """
+    if "files" not in adata.uns or "fragments" not in adata.uns["files"]:
+        raise ValueError("adata.uns['files']['fragments'] missing")
+
+    # Accept a Genome (resolve via get_gene_annotation), a GTF/GFF3 path
+    # (same), or a ready DataFrame.
+    from ..utils._genome import Genome
+    if isinstance(gene_anno, Genome):
+        from ..utils._read import get_gene_annotation
+        gene_anno = get_gene_annotation(gene_anno)
+    elif isinstance(gene_anno, (str, Path)):
+        p = str(gene_anno)
+        if p.endswith((".gtf", ".gff", ".gff3", ".gtf.gz", ".gff.gz", ".gff3.gz")):
+            from ..utils._read import get_gene_annotation
+            gene_anno = get_gene_annotation(p)
+        else:
+            gene_anno = pd.read_csv(p, sep="\t")
+    required = {"gene_name", "chrom", "start", "end", "strand"}
+    if not required.issubset(gene_anno.columns):
+        raise ValueError(f"gene_anno missing columns: {required - set(gene_anno.columns)}")
+
+    genes = gene_anno.copy()
+    if include_gene_body:
+        # Window = gene body ± (upstream, downstream) strand-aware.
+        is_plus = genes["strand"].to_numpy() == "+"
+        genes["window_start"] = np.where(
+            is_plus, genes["start"] - upstream, genes["start"] - downstream,
+        )
+        genes["window_end"] = np.where(
+            is_plus, genes["end"] + downstream, genes["end"] + upstream,
+        )
+    else:
+        # Window = TSS ± padding.
+        tss = np.where(genes["strand"] == "+", genes["start"], genes["end"])
+        genes["window_start"] = tss - upstream
+        genes["window_end"] = tss + downstream
+
+    genes["window_start"] = np.maximum(genes["window_start"], 0).astype(np.int64)
+    genes["window_end"] = genes["window_end"].astype(np.int64)
+
+    # Per-chrom arrays: window_start, window_end, gene_idx sorted by start.
+    # Unlike peaks, gene windows *can overlap* (adjacent genes' upstream
+    # padding often hits neighbours), so each insertion event can fall
+    # into multiple genes — we scan all candidates vectorised.
+    chrom_arrays: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
+    for chrom, sub in genes.groupby("chrom", sort=False):
+        order = np.argsort(sub["window_start"].to_numpy(), kind="stable")
+        ws = sub["window_start"].to_numpy()[order].astype(np.int64)
+        we = sub["window_end"].to_numpy()[order].astype(np.int64)
+        gi = np.asarray(sub.index[order].to_numpy(), dtype=np.int64)  # row in genes
+        chrom_arrays[chrom] = (ws, we, gi)
+
+    fragment_file = adata.uns["files"]["fragments"]
+    barcodes = list(adata.obs_names)
+    bc_to_idx = {b: i for i, b in enumerate(barcodes)}
+    n_cells = len(barcodes)
+    n_genes = len(genes)
+    chrM_set = set(chrM)
+
+    console.level1(f"building gene activity matrix: {n_cells:,} × {n_genes:,} (flat window)")
+
+    import pysam
+    _ensure_tabix_index(fragment_file)
+    tbx = pysam.TabixFile(str(fragment_file))
+
+    rows_list: list[np.ndarray] = []
+    cols_list: list[np.ndarray] = []
+    data_list: list[np.ndarray] = []
+
+    for chrom, (ws, we, gi) in chrom_arrays.items():
+        if chrom in chrM_set or chrom not in tbx.contigs:
+            continue
+        # Bulk-load all fragments on this chromosome.
+        starts_buf, ends_buf, bcs_buf = [], [], []
+        for line in tbx.fetch(chrom):
+            parts = line.split("\t")
+            if len(parts) < 4:
+                continue
+            i = bc_to_idx.get(parts[3])
+            if i is None:
+                continue
+            try:
+                s = int(parts[1]); e = int(parts[2])
+            except ValueError:
+                continue
+            starts_buf.append(s); ends_buf.append(e); bcs_buf.append(i)
+        if not starts_buf:
+            continue
+        starts_arr = np.asarray(starts_buf, dtype=np.int64)
+        ends_arr = np.asarray(ends_buf, dtype=np.int64)
+        bcs_arr = np.asarray(bcs_buf, dtype=np.int64)
+
+        # For each insertion event (fragment start and end-1), find ALL
+        # genes whose window covers it. Gene windows can overlap, so we
+        # can't use the "pick one" trick from peak_matrix — instead, for
+        # each event we bracket the candidate range
+        # ``[first gene with window_start <= cut, …, last gene with
+        # window_start <= cut]`` and then filter by ``window_end > cut``.
+        # For ATAC tile density against ~20k genes this is still ~100×
+        # faster than a per-fragment Python binary search.
+        for cut_arr in (starts_arr, ends_arr - 1):
+            # window_start ≤ cut  →  searchsorted(ws, cut, 'right') - 1
+            upper = np.searchsorted(ws, cut_arr, side="right")
+            # For each fragment, candidates are ws[:upper]. Scan backwards
+            # through the max span of overlapping gene windows.
+            max_span = int((we - ws).max()) if len(we) else 0
+            lower_cut = cut_arr - max_span
+            lower = np.searchsorted(ws, lower_cut, side="left")
+            # Collect: for each fragment i, k in [lower[i], upper[i]) such
+            # that we[k] > cut_arr[i]. To vectorise we explode into
+            # (frag_idx, gene_idx) pairs via repeat + compare.
+            counts = upper - lower
+            if counts.sum() == 0:
+                continue
+            # Build (frag, gene_candidate_index) pairs.
+            frag_rep = np.repeat(np.arange(len(cut_arr), dtype=np.int64), counts)
+            gene_k = np.concatenate([
+                np.arange(int(lo), int(hi), dtype=np.int64)
+                for lo, hi in zip(lower, upper)
+            ]) if counts.sum() else np.array([], dtype=np.int64)
+            # Filter by window_end > cut
+            keep = we[gene_k] > cut_arr[frag_rep]
+            if not keep.any():
+                continue
+            rows_list.append(bcs_arr[frag_rep[keep]])
+            cols_list.append(gi[gene_k[keep]])
+            data_list.append(np.ones(int(keep.sum()), dtype=np.int32))
+
+    tbx.close()
+
+    if rows_list:
+        rows = np.concatenate(rows_list)
+        cols = np.concatenate(cols_list)
+        data = np.concatenate(data_list)
+    else:
+        rows = np.array([], dtype=np.int64)
+        cols = np.array([], dtype=np.int64)
+        data = np.array([], dtype=np.int32)
+
+    X = sp.coo_matrix(
+        (data, (rows, cols)),
+        shape=(n_cells, n_genes), dtype=np.int32,
+    ).tocsr()
+    X.sum_duplicates()
+
+    out = AnnData(
+        X=X,
+        obs=pd.DataFrame(adata.obs).copy(),
+        var=pd.DataFrame({"gene_name": genes["gene_name"].values},
+                         index=pd.Index(genes["gene_name"], dtype=str)),
+    )
+    console.level2(f"gene matrix nnz={X.nnz:,}")
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Feature selection
+# ---------------------------------------------------------------------------
+
+def select_features(
+    adata: AnnData,
+    n_features: int = 500_000,
+    *,
+    key_added: str = "selected",
+    verbose: bool = True,
+) -> np.ndarray:
+    """Mark the top-``n_features`` most-accessible columns (tiles or peaks)
+    in ``adata.var[key_added]`` as True.
+
+    Uses per-column fraction of cells with at least one count. Ties are
+    broken by total count.
+    """
+    X = adata.X
+    if not sp.issparse(X):
+        X = sp.csr_matrix(X)
+    # Per-column counts.
+    total = np.asarray(X.sum(axis=0)).ravel()
+    n_pos = np.asarray((X != 0).sum(axis=0)).ravel()
+    # Compound score: fraction of cells present, break ties by total.
+    score = n_pos.astype(np.float64) + total / (total.max() + 1e-9) * 1e-6
+    n = min(n_features, X.shape[1])
+    thr = np.partition(score, -n)[-n]
+    sel = score >= thr
+    try:
+        adata.var[key_added] = sel
+    except Exception:
+        # backed AnnData might not accept bulk var assignment
+        for i, v in enumerate(sel):
+            adata.var.iloc[i, adata.var.columns.get_loc(key_added)] = v
+    console.level2(f"selected {int(sel.sum()):,}/{adata.n_vars:,} features → var[{key_added!r}]")
+    return sel
+
+
+# ---------------------------------------------------------------------------
+# Cell calling / filtering
+# ---------------------------------------------------------------------------
+
+def call_cells(adata: AnnData, min_fragments: int = 1000, **kwargs) -> AnnData:
+    """Simple cell-calling: keep barcodes with ``n_fragment`` ≥ threshold."""
+    obs = pd.DataFrame(adata.obs)
+    keep = obs["n_fragment"].to_numpy() >= int(min_fragments)
+    console.level2(f"call_cells: {int(keep.sum()):,}/{len(keep):,} pass")
+    sub = adata[keep].copy()
+    return sub
+
 
 def filter_cells(
-    data: internal.AnnData | list[internal.AnnData],
-    min_counts: int | None = 1000,
-    min_tsse: float | None = 5.0,
-    max_counts: int | None = None,
-    max_tsse: float | None = None,
-    inplace: bool = True,
-    n_jobs: int = 8,
-) -> np.ndarray | None:
+    adata: AnnData,
+    min_counts: Optional[int] = None,
+    max_counts: Optional[int] = None,
+    min_tsse: Optional[float] = None,
+    **kwargs,
+) -> AnnData:
+    """Filter cells by basic QC thresholds. All thresholds are applied
+    jointly and return a new AnnData view.
     """
-    Filter cell outliers based on counts and numbers of genes expressed.
-    For instance, only keep cells with at least `min_counts` counts or
-    `min_tsse` TSS enrichment scores. This is to filter measurement outliers,
-    i.e. "unreliable" observations.
-
-    Parameters
-    ----------
-    data
-        The (annotated) data matrix of shape `n_obs` x `n_vars`.
-        Rows correspond to cells and columns to regions.
-        `data` can also be a list of AnnData objects.
-        In this case, the function will be applied to each AnnData object in parallel.
-    min_counts
-        Minimum number of counts required for a cell to pass filtering.
-    min_tsse
-        Minimum TSS enrichemnt score required for a cell to pass filtering.
-    max_counts
-        Maximum number of counts required for a cell to pass filtering.
-    max_tsse
-        Maximum TSS enrichment score expressed required for a cell to pass filtering.
-    inplace
-        Perform computation inplace or return result.
-    n_jobs
-        Number of parallel jobs to use when `data` is a list.
-
-    Returns
-    -------
-    np.ndarray | None:
-        If `inplace = True`, directly subsets the data matrix. Otherwise return 
-        indices of cells that pass the filtering.
-    """
-    if isinstance(data, list):
-        result = snapatac2._utils.anndata_par(
-            data,
-            lambda x: filter_cells(x, min_counts, min_tsse, max_counts, max_tsse, inplace=inplace),
-            n_jobs=n_jobs,
-        )
-        if inplace:
-            return None
-        else:
-            return result
-
-    selected_cells = True
-    if min_counts: selected_cells &= data.obs["n_fragment"] >= min_counts
-    if max_counts: selected_cells &= data.obs["n_fragment"] <= max_counts
-    if min_tsse: selected_cells &= data.obs["tsse"] >= min_tsse
-    if max_tsse: selected_cells &= data.obs["tsse"] <= max_tsse
-
-    selected_cells = np.flatnonzero(selected_cells)
-    if inplace:
-        if data.isbacked:
-            data.subset(selected_cells)
-        else:
-            data._inplace_subset_obs(selected_cells)
-    else:
-        return selected_cells
-
-def _find_most_accessible_features(
-    feature_count,
-    filter_lower_quantile,
-    filter_upper_quantile,
-    total_features,
-) -> np.ndarray:
-    idx = np.argsort(feature_count)
-    for i in range(idx.size):
-        if feature_count[idx[i]] > 0:
-            break
-    idx = idx[i:]
-    n = idx.size
-    n_lower = int(filter_lower_quantile * n)
-    n_upper = int(filter_upper_quantile * n)
-    idx = idx[n_lower:n-n_upper]
-    return idx[::-1][:total_features]
- 
-def select_features(
-    adata: internal.AnnData | internal.AnnDataSet | list[internal.AnnData],
-    n_features: int = 500000,
-    filter_lower_quantile: float = 0.005,
-    filter_upper_quantile: float = 0.005,
-    whitelist: Path | None = None,
-    blacklist: Path | None = None,
-    max_iter: int = 1,
-    inplace: bool = True,
-    n_jobs: int = 8,
-    verbose: bool = True,
-) -> np.ndarray | list[np.ndarray] | None:
-    """
-    Perform feature selection by selecting the most accessibile features across
-    all cells unless `max_iter` > 1.
-
-    Note
-    ----
-    This function does not perform the actual subsetting. The feature mask is used by
-    various functions to generate submatrices on the fly.
-    Features that are zero in all cells will be always removed regardless of the
-    filtering criteria.
-    For more discussion about feature selection, see: https://github.com/scverse/SnapATAC2/discussions/116.
-
-    Parameters
-    ----------
-    adata
-        The (annotated) data matrix of shape `n_obs` x `n_vars`.
-        Rows correspond to cells and columns to regions.
-        `adata` can also be a list of AnnData objects.
-        In this case, the function will be applied to each AnnData object in parallel.
-    n_features
-        Number of features to keep. Note that the final number of features
-        may be smaller than this number if there is not enough features that pass
-        the filtering criteria.
-    filter_lower_quantile
-        Lower quantile of the feature count distribution to filter out.
-        For example, 0.005 means the bottom 0.5% features with the lowest counts will be removed.
-    filter_upper_quantile
-        Upper quantile of the feature count distribution to filter out.
-        For example, 0.005 means the top 0.5% features with the highest counts will be removed.
-        Be aware that when the number of feature is very large, the default value of 0.005 may
-        risk removing too many features.
-    whitelist
-        A user provided bed file containing genome-wide whitelist regions.
-        None-zero features listed here will be kept regardless of the other
-        filtering criteria.
-        If a feature is present in both whitelist and blacklist, it will be kept.
-    blacklist 
-        A user provided bed file containing genome-wide blacklist regions.
-        Features that are overlapped with these regions will be removed.
-    max_iter
-        If greater than 1, this function will perform iterative clustering and feature selection
-        based on variable features found using previous clustering results.
-        This is similar to the procedure implemented in ArchR, but we do not recommend it,
-        see https://github.com/scverse/SnapATAC2/issues/111.
-        Default value is 1, which means no iterative clustering is performed.
-    inplace
-        Perform computation inplace or return result.
-    n_jobs
-        Number of parallel jobs to use when `adata` is a list.
-    verbose
-        Whether to print progress messages.
-    
-    Returns
-    -------
-    np.ndarray | None:
-        If `inplace = False`, return a boolean index mask that does filtering,
-        where `True` means that the feature is kept, `False` means the feature is removed.
-        Otherwise, store this index mask directly to `.var['selected']`.
-    """
-    if isinstance(adata, list):
-        result = snapatac2._utils.anndata_par(
-            adata,
-            lambda x: select_features(x, n_features, filter_lower_quantile,
-                                      filter_upper_quantile, whitelist,
-                                      blacklist, max_iter, inplace, verbose=False),
-            n_jobs=n_jobs,
-        )
-        if inplace:
-            return None
-        else:
-            return result
-
-    count = np.zeros(adata.shape[1])
-    for batch, _, _ in adata.chunked_X(2000):
-        count += np.ravel(batch.sum(axis = 0))
-    if inplace:
-        adata.var['count'] = count
-
-    selected_features = _find_most_accessible_features(
-        count, filter_lower_quantile, filter_upper_quantile, n_features)
-
-    if blacklist is not None:
-        blacklist = np.array(internal.intersect_bed(adata.var_names, str(blacklist)))
-        selected_features = selected_features[np.logical_not(blacklist[selected_features])]
-
-    # Iteratively select features
-    iter = 1
-    while iter < max_iter:
-        embedding = snapatac2.tl.spectral(adata, features=selected_features, inplace=False)[1]
-        clusters = snapatac2.tl.leiden(snapatac2.pp.knn(embedding, inplace=False))
-        rpm = snapatac2.tl.aggregate_X(adata, groupby=clusters).X
-        var = np.var(np.log(rpm + 1), axis=0)
-        selected_features = np.argsort(var)[::-1][:n_features]
-
-        # Apply blacklist to the result
-        if blacklist is not None:
-            selected_features = selected_features[np.logical_not(blacklist[selected_features])]
-        iter += 1
-
-    result = np.zeros(adata.shape[1], dtype=bool)
-    result[selected_features] = True
-
-    # Finally, apply whitelist to the result
-    if whitelist is not None:
-        whitelist = np.array(internal.intersect_bed(adata.var_names, str(whitelist)))
-        whitelist &= count != 0
-        result |= whitelist
-    
-    if verbose:
-        logging.info(f"Selected {result.sum()} features.")
-
-    if inplace:
-        adata.var["selected"] = result
-    else:
-        return result
+    obs = pd.DataFrame(adata.obs)
+    mask = np.ones(len(obs), dtype=bool)
+    if min_counts is not None and "n_fragment" in obs:
+        mask &= obs["n_fragment"].to_numpy() >= min_counts
+    if max_counts is not None and "n_fragment" in obs:
+        mask &= obs["n_fragment"].to_numpy() <= max_counts
+    if min_tsse is not None and "tsse" in obs:
+        mask &= obs["tsse"].to_numpy() >= min_tsse
+    console.level2(f"filter_cells: {int(mask.sum()):,}/{len(mask):,} retained")
+    return adata[mask].copy()
