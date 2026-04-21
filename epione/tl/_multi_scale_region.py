@@ -414,7 +414,7 @@ def plot_multi_scale_footprint_region(
     ncols: int = 4,
     vmin: Optional[float] = 0.0,
     vmax: Optional[float] = None,
-    vpercentile: float = 99.0,
+    vpercentile: float = 100.0,
     cmap: str = "Blues",
     zoom: Optional[int] = None,
     figsize: Optional[Tuple[float, float]] = None,
@@ -434,16 +434,15 @@ def plot_multi_scale_footprint_region(
         Number of columns in the subplot grid.
     vmin, vmax
         Colour range. ``vmax=None`` (default) sets it to the
-        ``vpercentile``-th percentile of the plotted data — so the
-        colour bar adapts to each aggregate's actual signal range.
-        Values above ``vmax`` saturate to the darkest colour, which
-        is desired when one group has a much stronger footprint than
-        the others (it stays saturated while the weaker groups still
-        render on the same shared colour bar).
+        ``vpercentile``-th percentile of the plotted data (default
+        100 = max across all cell types → strongest signal saturates,
+        weaker groups render on the same shared colour bar).
         Pass an explicit value (e.g. scPrinter's own ``vmax=2.0``) to
-        override.
+        override, or ``vpercentile=99`` to clip the top 1 %.
     vpercentile
-        Percentile used when ``vmax`` is not given. Default 99.
+        Percentile used when ``vmax`` is not given. Default 100 (=
+        global max). Lowering to e.g. 99 clips out extreme outliers
+        so the bulk of the signal takes more of the colour range.
     zoom
         Restrict position axis to ``±zoom`` bp.
     """
@@ -468,10 +467,12 @@ def plot_multi_scale_footprint_region(
         panels = panels[..., mask]
         pos = pos[mask]
 
-    # Auto-scale vmax to the 99-pctl of the plotted data so we don't
-    # bake in scPrinter's vmax=2.5 (which was tuned for their MLP-
-    # calibrated null; raw pvalue_log10 values here can exceed 10
-    # and would otherwise all saturate to the same colour).
+    # Auto-scale vmax from the plotted data (default = global max
+    # across all cell types shown, so the strongest signal saturates
+    # and weaker groups render proportionally on the shared colour bar).
+    # scPrinter's baked-in vmax=2.5 was tuned for their MLP-calibrated
+    # null; raw pvalue_log10 on this pipeline can exceed 10 at strong
+    # binders and would all saturate the same if we kept that ceiling.
     if vmax is None:
         vmax = float(np.nanpercentile(panels, vpercentile))
         vmax = max(vmax, 1e-6)
