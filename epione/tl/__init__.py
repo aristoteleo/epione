@@ -13,8 +13,9 @@ import importlib
 # ``_footprint`` pulls in ``_bindetect_functions`` (which also needs
 # the Cython ``signals.pyx``).
 _FOOTPRINT_ATTRS = {
-    "get_footprints", "plot_footprints", "FootprintResult",
+    "get_footprints", "plot_footprints",
     "getFootprints", "plotFootprints",
+    "Footprint", "compute_tn5_bias_table",
 }
 _SCORE_BIGWIG_ATTRS = {
     "FootprintScorer", "score_bigwig_core", "score_bigwig",
@@ -59,6 +60,10 @@ from ._reducedimension import lsi
 
 from ._iterative_lsi import iterative_lsi
 
+from ._integrate import integrate
+from ._transfer_labels import transfer_labels
+from ._joint_embedding import joint_embedding
+
 from ._peak_to_gene import peak_to_gene
 
 from ._coaccessibility import coaccessibility
@@ -93,6 +98,9 @@ __all__ = [
     "getFootprints", "plotFootprints",
     "lsi",
     "iterative_lsi",
+    "integrate",
+    "transfer_labels",
+    "joint_embedding",
     "peak_to_gene",
     "coaccessibility",
     "find_marker_features",
