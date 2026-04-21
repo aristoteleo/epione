@@ -5,6 +5,7 @@ from ._read import read_ATAC_10x, read_gtf, read_features
 from ._findgenes import find_genes, Annotation
 
 from ._call_peaks import merge_peaks
+from ._compat import obs_to_pandas, var_to_pandas
 
 # TOBIAS-inspired footprint analysis functionality
 

@@ -1,10 +1,6 @@
 from anndata import AnnData
-import snapatac2._snapatac2 as internal
-import numpy as np 
-import snapatac2
+import numpy as np
 import scipy.sparse as ss
-
-from snapatac2.tools._embedding import spectral
 
 from ..utils import console
 
@@ -89,7 +85,7 @@ def qc(
     return adata
 
 def scrublet(
-    adata: internal.AnnData | list[internal.AnnData],
+    adata: AnnData,
     features: str | np.ndarray | None = "selected",
     n_comps: int = 15,
     sim_doublet_ratio: float = 2.0,
@@ -152,20 +148,6 @@ def scrublet(
             - ``adata.obs["doublet_probability"]``: probability of being a doublet
             - ``adata.obs["doublet_score"]``: doublet score
     """
-    if isinstance(adata, list):
-        result = snapatac2._utils.anndata_par(
-            adata,
-            lambda x: scrublet(x, features, n_comps, sim_doublet_ratio,
-                               expected_doublet_rate, n_neighbors,
-                               use_approx_neighbors, random_state,
-                               inplace, n_jobs, verbose=False),
-            n_jobs=n_jobs,
-        )
-        if inplace:
-            return None
-        else:
-            return result
-
     if isinstance(features, str):
         if features in adata.var:
             features = adata.var[features].to_numpy()
@@ -259,18 +241,30 @@ def scrub_doublets_core(
         synthetic_doublet_umi_subsampling, random_state
     )
 
-    if verbose: console.level2('Spectral embedding ...')
+    if verbose: console.level2('TF-IDF + TruncatedSVD embedding ...')
     n = count_matrix.shape[0]
     merged_matrix = ss.vstack([count_matrix, count_matrix_sim])
     del count_matrix_sim
     gc.collect()
-    _, evecs = spectral(
-        AnnData(X=merged_matrix),
-        features=None,
-        n_comps=n_comps,
-        inplace=False,
-    )
-    manifold = np.asanyarray(evecs)
+
+    # Pure-Python replacement for snapATAC2's spectral embedding:
+    # TF-IDF normalise → TruncatedSVD. The k-NN downstream cares only
+    # about the relative cell geometry so the ArchR-style spectral
+    # decomposition isn't essential here.
+    from sklearn.decomposition import TruncatedSVD
+    X = merged_matrix.astype(np.float32)
+    # TF-IDF: col_freq = nnz_per_col / n_cells; idf = log(1 + n_cells / nnz_per_col)
+    col_nnz = np.asarray((X != 0).sum(axis=0)).ravel().astype(np.float64)
+    col_nnz = np.where(col_nnz > 0, col_nnz, 1.0)
+    idf = np.log1p(X.shape[0] / col_nnz)
+    X = X.multiply(ss.csr_matrix(idf.reshape(1, -1))).tocsr()
+    row_sums = np.asarray(X.sum(axis=1)).ravel()
+    row_sums = np.where(row_sums > 0, row_sums, 1.0)
+    D_inv = ss.diags(1.0 / row_sums)
+    X = D_inv @ X
+    svd = TruncatedSVD(n_components=n_comps, random_state=random_state)
+    evecs = svd.fit_transform(X)
+    manifold = np.asarray(evecs, dtype=np.float32)
     manifold_obs = manifold[0:n, ]
     manifold_sim = manifold[n:, ]
 
@@ -365,17 +359,14 @@ def calculate_doublet_scores(
     # Adjust k (number of nearest neighbors) based on the ratio of simulated to observed cells
     k_adj = int(round(k * (1 + n_sim / float(n_obs))))
     
-    # Find k_adj nearest neighbors
-    if use_approx_neighbors:
-        knn = internal.approximate_nearest_neighbour_graph(
-            manifold.astype(np.float32), k_adj)
-    else:
-        knn = internal.nearest_neighbour_graph(manifold, k_adj)
-    indices = knn.indices
-    indptr = knn.indptr
-    neighbors = np.vstack(
-        [indices[indptr[i]:indptr[i+1]] for i in range(len(indptr) - 1)]
-    )
+    # Find k_adj nearest neighbors (sklearn, pure Python — replaces
+    # snapATAC2's internal.nearest_neighbour_graph / approximate_...).
+    # ``use_approx_neighbors`` is currently ignored (sklearn's exact KNN
+    # is fast enough at the scales this function operates on).
+    _ = use_approx_neighbors
+    _nn = NearestNeighbors(n_neighbors=k_adj, algorithm="auto")
+    _nn.fit(manifold)
+    neighbors = _nn.kneighbors(manifold, return_distance=False)
     
     # Calculate doublet score based on ratio of simulated cell neighbors vs. observed cell neighbors
     doub_neigh_mask = doub_labels[neighbors] == 1
