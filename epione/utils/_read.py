@@ -7,6 +7,8 @@ from scipy.io import mmread
 
 import re
 import gzip
+from collections import defaultdict
+from urllib.parse import unquote
 
 from typing import Optional, Union
 from tqdm import tqdm
@@ -177,6 +179,507 @@ def get_gene_annotation(
         df = df.sort_values("_len", ascending=False).drop_duplicates("gene_name", keep="first")
         df = df.drop(columns="_len").sort_values(["chrom", "start"]).reset_index(drop=True)
     return df
+
+
+def _parse_gff3_attributes(attr_text: str) -> dict:
+    """Parse a GFF3 attribute column into an ordered dict-like mapping."""
+    attrs = {}
+    if not attr_text:
+        return attrs
+    for field in attr_text.strip().split(";"):
+        field = field.strip()
+        if not field or "=" not in field:
+            continue
+        key, value = field.split("=", 1)
+        attrs[key] = unquote(value)
+    return attrs
+
+
+def _format_gtf_attributes(attrs: list[tuple[str, str]]) -> str:
+    parts = []
+    for key, value in attrs:
+        if value is None:
+            continue
+        value = str(value).replace('"', '\\"')
+        parts.append(f'{key} "{value}";')
+    return " ".join(parts)
+
+
+_GFF_GENE_FEATURES = {
+    "gene",
+    "pseudogene",
+    "nc_gene",
+}
+
+_GFF_TRANSCRIPT_FEATURES = {
+    "transcript",
+    "mrna",
+    "ncrna",
+    "lnc_rna",
+    "lncrna",
+    "mirna",
+    "snrna",
+    "snorna",
+    "rrna",
+    "trna",
+    "scrna",
+    "srp_rna",
+    "antisense_rna",
+    "guide_rna",
+    "pirna",
+    "rnase_mrp_rna",
+    "rnase_p_rna",
+    "telomerase_rna",
+    "vault_rna",
+    "y_rna",
+    "pseudogenic_transcript",
+    "primary_transcript",
+}
+
+_GTF3_FEATURE_MAP = {
+    "gene": "gene",
+    "pseudogene": "gene",
+    "nc_gene": "gene",
+    "transcript": "transcript",
+    "mrna": "transcript",
+    "ncrna": "transcript",
+    "lnc_rna": "transcript",
+    "lncrna": "transcript",
+    "mirna": "transcript",
+    "snrna": "transcript",
+    "snorna": "transcript",
+    "rrna": "transcript",
+    "trna": "transcript",
+    "scrna": "transcript",
+    "srp_rna": "transcript",
+    "antisense_rna": "transcript",
+    "guide_rna": "transcript",
+    "pirna": "transcript",
+    "rnase_mrp_rna": "transcript",
+    "rnase_p_rna": "transcript",
+    "telomerase_rna": "transcript",
+    "vault_rna": "transcript",
+    "y_rna": "transcript",
+    "pseudogenic_transcript": "transcript",
+    "primary_transcript": "transcript",
+    "exon": "exon",
+    "cds": "CDS",
+    "start_codon": "start_codon",
+    "stop_codon": "stop_codon",
+    "selenocysteine": "Selenocysteine",
+    "five_prime_utr": "five_prime_UTR",
+    "5utr": "five_prime_UTR",
+    "three_prime_utr": "three_prime_UTR",
+    "3utr": "three_prime_UTR",
+}
+
+
+def _normalize_gff_feature(feature: str, gtf_version: str) -> Optional[str]:
+    f = str(feature)
+    lower = f.lower()
+    if gtf_version == "relax":
+        return f
+    return _GTF3_FEATURE_MAP.get(lower)
+
+
+def convert_gff_to_gtf(
+    gff_path,
+    gtf_path=None,
+    *,
+    gtf_version: str = "3",
+    feature_whitelist=None,
+    seqname_whitelist=None,
+    keep_comments: bool = False,
+):
+    """
+    Convert a GFF/GFF3 annotation into a GTF file.
+
+    This is an AGAT-inspired, pure-Python converter intended for the
+    common Gencode / Ensembl / RefSeq-style GFF3 files used in epione
+    workflows. It resolves ``ID`` / ``Parent`` relationships, adds
+    ``gene_id`` / ``transcript_id`` attributes, standardizes common
+    feature names to GTF3, and can restrict output to a subset of
+    sequences or features.
+
+    Parameters
+    ----------
+    gff_path
+        Input GFF/GFF3 path (optionally ``.gz``).
+    gtf_path
+        Output GTF path. If omitted, the suffix is replaced with
+        ``.gtf`` (or ``.gtf.gz`` for gzipped input).
+    gtf_version
+        ``"3"`` for normalized GTF3-style output or ``"relax"`` to keep
+        original feature names.
+    feature_whitelist
+        Optional iterable of input feature names to keep before
+        conversion, e.g. ``["transcript"]``.
+    seqname_whitelist
+        Optional iterable of sequence names to keep, e.g. ``["chr22"]``.
+    keep_comments
+        When ``True``, copy input comment lines to the output header.
+
+    Returns
+    -------
+    str
+        The output GTF path.
+    """
+    if gtf_version not in {"3", "relax"}:
+        raise ValueError("gtf_version must be '3' or 'relax'")
+
+    gff_path = str(gff_path)
+    if gtf_path is None:
+        if gff_path.endswith(".gz"):
+            base = re.sub(r"(\.gff3?|\.gxf)\.gz$", "", gff_path, flags=re.IGNORECASE)
+            gtf_path = base + ".gtf.gz"
+        else:
+            base = re.sub(r"\.(gff3?|gxf)$", "", gff_path, flags=re.IGNORECASE)
+            gtf_path = base + ".gtf"
+    gtf_path = str(gtf_path)
+
+    feature_filter = {str(x).lower() for x in feature_whitelist} if feature_whitelist else None
+    seqname_filter = {str(x) for x in seqname_whitelist} if seqname_whitelist else None
+
+    comments = []
+    records = []
+    id_to_record = {}
+    parent_to_children = defaultdict(list)
+
+    opener = gzip.open if gff_path.endswith(".gz") else open
+    console.level1(f"Converting GFF to GTF: {gff_path} -> {gtf_path}")
+    with opener(gff_path, "rt") as fh:
+        for idx, line in enumerate(fh):
+            if not line:
+                continue
+            if line.startswith("#"):
+                if keep_comments:
+                    comments.append(line.rstrip("\n"))
+                continue
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) != 9:
+                continue
+            seqname, source, feature, start, end, score, strand, frame, attr_text = parts
+            if seqname_filter and seqname not in seqname_filter:
+                continue
+            if feature_filter and feature.lower() not in feature_filter:
+                continue
+            try:
+                start_i = int(start)
+                end_i = int(end)
+            except ValueError:
+                continue
+            attrs = _parse_gff3_attributes(attr_text)
+            rec_id = attrs.get("ID") or attrs.get("transcript_id") or attrs.get("gene_id")
+            parents = [x for x in attrs.get("Parent", "").split(",") if x]
+            rec = {
+                "order": idx,
+                "seqname": seqname,
+                "source": source,
+                "feature": feature,
+                "start": start_i,
+                "end": end_i,
+                "score": score,
+                "strand": strand,
+                "frame": frame,
+                "attrs": attrs,
+                "id": rec_id,
+                "parents": parents,
+            }
+            records.append(rec)
+            if rec_id and rec_id not in id_to_record:
+                id_to_record[rec_id] = rec
+            for parent in parents:
+                parent_to_children[parent].append(rec)
+
+    gene_ids = set()
+    transcript_ids = set()
+    child_like_features = {
+        "exon", "cds", "start_codon", "stop_codon",
+        "five_prime_utr", "three_prime_utr", "5utr", "3utr", "utr",
+        "selenocysteine",
+    }
+
+    for rec in records:
+        if not rec["id"]:
+            continue
+        feature_l = rec["feature"].lower()
+        if feature_l in _GFF_GENE_FEATURES:
+            gene_ids.add(rec["id"])
+        elif feature_l in _GFF_TRANSCRIPT_FEATURES:
+            transcript_ids.add(rec["id"])
+
+    for rec in records:
+        rec_id = rec["id"]
+        if not rec_id or rec_id in gene_ids or rec_id in transcript_ids:
+            continue
+        children = parent_to_children.get(rec_id, [])
+        if any(child["feature"].lower() in child_like_features for child in children):
+            transcript_ids.add(rec_id)
+
+    transcript_to_gene = {}
+    gene_name_map = {}
+    transcript_name_map = {}
+
+    for gene_id in gene_ids:
+        rec = id_to_record.get(gene_id)
+        if not rec:
+            continue
+        attrs = rec["attrs"]
+        gene_name_map[gene_id] = (
+            attrs.get("gene_name")
+            or attrs.get("Name")
+            or attrs.get("gene")
+            or gene_id
+        )
+
+    for tx_id in transcript_ids:
+        rec = id_to_record.get(tx_id)
+        if rec is None:
+            continue
+        attrs = rec["attrs"]
+        gene_id = attrs.get("gene_id")
+        if not gene_id:
+            for parent in rec["parents"]:
+                if parent in gene_ids:
+                    gene_id = parent
+                    break
+        if not gene_id and rec["parents"]:
+            gene_id = rec["parents"][0]
+        if not gene_id:
+            gene_id = tx_id
+        transcript_to_gene[tx_id] = gene_id
+        transcript_name_map[tx_id] = (
+            attrs.get("transcript_name")
+            or attrs.get("Name")
+            or tx_id
+        )
+        gene_name_map.setdefault(
+            gene_id,
+            attrs.get("gene_name") or attrs.get("gene") or attrs.get("Name") or gene_id,
+        )
+
+    def iter_contexts(rec):
+        attrs = rec["attrs"]
+        rec_id = rec["id"]
+        normalized_feature = _normalize_gff_feature(rec["feature"], gtf_version)
+
+        if normalized_feature == "gene":
+            gene_id = attrs.get("gene_id") or rec_id or attrs.get("Name")
+            if gene_id:
+                yield gene_id, None
+            return
+
+        if normalized_feature == "transcript":
+            tx_id = attrs.get("transcript_id") or rec_id or (rec["parents"][0] if rec["parents"] else None)
+            if not tx_id:
+                return
+            gene_id = attrs.get("gene_id") or transcript_to_gene.get(tx_id)
+            if not gene_id:
+                for parent in rec["parents"]:
+                    if parent in gene_ids:
+                        gene_id = parent
+                        break
+            if not gene_id:
+                gene_id = tx_id
+            yield gene_id, tx_id
+            return
+
+        parent_txs = [p for p in rec["parents"] if p in transcript_ids]
+        if parent_txs:
+            for tx_id in parent_txs:
+                gene_id = attrs.get("gene_id") or transcript_to_gene.get(tx_id) or tx_id
+                yield gene_id, tx_id
+            return
+
+        if attrs.get("transcript_id"):
+            tx_id = attrs["transcript_id"]
+            gene_id = attrs.get("gene_id") or transcript_to_gene.get(tx_id) or tx_id
+            yield gene_id, tx_id
+            return
+
+        parent_genes = [p for p in rec["parents"] if p in gene_ids]
+        if parent_genes:
+            for gene_id in parent_genes:
+                tx_id = f"{gene_id}.t1"
+                yield gene_id, tx_id
+            return
+
+        if rec_id:
+            gene_id = attrs.get("gene_id") or rec_id
+            tx_id = attrs.get("transcript_id") or rec_id
+            yield gene_id, tx_id
+
+    rows = []
+    gene_spans = {}
+    tx_spans = {}
+    emitted_genes = set()
+    emitted_transcripts = set()
+
+    feature_rank = {
+        "gene": 0,
+        "transcript": 1,
+        "exon": 2,
+        "CDS": 3,
+        "five_prime_UTR": 4,
+        "three_prime_UTR": 5,
+        "start_codon": 6,
+        "stop_codon": 7,
+        "Selenocysteine": 8,
+    }
+
+    def add_span(span_map, key, rec):
+        if key not in span_map:
+            span_map[key] = {
+                "seqname": rec["seqname"],
+                "source": rec["source"],
+                "start": rec["start"],
+                "end": rec["end"],
+                "strand": rec["strand"],
+            }
+        else:
+            span_map[key]["start"] = min(span_map[key]["start"], rec["start"])
+            span_map[key]["end"] = max(span_map[key]["end"], rec["end"])
+
+    for rec in records:
+        feature_out = _normalize_gff_feature(rec["feature"], gtf_version)
+        if feature_out is None:
+            continue
+        contexts = list(iter_contexts(rec))
+        if feature_out == "gene" and not contexts:
+            gene_id = rec["attrs"].get("gene_id") or rec["id"] or rec["attrs"].get("Name")
+            if gene_id:
+                contexts = [(gene_id, None)]
+        for gene_id, tx_id in contexts:
+            add_span(gene_spans, gene_id, rec)
+            if tx_id is not None:
+                add_span(tx_spans, (gene_id, tx_id), rec)
+
+            ordered_attrs = []
+            if gene_id is not None:
+                ordered_attrs.append(("gene_id", gene_id))
+            if feature_out != "gene" and tx_id is not None:
+                ordered_attrs.append(("transcript_id", tx_id))
+
+            gene_name = rec["attrs"].get("gene_name") or gene_name_map.get(gene_id)
+            transcript_name = None
+            if tx_id is not None:
+                transcript_name = rec["attrs"].get("transcript_name") or transcript_name_map.get(tx_id)
+
+            for key, value in [
+                ("gene_name", gene_name),
+                ("transcript_name", transcript_name),
+                ("gene_type", rec["attrs"].get("gene_type") or rec["attrs"].get("gene_biotype")),
+                ("transcript_type", rec["attrs"].get("transcript_type") or rec["attrs"].get("transcript_biotype")),
+                ("protein_id", rec["attrs"].get("protein_id")),
+                ("exon_number", rec["attrs"].get("exon_number")),
+            ]:
+                if value is not None:
+                    ordered_attrs.append((key, value))
+
+            skip_keys = {
+                "ID", "Parent", "gene_id", "transcript_id",
+                "gene_name", "transcript_name",
+                "gene_type", "gene_biotype",
+                "transcript_type", "transcript_biotype",
+                "protein_id", "exon_number",
+            }
+            for key, value in rec["attrs"].items():
+                if key in skip_keys or value is None:
+                    continue
+                ordered_attrs.append((key, value))
+
+            rows.append({
+                "order": rec["order"],
+                "seqname": rec["seqname"],
+                "source": rec["source"],
+                "feature": feature_out,
+                "start": rec["start"],
+                "end": rec["end"],
+                "score": rec["score"],
+                "strand": rec["strand"],
+                "frame": rec["frame"],
+                "attrs": _format_gtf_attributes(ordered_attrs),
+            })
+            if feature_out == "gene":
+                emitted_genes.add(gene_id)
+            elif feature_out == "transcript" and tx_id is not None:
+                emitted_transcripts.add((gene_id, tx_id))
+
+    synthetic_order = len(records) + 1
+    for (gene_id, tx_id), span in tx_spans.items():
+        if (gene_id, tx_id) in emitted_transcripts:
+            continue
+        attrs = [("gene_id", gene_id), ("transcript_id", tx_id)]
+        if gene_id in gene_name_map:
+            attrs.append(("gene_name", gene_name_map[gene_id]))
+        if tx_id in transcript_name_map:
+            attrs.append(("transcript_name", transcript_name_map[tx_id]))
+        rows.append({
+            "order": synthetic_order,
+            "seqname": span["seqname"],
+            "source": "epione",
+            "feature": "transcript",
+            "start": span["start"],
+            "end": span["end"],
+            "score": ".",
+            "strand": span["strand"],
+            "frame": ".",
+            "attrs": _format_gtf_attributes(attrs),
+        })
+        synthetic_order += 1
+
+    for gene_id, span in gene_spans.items():
+        if gene_id in emitted_genes:
+            continue
+        attrs = [("gene_id", gene_id)]
+        if gene_id in gene_name_map:
+            attrs.append(("gene_name", gene_name_map[gene_id]))
+        rows.append({
+            "order": synthetic_order,
+            "seqname": span["seqname"],
+            "source": "epione",
+            "feature": "gene",
+            "start": span["start"],
+            "end": span["end"],
+            "score": ".",
+            "strand": span["strand"],
+            "frame": ".",
+            "attrs": _format_gtf_attributes(attrs),
+        })
+        synthetic_order += 1
+
+    rows.sort(
+        key=lambda r: (
+            r["seqname"],
+            r["start"],
+            r["end"],
+            feature_rank.get(r["feature"], 99),
+            r["order"],
+        )
+    )
+
+    out_opener = gzip.open if gtf_path.endswith(".gz") else open
+    with out_opener(gtf_path, "wt") as out:
+        if keep_comments:
+            for line in comments:
+                out.write(line + "\n")
+        for row in rows:
+            out.write(
+                "\t".join([
+                    row["seqname"],
+                    row["source"],
+                    row["feature"],
+                    str(row["start"]),
+                    str(row["end"]),
+                    row["score"],
+                    row["strand"],
+                    row["frame"],
+                    row["attrs"],
+                ]) + "\n"
+            )
+
+    console.success(f"Wrote {len(rows)} GTF records", level=1)
+    return gtf_path
 
 
 def read_gtf(

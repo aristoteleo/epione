@@ -1,128 +1,143 @@
+from __future__ import annotations
+
+import gzip
 import os
 import shutil
 import subprocess
-from pathlib import Path
-from typing import List, Optional, Tuple, Union
 import tarfile
-import gzip
+from pathlib import Path
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 
 class CommandError(RuntimeError):
     pass
 
 
-def _run(cmd: List[str], cwd: Optional[str] = None, stream: bool = True) -> None:
-    """Run a shell command.
-    - stream=True: inherit stdout/stderr so progress bars and logs are visible.
-    - stream=False: capture stdout/stderr and include them on error.
-    """
+def _run(
+    cmd: Sequence[str],
+    cwd: Optional[Union[str, Path]] = None,
+    stream: bool = True,
+) -> None:
+    """Run a command and raise a readable error on failure."""
     if stream:
-        proc = subprocess.run(cmd, cwd=cwd)
+        proc = subprocess.run(list(cmd), cwd=str(cwd) if cwd else None)
         if proc.returncode != 0:
-            raise CommandError(f"Command failed: {' '.join(cmd)}")
+            raise CommandError(f"Command failed: {' '.join(map(str, cmd))}")
         return
-    proc = subprocess.run(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+    proc = subprocess.run(
+        list(cmd),
+        cwd=str(cwd) if cwd else None,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
     if proc.returncode != 0:
-        raise CommandError(f"Command failed: {' '.join(cmd)}\nSTDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr}")
+        raise CommandError(
+            f"Command failed: {' '.join(map(str, cmd))}\n"
+            f"STDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr}"
+        )
 
 
-def _which_or_raise(binary: str) -> None:
-    if shutil.which(binary) is None:
-        raise FileNotFoundError(f"Required binary '{binary}' not found in PATH. Please install it and try again.")
+def _resolve_tool(name: str, explicit: Optional[str] = None) -> str:
+    if explicit:
+        if shutil.which(explicit) is None:
+            raise FileNotFoundError(f"Requested binary '{explicit}' for '{name}' not found in PATH.")
+        return explicit
+
+    try:
+        from ._env import tool_path
+
+        return tool_path(name)
+    except Exception:
+        path = shutil.which(name)
+        if path is None:
+            raise FileNotFoundError(
+                f"Required binary '{name}' not found in PATH. Please install it and try again."
+            )
+        return path
 
 
-def align_fastq_to_bam(
-    fq1: str,
-    fq2: str,
-    out_bam: str,
-    *,
-    aligner: str = "bwa-mem2",
-    ref_index: Optional[str] = None,
-    threads: int = 8,
-    rg: Optional[str] = None,
-    extra_args: Optional[List[str]] = None,
-    remove_duplicates: bool = False,
-) -> str:
+def _run_pipe(commands: List[List[str]], cwd: Optional[Union[str, Path]] = None) -> None:
+    """Run a pipeline and fail if any stage fails."""
+    procs = []
+    prev_stdout = None
+    try:
+        for i, cmd in enumerate(commands):
+            proc = subprocess.Popen(
+                cmd,
+                cwd=str(cwd) if cwd else None,
+                stdin=prev_stdout,
+                stdout=subprocess.PIPE if i < len(commands) - 1 else None,
+            )
+            procs.append(proc)
+            if prev_stdout is not None:
+                prev_stdout.close()
+            prev_stdout = proc.stdout
+
+        for proc in procs:
+            proc.wait()
+
+        failed = [cmd for cmd, proc in zip(commands, procs) if proc.returncode != 0]
+        if failed:
+            raise CommandError(
+                "Pipeline failed:\n" + "\n".join("  " + " ".join(cmd) for cmd in failed)
+            )
+    finally:
+        for proc in procs:
+            if proc.stdout is not None:
+                proc.stdout.close()
+
+
+def ensure_fasta_unzipped(fa_gz: Union[str, Path]) -> Path:
+    fa_gz = Path(fa_gz)
+    if fa_gz.suffix != ".gz":
+        return fa_gz
+    out = fa_gz.with_suffix("")
+    if out.exists():
+        return out
+    with gzip.open(fa_gz, "rb") as fin, open(out, "wb") as fout:
+        shutil.copyfileobj(fin, fout)
+    return out
+
+
+def ensure_fasta_index(fasta: Union[str, Path]) -> Path:
+    fasta = Path(fasta)
+    fai = fasta.with_suffix(fasta.suffix + ".fai")
+    if fai.exists():
+        return fai
+    samtools = _resolve_tool("samtools")
+    _run([samtools, "faidx", str(fasta)])
+    return fai
+
+
+def ensure_chrom_sizes(
+    fasta: Optional[Union[str, Path]] = None,
+    chrom_sizes: Optional[Union[str, Path]] = None,
+) -> Path:
     """
-    Align paired-end FASTQs to reference and produce a coordinate-sorted, duplicate-removed BAM.
+    Ensure a UCSC-style chrom.sizes file exists.
 
-    - aligner: 'bwa-mem2' or 'bowtie2'
-    - ref_index: path prefix to the aligner index (required)
-    - rg: read group string, e.g. '@RG\tID:sample\tSM:sample'
+    If ``chrom_sizes`` already exists it is returned unchanged. Otherwise
+    ``fasta`` is indexed with ``samtools faidx`` and the first two columns of
+    ``.fai`` are written to ``<fasta>.chrom.sizes``.
     """
-    if ref_index is None:
-        raise ValueError("ref_index is required (path prefix to the aligner index)")
-    out_prefix = str(Path(out_bam).with_suffix("")).rstrip(".")
-    tmp_dir = Path(Path(out_prefix).parent or ".")
-    tmp_dir.mkdir(parents=True, exist_ok=True)
+    if chrom_sizes is not None:
+        chrom_sizes = Path(chrom_sizes)
+        if chrom_sizes.exists():
+            return chrom_sizes
 
-    name_sorted = str(tmp_dir / (Path(out_prefix).name + ".namesort.bam"))
-    fixmate_bam = str(tmp_dir / (Path(out_prefix).name + ".fixmate.bam"))
-    coord_sorted = str(tmp_dir / (Path(out_prefix).name + ".coordsort.bam"))
+    if fasta is None:
+        raise ValueError("Provide either chrom_sizes or fasta.")
 
-    _which_or_raise("samtools")
-
-    if aligner == "bwa-mem2":
-        _which_or_raise("bwa-mem2")
-        cmd = [
-            "bwa-mem2",
-            "mem",
-            "-t",
-            str(threads),
-            ref_index,
-            fq1,
-            fq2,
-        ]
-        if rg:
-            cmd.extend(["-R", rg])
-        if extra_args:
-            cmd.extend(extra_args)
-        cmd_view = ["samtools", "view", "-b", "-"]
-        cmd_sort_n = ["samtools", "sort", "-n", "-@", str(threads), "-o", name_sorted, "-"]
-        p1 = subprocess.Popen(cmd, stdout=subprocess.PIPE)
-        p2 = subprocess.Popen(cmd_view, stdin=p1.stdout, stdout=subprocess.PIPE)
-        p3 = subprocess.run(cmd_sort_n, stdin=p2.stdout)
-        if p3.returncode != 0:
-            raise CommandError("Alignment pipeline failed during name sort.")
-    elif aligner == "bowtie2":
-        _which_or_raise("bowtie2")
-        cmd = [
-            "bowtie2",
-            "-x",
-            ref_index,
-            "-1",
-            fq1,
-            "-2",
-            fq2,
-            "-p",
-            str(threads),
-        ]
-        if extra_args:
-            cmd.extend(extra_args)
-        cmd_view = ["samtools", "view", "-b", "-"]
-        cmd_sort_n = ["samtools", "sort", "-n", "-@", str(threads), "-o", name_sorted, "-"]
-        p1 = subprocess.Popen(cmd, stdout=subprocess.PIPE)
-        p2 = subprocess.Popen(cmd_view, stdin=p1.stdout, stdout=subprocess.PIPE)
-        p3 = subprocess.run(cmd_sort_n, stdin=p2.stdout)
-        if p3.returncode != 0:
-            raise CommandError("Alignment pipeline failed during name sort.")
-    else:
-        raise ValueError("aligner must be 'bwa-mem2' or 'bowtie2'")
-
-    _run(["samtools", "fixmate", "-m", name_sorted, fixmate_bam])
-    _run(["samtools", "sort", "-@", str(threads), "-o", coord_sorted, fixmate_bam])
-    md_cmd = ["samtools", "markdup", "-@", str(threads)]
-    if remove_duplicates:
-        md_cmd.insert(2, "-r")
-    md_cmd += [coord_sorted, out_bam]
-    _run(md_cmd)
-
-    for f in (name_sorted, fixmate_bam, coord_sorted):
-        try:
-            os.remove(f)
-        except OSError:
-            pass
-    return out_bam
+    fasta = Path(fasta)
+    fai = ensure_fasta_index(fasta)
+    out = Path(chrom_sizes) if chrom_sizes is not None else fasta.with_suffix(".chrom.sizes")
+    with open(fai) as fin, open(out, "w") as fout:
+        for line in fin:
+            parts = line.rstrip("\n").split("\t")
+            fout.write(f"{parts[0]}\t{parts[1]}\n")
+    return out
 
 
 def ensure_aligner_index(
@@ -137,133 +152,398 @@ def ensure_aligner_index(
     """
     fasta = Path(fasta)
     if aligner == "bwa-mem2":
-        _which_or_raise("bwa-mem2")
-        # choose prefix
+        bwa_mem2 = _resolve_tool("bwa-mem2")
         if index_prefix is None:
             prefix_path = fasta
         else:
             prefix_path = Path(index_prefix)
             prefix_path.parent.mkdir(parents=True, exist_ok=True)
-        # expected files
         idx_candidates = [Path(str(prefix_path) + ext) for ext in [".0123", ".amb", ".ann", ".bwt"]]
-        if overwrite:
-            print("Overwrite requested: rebuilding bwa-mem2 index...")
-            cmd = ["bwa-mem2", "index"]
+        if overwrite or not all(p.exists() for p in idx_candidates):
+            cmd = [bwa_mem2, "index"]
             if index_prefix is not None:
                 cmd += ["-p", str(prefix_path)]
             cmd += [str(fasta)]
             _run(cmd)
-        elif not all(p.exists() for p in idx_candidates):
-            print("Building bwa-mem2 index...")
-            cmd = ["bwa-mem2", "index"]
-            if index_prefix is not None:
-                cmd += ["-p", str(prefix_path)]
-            cmd += [str(fasta)]
-            _run(cmd)
-        else:
-            print(f"bwa-mem2 index found at prefix: {prefix_path}. Skipping.")
         return str(prefix_path)
-    elif aligner == "bowtie2":
-        _which_or_raise("bowtie2-build")
+
+    if aligner == "bowtie2":
+        bowtie2_build = _resolve_tool("bowtie2-build")
         if index_prefix is None:
             prefix = str(Path(fasta).with_suffix(""))
         else:
             prefix = str(index_prefix)
             Path(prefix).parent.mkdir(parents=True, exist_ok=True)
-        bt2_files = [Path(prefix + ext) for ext in [".1.bt2", ".2.bt2", ".3.bt2", ".4.bt2", ".rev.1.bt2", ".rev.2.bt2"]]
-        if overwrite:
-            print("Overwrite requested: rebuilding bowtie2 index...")
-            _run(["bowtie2-build", str(fasta), prefix])
-        elif not all(p.exists() for p in bt2_files):
-            print("Building bowtie2 index...")
-            _run(["bowtie2-build", str(fasta), prefix])
-        else:
-            print(f"bowtie2 index found at prefix: {prefix}. Skipping.")
+        bt2_files = [
+            Path(prefix + ext)
+            for ext in [".1.bt2", ".2.bt2", ".3.bt2", ".4.bt2", ".rev.1.bt2", ".rev.2.bt2"]
+        ]
+        if overwrite or not all(p.exists() for p in bt2_files):
+            _run([bowtie2_build, str(fasta), prefix])
         return prefix
+
+    raise ValueError("aligner must be 'bwa-mem2' or 'bowtie2'")
+
+
+def prepare_reference(
+    *,
+    genome: Optional[str] = None,
+    fasta: Optional[Union[str, Path]] = None,
+    chrom_sizes: Optional[Union[str, Path]] = None,
+    aligner: str = "bowtie2",
+    index_prefix: Optional[Union[str, Path]] = None,
+    overwrite: bool = False,
+) -> Dict[str, str]:
+    """
+    Fetch/build everything the bulk upstream pipeline needs for one reference.
+    """
+    if fasta is None:
+        if genome is None:
+            raise ValueError("Provide either fasta or genome.")
+        fasta = fetch_genome_fasta(genome)
+    fasta = ensure_fasta_unzipped(fasta)
+    fai = ensure_fasta_index(fasta)
+    chrom_sizes = ensure_chrom_sizes(fasta=fasta, chrom_sizes=chrom_sizes)
+    ref_index = ensure_aligner_index(
+        aligner=aligner,
+        fasta=fasta,
+        index_prefix=index_prefix,
+        overwrite=overwrite,
+    )
+    return {
+        "fasta": str(fasta),
+        "fai": str(fai),
+        "chrom_sizes": str(chrom_sizes),
+        "ref_index": str(ref_index),
+    }
+
+
+def trim_fastq_pair(
+    fq1: Union[str, Path],
+    fq2: Union[str, Path],
+    out_dir: Union[str, Path],
+    *,
+    sample_name: Optional[str] = None,
+    method: str = "fastp",
+    threads: int = 8,
+    html_report: Optional[Union[str, Path]] = None,
+    json_report: Optional[Union[str, Path]] = None,
+    extra_args: Optional[Sequence[str]] = None,
+) -> Tuple[str, str]:
+    """
+    Trim a paired-end FASTQ pair and return the trimmed R1/R2 paths.
+
+    Supports ``fastp`` and ``trim_galore``. ``fastp`` is preferred because it
+    produces deterministic output file names that are easier to use in
+    notebooks.
+    """
+    fq1 = str(fq1)
+    fq2 = str(fq2)
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    sample_name = sample_name or Path(fq1).name.split("_R1")[0].split("_1")[0]
+
+    if method == "fastp":
+        fastp = _resolve_tool("fastp")
+        out1 = out_dir / f"{sample_name}_R1.trim.fastq.gz"
+        out2 = out_dir / f"{sample_name}_R2.trim.fastq.gz"
+        html_report = Path(html_report) if html_report is not None else out_dir / f"{sample_name}.fastp.html"
+        json_report = Path(json_report) if json_report is not None else out_dir / f"{sample_name}.fastp.json"
+        cmd = [
+            fastp,
+            "-i",
+            fq1,
+            "-I",
+            fq2,
+            "-o",
+            str(out1),
+            "-O",
+            str(out2),
+            "-w",
+            str(threads),
+            "-h",
+            str(html_report),
+            "-j",
+            str(json_report),
+        ]
+        if extra_args:
+            cmd.extend(map(str, extra_args))
+        _run(cmd)
+        return str(out1), str(out2)
+
+    if method == "trim_galore":
+        trim_galore = _resolve_tool("trim_galore")
+        cmd = [
+            trim_galore,
+            "--paired",
+            "--gzip",
+            "--cores",
+            str(max(1, threads)),
+            "-o",
+            str(out_dir),
+            fq1,
+            fq2,
+        ]
+        if extra_args:
+            cmd.extend(map(str, extra_args))
+        _run(cmd)
+        r1_val = out_dir / (Path(fq1).name.replace(".fastq.gz", "_val_1.fq.gz").replace(".fq.gz", "_val_1.fq.gz"))
+        r2_val = out_dir / (Path(fq2).name.replace(".fastq.gz", "_val_2.fq.gz").replace(".fq.gz", "_val_2.fq.gz"))
+        if not r1_val.exists() or not r2_val.exists():
+            raise CommandError("trim_galore finished but expected output FASTQs were not found.")
+        return str(r1_val), str(r2_val)
+
+    raise ValueError("method must be 'fastp' or 'trim_galore'")
+
+
+def sort_bam(
+    in_bam: Union[str, Path],
+    out_bam: Union[str, Path],
+    *,
+    threads: int = 4,
+    name_sort: bool = False,
+) -> str:
+    samtools = _resolve_tool("samtools")
+    cmd = [samtools, "sort"]
+    if name_sort:
+        cmd.append("-n")
+    cmd += ["-@", str(threads), "-o", str(out_bam), str(in_bam)]
+    _run(cmd)
+    return str(out_bam)
+
+
+def index_bam(bam: Union[str, Path], *, threads: int = 4) -> str:
+    samtools = _resolve_tool("samtools")
+    _run([samtools, "index", "-@", str(threads), str(bam)])
+    return str(bam) + ".bai"
+
+
+def merge_bams(
+    bam_files: Sequence[Union[str, Path]],
+    out_bam: Union[str, Path],
+    *,
+    threads: int = 4,
+    index: bool = True,
+) -> str:
+    if len(bam_files) == 0:
+        raise ValueError("bam_files cannot be empty.")
+    samtools = _resolve_tool("samtools")
+    out_bam = Path(out_bam)
+    out_bam.parent.mkdir(parents=True, exist_ok=True)
+    _run([samtools, "merge", "-@", str(threads), "-o", str(out_bam), *map(str, bam_files)])
+    if index:
+        index_bam(out_bam, threads=threads)
+    return str(out_bam)
+
+
+def align_fastq_to_bam(
+    fq1: Union[str, Path],
+    fq2: Union[str, Path],
+    out_bam: Union[str, Path],
+    *,
+    aligner: str = "bwa-mem2",
+    ref_index: Optional[Union[str, Path]] = None,
+    threads: int = 8,
+    rg: Optional[str] = None,
+    extra_args: Optional[Sequence[str]] = None,
+    remove_duplicates: bool = False,
+) -> str:
+    """
+    Align paired-end FASTQs to reference and produce a coordinate-sorted BAM.
+    """
+    if ref_index is None:
+        raise ValueError("ref_index is required (path prefix to the aligner index)")
+
+    out_bam = Path(out_bam)
+    out_bam.parent.mkdir(parents=True, exist_ok=True)
+    out_prefix = str(out_bam.with_suffix("")).rstrip(".")
+    tmp_dir = out_bam.parent
+
+    name_sorted = str(tmp_dir / (Path(out_prefix).name + ".namesort.bam"))
+    fixmate_bam = str(tmp_dir / (Path(out_prefix).name + ".fixmate.bam"))
+    coord_sorted = str(tmp_dir / (Path(out_prefix).name + ".coordsort.bam"))
+
+    samtools = _resolve_tool("samtools")
+
+    if aligner == "bwa-mem2":
+        aligner_bin = _resolve_tool("bwa-mem2")
+        cmd = [aligner_bin, "mem", "-t", str(threads), str(ref_index), str(fq1), str(fq2)]
+        if rg:
+            cmd.extend(["-R", rg])
+        if extra_args:
+            cmd.extend(map(str, extra_args))
+    elif aligner == "bowtie2":
+        aligner_bin = _resolve_tool("bowtie2")
+        cmd = [
+            aligner_bin,
+            "-x",
+            str(ref_index),
+            "-1",
+            str(fq1),
+            "-2",
+            str(fq2),
+            "-p",
+            str(threads),
+        ]
+        if extra_args:
+            cmd.extend(map(str, extra_args))
     else:
         raise ValueError("aligner must be 'bwa-mem2' or 'bowtie2'")
 
+    _run_pipe(
+        [
+            cmd,
+            [samtools, "view", "-b", "-"],
+            [samtools, "sort", "-n", "-@", str(threads), "-o", name_sorted, "-"],
+        ]
+    )
+
+    _run([samtools, "fixmate", "-m", name_sorted, fixmate_bam])
+    _run([samtools, "sort", "-@", str(threads), "-o", coord_sorted, fixmate_bam])
+
+    md_cmd = [samtools, "markdup", "-@", str(threads)]
+    if remove_duplicates:
+        md_cmd.append("-r")
+    md_cmd += [coord_sorted, str(out_bam)]
+    _run(md_cmd)
+
+    for f in (name_sorted, fixmate_bam, coord_sorted):
+        try:
+            os.remove(f)
+        except OSError:
+            pass
+    return str(out_bam)
+
 
 def filter_bam(
-    in_bam: str,
-    out_bam: str,
+    in_bam: Union[str, Path],
+    out_bam: Union[str, Path],
     *,
     mapq: int = 30,
     proper_pair: bool = True,
     drop_secondary_supp: bool = True,
+    drop_duplicates: bool = False,
+    drop_qcfail: bool = False,
+    drop_unmapped: bool = True,
+    drop_mate_unmapped: bool = True,
+    drop_chroms: Optional[Sequence[str]] = None,
     threads: int = 4,
 ) -> str:
-    _which_or_raise("samtools")
-    flags_pos = ["-f", "0x2"] if proper_pair else []
-    flags_neg = ["-F", "0x904"] if drop_secondary_supp else ["-F", "0x400"]
-    cmd = [
-        "samtools",
-        "view",
-        "-b",
-        *flags_pos,
-        *flags_neg,
-        "-q",
-        str(mapq),
-        in_bam,
-    ]
-    sort_cmd = ["samtools", "sort", "-@", str(threads), "-o", out_bam, "-"]
+    """
+    Filter a BAM with common ATAC/CUT&RUN defaults and re-sort the result.
+    """
+    samtools = _resolve_tool("samtools")
+    out_bam = str(out_bam)
+
+    include_flag = 0x2 if proper_pair else 0
+    exclude_flag = 0
+    if drop_secondary_supp:
+        exclude_flag |= 0x100 | 0x800
+    if drop_duplicates:
+        exclude_flag |= 0x400
+    if drop_qcfail:
+        exclude_flag |= 0x200
+    if drop_unmapped:
+        exclude_flag |= 0x4
+    if drop_mate_unmapped:
+        exclude_flag |= 0x8
+
+    if not drop_chroms:
+        cmd = [samtools, "view", "-b"]
+        if include_flag:
+            cmd += ["-f", hex(include_flag)]
+        if exclude_flag:
+            cmd += ["-F", hex(exclude_flag)]
+        cmd += ["-q", str(mapq), str(in_bam)]
+        sort_cmd = [samtools, "sort", "-@", str(threads), "-o", out_bam, "-"]
+        p1 = subprocess.Popen(cmd, stdout=subprocess.PIPE)
+        p2 = subprocess.run(sort_cmd, stdin=p1.stdout)
+        if p1.stdout is not None:
+            p1.stdout.close()
+        p1.wait()
+        if p1.returncode != 0 or p2.returncode != 0:
+            raise CommandError("BAM filtering pipeline failed.")
+        return out_bam
+
+    drop_chroms = set(drop_chroms)
+    cmd = [samtools, "view", "-h"]
+    if include_flag:
+        cmd += ["-f", hex(include_flag)]
+    if exclude_flag:
+        cmd += ["-F", hex(exclude_flag)]
+    cmd += ["-q", str(mapq), str(in_bam)]
+
+    awk_script = (
+        'BEGIN{OFS="\\t"} '
+        '/^@/ {print; next} '
+        "{if (!($3 in drop)) print}"
+    )
+    awk_cmd = ["awk", "-v", "drop=" + " ".join(sorted(drop_chroms))]
+    awk_cmd.append(
+        'BEGIN{n=split(drop, a, " "); for(i=1;i<=n;i++) bad[a[i]]=1} '
+        '/^@/ {print; next} '
+        '{if (!($3 in bad)) print}'
+    )
+
     p1 = subprocess.Popen(cmd, stdout=subprocess.PIPE)
-    p2 = subprocess.run(sort_cmd, stdin=p1.stdout)
-    if p2.returncode != 0:
-        raise CommandError("BAM filtering pipeline failed.")
+    p2 = subprocess.Popen(awk_cmd, stdin=p1.stdout, stdout=subprocess.PIPE)
+    p3 = subprocess.run([samtools, "view", "-b", "-"], stdin=p2.stdout, stdout=subprocess.PIPE)
+    p4 = subprocess.run([samtools, "sort", "-@", str(threads), "-o", out_bam, "-"], input=p3.stdout)
+    if p1.stdout is not None:
+        p1.stdout.close()
+    if p2.stdout is not None:
+        p2.stdout.close()
+    p1.wait()
+    p2.wait()
+    if any(p.returncode != 0 for p in (p1, p2, p3, p4)):
+        raise CommandError("BAM filtering pipeline with chromosome exclusion failed.")
     return out_bam
 
 
 def bam_to_frags(
-    bam: str,
+    bam: Union[str, Path],
     sample_name: str,
-    out_frags_gz: str,
+    out_frags_gz: Union[str, Path],
     *,
-    bedtools_path: str = "bedtools",
+    bedtools_path: Optional[str] = None,
 ) -> str:
-    """BAM → 4-col fragments (chr, start, end, barcode=sample_name). Output gz/bgzip.
-    Notes:
-    - bedtools bamtobed -bedpe 需要 name-sorted BAM 才能保证配对相邻；此处会先做 name-sort。
-    - 抑制 bedtools 关于非相邻配对的警告输出。
-    """
-    _which_or_raise(bedtools_path)
-    _which_or_raise("samtools")
+    """BAM -> 4-col fragments (chr, start, end, barcode=sample_name)."""
+    bedtools = _resolve_tool("bedtools", explicit=bedtools_path)
+    samtools = _resolve_tool("samtools")
     use_bgzip = shutil.which("bgzip") is not None
 
     bam = str(bam)
     out_frags_gz = str(out_frags_gz)
-    tmp_name_bam = str(Path(out_frags_gz).with_suffix("").with_suffix("") ) + ".namesort.bam"
-    bedpe = str(Path(out_frags_gz).with_suffix("").with_suffix("") ) + ".bedpe"
+    stem = str(Path(out_frags_gz).with_suffix("").with_suffix(""))
+    tmp_name_bam = stem + ".namesort.bam"
+    bedpe = stem + ".bedpe"
 
-    print("[1/3] Name-sorting BAM for bedpe ...")
-    _run(["samtools", "sort", "-n", "-@", str(os.cpu_count() or 2), "-o", tmp_name_bam, bam])
-
-    print("[2/3] Converting BAM→BEDPE (suppressing bedtools warnings) ...")
+    _run([samtools, "sort", "-n", "-@", str(os.cpu_count() or 2), "-o", tmp_name_bam, bam])
     with open(bedpe, "w") as fh:
-        # capture stderr to suppress warnings; rely on return code for errors
-        p = subprocess.run([bedtools_path, "bamtobed", "-bedpe", "-i", tmp_name_bam], stdout=fh, stderr=subprocess.PIPE, text=True)
-        if p.returncode != 0:
-            raise CommandError(f"bedtools bamtobed failed.\nstderr:\n{p.stderr}")
+        proc = subprocess.run(
+            [bedtools, "bamtobed", "-bedpe", "-i", tmp_name_bam],
+            stdout=fh,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        if proc.returncode != 0:
+            raise CommandError(f"bedtools bamtobed failed.\nstderr:\n{proc.stderr}")
 
     awk_script = (
-        f"BEGIN{{OFS=\"\\t\"}} $1==$4 {{s=($2<$5?$2:$5); e=($3>$6?$3:$6); if(e>s) print $1,s,e,\"{sample_name}\"}}"
+        f'BEGIN{{OFS="\\t"}} $1==$4 {{s=($2<$5?$2:$5); e=($3>$6?$3:$6); '
+        f'if(e>s) print $1,s,e,"{sample_name}"}}'
     )
-    if use_bgzip:
-        with open(out_frags_gz, "wb") as fout:
-            pawk = subprocess.Popen(["awk", awk_script, bedpe], stdout=subprocess.PIPE)
-            pgz = subprocess.Popen(["bgzip", "-c"], stdin=pawk.stdout, stdout=fout)
-            pgz.communicate()
-            if pgz.returncode != 0:
-                raise CommandError("bgzip compression failed.")
-    else:
-        _which_or_raise("gzip")
-        with open(out_frags_gz, "wb") as fout:
-            pawk = subprocess.Popen(["awk", awk_script, bedpe], stdout=subprocess.PIPE)
-            pgz = subprocess.Popen(["gzip", "-c"], stdin=pawk.stdout, stdout=fout)
-            pgz.communicate()
-            if pgz.returncode != 0:
-                raise CommandError("gzip compression failed.")
-    # cleanup temp files
+    compressor = ["bgzip", "-c"] if use_bgzip else [_resolve_tool("gzip"), "-c"]
+    with open(out_frags_gz, "wb") as fout:
+        pawk = subprocess.Popen(["awk", awk_script, bedpe], stdout=subprocess.PIPE)
+        pgz = subprocess.Popen(compressor, stdin=pawk.stdout, stdout=fout)
+        if pawk.stdout is not None:
+            pawk.stdout.close()
+        pgz.communicate()
+        pawk.wait()
+        if pawk.returncode != 0 or pgz.returncode != 0:
+            raise CommandError("Fragment compression pipeline failed.")
+
     for f in (tmp_name_bam, bedpe):
         try:
             os.remove(f)
@@ -272,57 +552,398 @@ def bam_to_frags(
     return out_frags_gz
 
 
-def bulk_fastq_to_frag(
-    fq1: str,
-    fq2: str,
+def bulk_fastq_to_bam(
+    fq1: Union[str, Path],
+    fq2: Union[str, Path],
     sample_name: str,
-    ref_index: str,
-    out_dir: str,
+    ref_index: Union[str, Path],
+    out_dir: Union[str, Path],
     *,
     aligner: str = "bwa-mem2",
     threads: int = 8,
     mapq: int = 30,
-    keep_intermediates: bool = False,
+    trim: bool = False,
+    trim_method: str = "fastp",
+    trim_extra_args: Optional[Sequence[str]] = None,
+    keep_trimmed_fastq: bool = False,
+    remove_duplicates: bool = True,
+    proper_pair: bool = True,
+    drop_secondary_supp: bool = True,
+    drop_duplicates: bool = False,
+    drop_qcfail: bool = False,
+    drop_unmapped: bool = True,
+    drop_mate_unmapped: bool = True,
+    drop_chroms: Optional[Sequence[str]] = None,
     rg: Optional[str] = None,
-    extra_align_args: Optional[List[str]] = None,
-) -> Tuple[str, str]:
+    extra_align_args: Optional[Sequence[str]] = None,
+    keep_intermediates: bool = False,
+    index: bool = True,
+) -> str:
     """
-    FASTQ (R1/R2) -> aligned, deduped, filtered BAM -> fragments.tsv.gz
+    FASTQ -> aligned BAM -> filtered BAM.
+    """
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-    Returns (filtered_bam, frags_gz)
-    Requirements in PATH: bwa-mem2 or bowtie2, samtools, bedtools, bgzip/gzip
-    """
-    out_dir_p = Path(out_dir)
-    out_dir_p.mkdir(parents=True, exist_ok=True)
-    bam_path = str(out_dir_p / f"{sample_name}.bam")
-    filt_bam = str(out_dir_p / f"{sample_name}.filtered.bam")
-    frags_gz = str(out_dir_p / f"{sample_name}.frags.tsv.gz")
+    fq1_use = str(fq1)
+    fq2_use = str(fq2)
+    if trim:
+        trim_dir = out_dir / "trim"
+        fq1_use, fq2_use = trim_fastq_pair(
+            fq1_use,
+            fq2_use,
+            trim_dir,
+            sample_name=sample_name,
+            method=trim_method,
+            threads=threads,
+            extra_args=trim_extra_args,
+        )
+
+    raw_bam = str(out_dir / f"{sample_name}.bam")
+    filt_bam = str(out_dir / f"{sample_name}.filtered.bam")
 
     align_fastq_to_bam(
-        fq1,
-        fq2,
-        bam_path,
+        fq1_use,
+        fq2_use,
+        raw_bam,
         aligner=aligner,
-        ref_index=ref_index,
+        ref_index=str(ref_index),
         threads=threads,
         rg=rg,
         extra_args=extra_align_args,
+        remove_duplicates=remove_duplicates,
     )
-    filter_bam(bam_path, filt_bam, mapq=mapq, proper_pair=True, drop_secondary_supp=True, threads=threads)
-    bam_to_frags(filt_bam, sample_name, frags_gz)
+    filter_bam(
+        raw_bam,
+        filt_bam,
+        mapq=mapq,
+        proper_pair=proper_pair,
+        drop_secondary_supp=drop_secondary_supp,
+        drop_duplicates=drop_duplicates,
+        drop_qcfail=drop_qcfail,
+        drop_unmapped=drop_unmapped,
+        drop_mate_unmapped=drop_mate_unmapped,
+        drop_chroms=drop_chroms,
+        threads=threads,
+    )
+    if index:
+        index_bam(filt_bam, threads=threads)
 
     if not keep_intermediates:
-        for f in (bam_path,):
+        for f in (raw_bam,):
             try:
                 os.remove(f)
             except OSError:
                 pass
+    if trim and not keep_trimmed_fastq:
+        for f in (fq1_use, fq2_use):
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+    return filt_bam
+
+
+def bulk_fastq_to_frag(
+    fq1: Union[str, Path],
+    fq2: Union[str, Path],
+    sample_name: str,
+    ref_index: Union[str, Path],
+    out_dir: Union[str, Path],
+    *,
+    aligner: str = "bwa-mem2",
+    threads: int = 8,
+    mapq: int = 30,
+    trim: bool = False,
+    trim_method: str = "fastp",
+    trim_extra_args: Optional[Sequence[str]] = None,
+    keep_trimmed_fastq: bool = False,
+    keep_intermediates: bool = False,
+    rg: Optional[str] = None,
+    extra_align_args: Optional[Sequence[str]] = None,
+) -> Tuple[str, str]:
+    """
+    FASTQ -> filtered BAM -> fragments.tsv.gz
+    """
+    out_dir = Path(out_dir)
+    filt_bam = bulk_fastq_to_bam(
+        fq1,
+        fq2,
+        sample_name,
+        ref_index,
+        out_dir,
+        aligner=aligner,
+        threads=threads,
+        mapq=mapq,
+        trim=trim,
+        trim_method=trim_method,
+        trim_extra_args=trim_extra_args,
+        keep_trimmed_fastq=keep_trimmed_fastq,
+        remove_duplicates=True,
+        keep_intermediates=keep_intermediates,
+        rg=rg,
+        extra_align_args=extra_align_args,
+    )
+    frags_gz = str(Path(out_dir) / f"{sample_name}.frags.tsv.gz")
+    bam_to_frags(filt_bam, sample_name, frags_gz)
     return filt_bam, frags_gz
 
 
-# -----------------------
-# Helpers: download genome/FASTQs via epione datasets
-# -----------------------
+def shift_atac_bam(
+    in_bam: Union[str, Path],
+    out_bam: Union[str, Path],
+    *,
+    threads: int = 8,
+    index: bool = True,
+) -> str:
+    """
+    Apply the standard ATAC Tn5 shift (+4 on forward reads, -5 on reverse reads).
+    """
+    out_bam = Path(out_bam)
+    out_bam.parent.mkdir(parents=True, exist_ok=True)
+
+    # Process pairs in query-name order so mate coordinates and template
+    # lengths stay consistent after shifting.
+    import pysam
+
+    name_sorted = out_bam.with_suffix(".qname.tmp.bam")
+    tmp_bam = out_bam.with_suffix(".shift.unsorted.bam")
+    pysam.sort("-n", "-@", str(threads), "-o", str(name_sorted), str(in_bam))
+
+    def _shift_one(read):
+        if read.is_unmapped:
+            return read
+        shifted = read.__copy__()
+        offset = 4 if not shifted.is_reverse else -5
+        shifted.reference_start = max(0, shifted.reference_start + offset)
+        return shifted
+
+    def _sync_pair(read1, read2):
+        if (
+            read1.is_unmapped or read2.is_unmapped
+            or read1.reference_id != read2.reference_id
+        ):
+            return
+        read1.next_reference_id = read2.reference_id
+        read2.next_reference_id = read1.reference_id
+        read1.next_reference_start = read2.reference_start
+        read2.next_reference_start = read1.reference_start
+
+        left, right = (read1, read2) if read1.reference_start <= read2.reference_start else (read2, read1)
+        left_end = left.reference_end or left.reference_start
+        right_end = right.reference_end or right.reference_start
+        template_len = max(left_end, right_end) - min(left.reference_start, right.reference_start)
+        if template_len < 0:
+            template_len = 0
+
+        if left is read1:
+            read1.template_length = template_len
+            read2.template_length = -template_len
+        else:
+            read2.template_length = template_len
+            read1.template_length = -template_len
+
+    with pysam.AlignmentFile(str(name_sorted), "rb") as src, pysam.AlignmentFile(str(tmp_bam), "wb", template=src) as dst:
+        pending = {}
+        for read in src.fetch(until_eof=True):
+            shifted = _shift_one(read)
+            qname = shifted.query_name
+            mate = pending.pop(qname, None)
+            if mate is None:
+                pending[qname] = shifted
+                continue
+            _sync_pair(mate, shifted)
+            dst.write(mate)
+            dst.write(shifted)
+
+        for leftover in pending.values():
+            dst.write(leftover)
+
+    pysam.sort("-@", str(threads), "-o", str(out_bam), str(tmp_bam))
+    try:
+        os.remove(tmp_bam)
+    except OSError:
+        pass
+    try:
+        os.remove(name_sorted)
+    except OSError:
+        pass
+
+    if index:
+        index_bam(out_bam, threads=threads)
+    return str(out_bam)
+
+
+def bam_to_bigwig(
+    bam: Union[str, Path],
+    out_bw: Union[str, Path],
+    *,
+    bin_size: int = 10,
+    normalize_using: Optional[str] = None,
+    effective_genome_size: Optional[int] = None,
+    scale_factor: Optional[float] = None,
+    extend_reads: Optional[int] = None,
+    center_reads: bool = False,
+    min_mapping_quality: Optional[int] = None,
+    ignore_for_normalization: Optional[Sequence[str]] = None,
+    threads: int = 8,
+) -> str:
+    out_bw = Path(out_bw)
+    out_bw.parent.mkdir(parents=True, exist_ok=True)
+
+    # Write a fixed-bin bigWig from per-base alignment coverage.
+    import numpy as np
+    import pyBigWig
+    import pysam
+
+    ignore_for_normalization = set(ignore_for_normalization or [])
+    mapped_reads = 0
+    chrom_sizes: Dict[str, int] = {}
+    with pysam.AlignmentFile(str(bam), "rb") as bf:
+        for sq in bf.header.get("SQ", []):
+            chrom_sizes[sq["SN"]] = int(sq["LN"])
+        for read in bf.fetch(until_eof=True):
+            if read.is_unmapped:
+                continue
+            if read.is_secondary or read.is_supplementary:
+                continue
+            if read.is_qcfail or read.is_duplicate:
+                continue
+            if min_mapping_quality is not None and read.mapping_quality < min_mapping_quality:
+                continue
+            if read.reference_name in ignore_for_normalization:
+                continue
+            mapped_reads += 1
+
+    if mapped_reads == 0:
+        raise CommandError("No mapped reads remained after filtering; cannot write bigWig.")
+
+    bw = pyBigWig.open(str(out_bw), "w")
+    bw.addHeader(list(chrom_sizes.items()))
+
+    with pysam.AlignmentFile(str(bam), "rb") as bf:
+        for chrom, length in chrom_sizes.items():
+            cov = np.zeros(length, dtype=np.float32)
+            for read in bf.fetch(chrom):
+                if read.is_unmapped:
+                    continue
+                if read.is_secondary or read.is_supplementary:
+                    continue
+                if read.is_qcfail or read.is_duplicate:
+                    continue
+                if min_mapping_quality is not None and read.mapping_quality < min_mapping_quality:
+                    continue
+
+                blocks = read.get_blocks()
+                if not blocks:
+                    continue
+
+                if center_reads:
+                    mid = (blocks[0][0] + blocks[-1][1]) // 2
+                    s = max(0, mid)
+                    e = min(length, mid + 1)
+                    cov[s:e] += 1.0
+                    continue
+
+                if extend_reads is not None and len(blocks) == 1:
+                    s, e = blocks[0]
+                    if read.is_reverse:
+                        s = max(0, e - int(extend_reads))
+                    else:
+                        e = min(length, s + int(extend_reads))
+                    cov[s:e] += 1.0
+                    continue
+
+                for s, e in blocks:
+                    s = max(0, s)
+                    e = min(length, e)
+                    if e > s:
+                        cov[s:e] += 1.0
+
+            starts = []
+            ends = []
+            values = []
+            for s in range(0, length, int(bin_size)):
+                e = min(length, s + int(bin_size))
+                val = float(cov[s:e].mean())
+                if normalize_using:
+                    norm = str(normalize_using).upper()
+                    if norm == "CPM":
+                        val = val * 1e6 / mapped_reads
+                    elif norm == "RPKM":
+                        val = val * 1e9 / (mapped_reads * max(1, (e - s)))
+                    elif norm == "BPM":
+                        val = val * 1e6 / mapped_reads
+                if scale_factor is not None:
+                    val *= float(scale_factor)
+                starts.append(s)
+                ends.append(e)
+                values.append(val)
+            bw.addEntries([chrom] * len(starts), starts, ends=ends, values=values)
+
+    bw.close()
+    return str(out_bw)
+
+
+def call_peaks_macs2(
+    bam: Union[str, Path],
+    out_dir: Union[str, Path],
+    name: str,
+    *,
+    control_bam: Optional[Union[str, Path]] = None,
+    genome_size: str = "hs",
+    format: str = "BAMPE",
+    qvalue: float = 0.01,
+    keep_dup: str = "all",
+    call_summits: bool = True,
+    nomodel: bool = True,
+    shift: Optional[int] = None,
+    extsize: Optional[int] = None,
+    extra_args: Optional[Sequence[str]] = None,
+) -> Dict[str, str]:
+    macs2 = _resolve_tool("macs2")
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    cmd = [
+        macs2,
+        "callpeak",
+        "-t",
+        str(bam),
+        "-f",
+        format,
+        "-g",
+        genome_size,
+        "--keep-dup",
+        keep_dup,
+        "-q",
+        str(qvalue),
+        "-n",
+        name,
+        "--outdir",
+        str(out_dir),
+    ]
+    if control_bam is not None:
+        cmd += ["-c", str(control_bam)]
+    if nomodel:
+        cmd.append("--nomodel")
+    if call_summits:
+        cmd.append("--call-summits")
+    if shift is not None:
+        cmd += ["--shift", str(shift)]
+    if extsize is not None:
+        cmd += ["--extsize", str(extsize)]
+    if extra_args:
+        cmd += list(map(str, extra_args))
+    _run(cmd)
+
+    prefix = out_dir / name
+    return {
+        "narrowPeak": str(prefix.with_name(prefix.name + "_peaks.narrowPeak")),
+        "summits": str(prefix.with_name(prefix.name + "_summits.bed")),
+        "xls": str(prefix.with_name(prefix.name + "_peaks.xls")),
+    }
+
 
 def _epione_datasets():
     try:
@@ -330,19 +951,6 @@ def _epione_datasets():
     except Exception as e:
         raise RuntimeError("epione.utils._genome.register_datasets not available") from e
     return register_datasets()
-
-
-def ensure_fasta_unzipped(fa_gz: Path) -> Path:
-    fa_gz = Path(fa_gz)
-    if fa_gz.suffix == ".gz":
-        out = fa_gz.with_suffix("")
-    else:
-        return fa_gz
-    if out.exists():
-        return out
-    with gzip.open(fa_gz, "rb") as fin, open(out, "wb") as fout:
-        shutil.copyfileobj(fin, fout)
-    return out
 
 
 def fetch_genome_fasta(genome: str) -> Path:
@@ -359,7 +967,7 @@ def fetch_genome_fasta(genome: str) -> Path:
         "GRCm39": "gencode_vM30_GRCm39.fa.gz",
     }
     if genome not in key_map:
-        raise ValueError("Unsupported genome: %s" % genome)
+        raise ValueError(f"Unsupported genome: {genome}")
     fa_gz = Path(ds.fetch(key_map[genome]))
     return ensure_fasta_unzipped(fa_gz)
 
@@ -369,80 +977,72 @@ def list_dataset_fastqs_tar() -> List[str]:
     ds = _epione_datasets()
     tar_path = Path(ds.fetch("atac_pbmc_500_fastqs.tar"))
     with tarfile.open(tar_path, "r") as tf:
-        return [m.name for m in tf.getmembers() if m.isfile() and m.name.endswith((".fastq.gz", ".fq.gz"))]
+        return [
+            m.name
+            for m in tf.getmembers()
+            if m.isfile() and m.name.endswith((".fastq.gz", ".fq.gz"))
+        ]
 
 
-def extract_fastqs_from_tar(members: List[str], dest: Union[str, Path]) -> List[Path]:
-    """Extract only selected FASTQ members from the demo tar to dest, return paths."""
+def extract_fastqs_from_tar(members: Sequence[str], dest: Union[str, Path]) -> List[Path]:
+    """Extract only selected FASTQ members from the demo tar to dest."""
     ds = _epione_datasets()
     tar_path = Path(ds.fetch("atac_pbmc_500_fastqs.tar"))
     dest = Path(dest)
     dest.mkdir(parents=True, exist_ok=True)
+
+    out_paths: List[Path] = []
     with tarfile.open(tar_path, "r") as tf:
-        def is_within_directory(directory, target):
-            abs_directory = os.path.abspath(directory)
-            abs_target = os.path.abspath(target)
-            prefix = os.path.commonprefix([abs_directory, abs_target])
-            return prefix == abs_directory
-        selected = [m for m in tf.getmembers() if m.name in members]
-        for m in selected:
-            target = dest / Path(m.name).name
-            # security check: extract to a temp then move
-            tf.extract(m, dest)
-            # If tar contains subdirs, move file up
-            extracted = dest / m.name
-            if extracted.is_file():
-                if extracted != target:
-                    extracted.rename(target)
-        return [dest / Path(m).name for m in members]
+        member_map = {m.name: m for m in tf.getmembers()}
+        for name in members:
+            if name not in member_map:
+                raise FileNotFoundError(f"{name} not found in atac_pbmc_500_fastqs.tar")
+            member = member_map[name]
+            extracted = tf.extractfile(member)
+            if extracted is None:
+                raise CommandError(f"Could not extract {name} from demo tar.")
+            out = dest / Path(name).name
+            with extracted, open(out, "wb") as fout:
+                shutil.copyfileobj(extracted, fout)
+            out_paths.append(out)
+    return out_paths
 
 
-def fetch_dataset_fastq_pairs(out_dir: Union[str, Path], *, limit_pairs: int = 1) -> List[Tuple[Path, Path]]:
+def fetch_dataset_fastq_pairs(
+    out_dir: Union[str, Path],
+    *,
+    limit_pairs: int = 1,
+) -> List[Tuple[Path, Path]]:
     """
-    Download small demo FASTQs (10x PBMC 500) via epione datasets and return R1/R2 pairs.
+    Download small demo FASTQs (10x PBMC 500) via epione datasets.
     """
-    ds = _epione_datasets()
-    tar_path = Path(ds.fetch("atac_pbmc_500_fastqs.tar"))
     out_dir = Path(out_dir)
     fq_dir = out_dir / "fastqs"
     fq_dir.mkdir(parents=True, exist_ok=True)
-    # extract
-    # list members and extract minimal needed
+
     members = list_dataset_fastqs_tar()
-    r1_names = sorted([m for m in members if "R1" in m and m.endswith((".fastq.gz", ".fq.gz"))])
-    r2_names = sorted([m for m in members if "R2" in m and m.endswith((".fastq.gz", ".fq.gz"))])
+    r1_names = sorted([m for m in members if "R1" in Path(m).name and m.endswith((".fastq.gz", ".fq.gz"))])
+    r2_names = sorted([m for m in members if "R2" in Path(m).name and m.endswith((".fastq.gz", ".fq.gz"))])
+
+    def _key(name: str) -> str:
+        return Path(name).name.replace("R1", "").replace("R2", "")
+
     pairs_names: List[Tuple[str, str]] = []
-    def key_name(n: str) -> str:
-        return n.replace("R1", "").replace("R2", "")
-    used = set()
-    for r1 in r1_names:
-        k = key_name(r1)
-        match = next((r2 for r2 in r2_names if key_name(r2) == k and r2 not in used), None)
-        if match:
-            pairs_names.append((r1, match))
-            used.add(match)
-    if not pairs_names:
-        raise RuntimeError("No FASTQ pairs detected in demo tar")
-    pairs_names = pairs_names[:limit_pairs]
-    flat_members = [n for tup in pairs_names for n in tup]
-    extracted = extract_fastqs_from_tar(flat_members, fq_dir)
-    r1s = sorted([p for p in extracted if "R1" in p.name])
-    r2s = sorted([p for p in extracted if "R2" in p.name])
-    pairs: List[Tuple[Path, Path]] = []
-    # naive pairing by filename stem up to R1/R2
-    def key(p: Path):
-        s = p.name.replace("R1", "").replace("R2", "")
-        return s
     used_r2 = set()
-    for r1 in r1s:
-        k = key(r1)
-        match = next((r2 for r2 in r2s if key(r2) == k and r2 not in used_r2), None)
+    for r1 in r1_names:
+        key = _key(r1)
+        match = next((r2 for r2 in r2_names if _key(r2) == key and r2 not in used_r2), None)
         if match is not None:
-            pairs.append((r1, match))
+            pairs_names.append((r1, match))
             used_r2.add(match)
-    if not pairs:
-        raise RuntimeError("No R1/R2 FASTQ pairs extracted")
-    return pairs
+    if not pairs_names:
+        raise RuntimeError("No FASTQ pairs detected in demo tar.")
+
+    pairs_names = pairs_names[:limit_pairs]
+    flat_members = [m for pair in pairs_names for m in pair]
+    extracted = extract_fastqs_from_tar(flat_members, fq_dir)
+    extracted_map = {p.name: p for p in extracted}
+    return [(extracted_map[Path(r1).name], extracted_map[Path(r2).name]) for r1, r2 in pairs_names]
 
 
 def bulk_from_genome_demo(
@@ -455,18 +1055,51 @@ def bulk_from_genome_demo(
     keep_intermediates: bool = False,
 ) -> Tuple[Path, Path]:
     """
-    End-to-end: download demo FASTQs and genome FASTA via epione datasets, build index,
-    align the first pair to produce filtered BAM and fragments.
-    Returns (filtered_bam, frags_gz)
+    Download demo FASTQs and genome FASTA via epione datasets, then make BAM+frags.
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     fa = fetch_genome_fasta(genome)
     ref_index = ensure_aligner_index(aligner, fa)
-    pairs = download_demo_fastqs(out_dir)
+    pairs = fetch_dataset_fastq_pairs(out_dir, limit_pairs=1)
     fq1, fq2 = pairs[0]
-    sample_name = fq1.parent.name if fq1.parent != out_dir else fq1.stem.split("_")[0]
-    return bulk_fastq_to_frag(
-        str(fq1), str(fq2), sample_name, ref_index, str(out_dir),
-        aligner=aligner, threads=threads, mapq=mapq, keep_intermediates=keep_intermediates,
+    sample_name = fq1.name.split("_R1")[0].split("_1")[0]
+    bam, frags = bulk_fastq_to_frag(
+        str(fq1),
+        str(fq2),
+        sample_name,
+        ref_index,
+        str(out_dir),
+        aligner=aligner,
+        threads=threads,
+        mapq=mapq,
+        keep_intermediates=keep_intermediates,
     )
+    return Path(bam), Path(frags)
+
+
+__all__ = [
+    "CommandError",
+    "ensure_fasta_unzipped",
+    "ensure_fasta_index",
+    "ensure_chrom_sizes",
+    "ensure_aligner_index",
+    "prepare_reference",
+    "trim_fastq_pair",
+    "sort_bam",
+    "index_bam",
+    "merge_bams",
+    "align_fastq_to_bam",
+    "filter_bam",
+    "bam_to_frags",
+    "bulk_fastq_to_bam",
+    "bulk_fastq_to_frag",
+    "shift_atac_bam",
+    "bam_to_bigwig",
+    "call_peaks_macs2",
+    "fetch_genome_fasta",
+    "list_dataset_fastqs_tar",
+    "extract_fastqs_from_tar",
+    "fetch_dataset_fastq_pairs",
+    "bulk_from_genome_demo",
+]
