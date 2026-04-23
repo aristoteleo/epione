@@ -1,4 +1,6 @@
 from ._metric import frag_size_distr, tss_enrichment,fragment_histogram,plot_joint
+from ._distance import cumulative_distance
+from ._motif import homer_motif_table
 from ._base import *
 
 from ._embedding import (
@@ -26,6 +28,8 @@ def plot_multi_scale_footprint_region(*args, **kwargs):
 
 __all__ = [
     "frag_size_distr", "tss_enrichment", "fragment_histogram", "plot_joint",
+    "cumulative_distance",
+    "homer_motif_table",
     "embedding", "umap", "tsne", "pca", "diffmap", "draw_graph",
     "plot_peak2gene",
     "plot_footprints",
