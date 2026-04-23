@@ -1841,8 +1841,8 @@ def gene_expression_from_bigwigs(
     :func:`epione.utils.get_gene_annotation`) plus a mapping ``{sample_name:
     bigwig_path}`` and returns a DataFrame indexed by gene_name whose
     columns are per-sample mean-over-gene-body bigwig values. When the
-    bigwigs are already library-normalised (bamCoverage ``--normalizeUsing
-    RPKM`` or ``BPM``, which the common pre-processed deposits use), the
+    bigwigs are already library-normalised (for example using ``RPKM`` or
+    ``BPM`` scaling, which the common pre-processed deposits use), the
     mean is an approximation of gene-level FPKM / CPM.
 
     Arguments:

@@ -1,7 +1,7 @@
 from ._genome import Genome, register_datasets
 from .genome import GRCh37, GRCh38, hg19, hg38
 
-from ._read import read_ATAC_10x, read_gtf, read_features, get_gene_annotation
+from ._read import read_ATAC_10x, read_gtf, read_features, get_gene_annotation, convert_gff_to_gtf
 from ._io import save, load, cached
 from ._findgenes import find_genes, Annotation
 
@@ -27,6 +27,7 @@ __all__ = [
     'register_datasets',
     'read_ATAC_10x',
     'read_gtf',
+    'convert_gff_to_gtf',
     'read_features',
     'get_gene_annotation',
     'save',

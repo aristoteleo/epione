@@ -1,4 +1,4 @@
-"""Env / tool-resolution helpers for the epione bulk pipeline.
+"""Env / tool resolution helpers for epione.align.
 
 Jupyter kernels frequently inherit a ``PATH`` that doesn't include
 their own conda env's ``bin/`` (e.g. when the kernelspec was
@@ -67,6 +67,8 @@ def _install_tool(name: str) -> bool:
     installer = _available_installer()
     if installer is None:
         return False
+    # Hint has the form "mamba install -c bioconda -y <pkg>". Swap the
+    # leading binary for whichever installer we actually found.
     tokens = hint.split()
     tokens[0] = installer
     try:
@@ -114,8 +116,8 @@ def resolve_executable(
 
 
 def tool_path(name: str, *, auto_install: bool = False) -> str:
-    """Absolute path of a bulk-pipeline tool. ``auto_install=True``
-    runs the conda install hint for missing tools."""
+    """Thin wrapper around :func:`resolve_executable` — returns the
+    absolute path of the named tool."""
     return resolve_executable(name, auto_install=auto_install)
 
 
@@ -124,7 +126,10 @@ def check_tools(
     *,
     verbose: bool = True,
 ) -> Dict[str, Optional[str]]:
-    """Return ``{name: path_or_None}`` — handy one-line readiness check."""
+    """Return ``{name: path_or_None}`` — a one-line readiness check.
+
+    Set ``verbose=False`` to suppress the ✓ / ✗ stdout table.
+    """
     out: Dict[str, Optional[str]] = {}
     for n in names:
         try:
@@ -144,9 +149,9 @@ def build_env(
 ) -> Dict[str, str]:
     """Build a subprocess environment with the active env bin on PATH.
 
-    Companion of :func:`resolve_executable`: even if the resolver
-    hands back a full path for a tool, any nested subprocesses that
-    fork-exec bare names still need PATH to include
+    This is the companion of :func:`resolve_executable`: even if the
+    resolver hands back a full path for a tool, any nested
+    subprocesses that fork-exec bare names still need PATH to include
     ``<sys.executable>/../``. Prepend it unconditionally.
     """
     env = os.environ.copy()
@@ -168,7 +173,8 @@ def run_cmd(
     check: bool = True,
 ) -> None:
     """Thin wrapper over :func:`subprocess.run` that defaults ``env``
-    to :func:`build_env`."""
+    to :func:`build_env` — so every command sees the active env bin
+    on PATH without the caller having to remember it."""
     p = subprocess.run(
         list(cmd),
         env=env or build_env(),
@@ -184,17 +190,9 @@ def ensure_dir(path: Union[str, Path]) -> Path:
     return p
 
 
-# Common tool bundles for the paper's ATAC/ChIP/CUT&RUN/RNA pipelines
-ATAC_TOOLS = (
-    "bowtie2", "samtools", "bedtools", "macs2",
-    "tabix", "bgzip", "featureCounts",
-)
-RNA_TOOLS = (
-    "STAR", "samtools", "htseq-count", "featureCounts",
-)
-MOTIF_TOOLS = (
-    "findMotifsGenome.pl",
-)
+ATAC_TOOLS = ("bowtie2", "samtools", "bedtools", "macs2", "tabix", "bgzip", "featureCounts")
+RNA_TOOLS = ("STAR", "samtools", "htseq-count", "featureCounts")
+MOTIF_TOOLS = ("findMotifsGenome.pl",)
 
 
 __all__ = [
