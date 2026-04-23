@@ -20,9 +20,6 @@ bulk ATAC-seq data — no single-cell machinery required.
 """
 from __future__ import annotations
 
-import os
-import shutil
-import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Union
 
@@ -33,56 +30,30 @@ from ..utils import console
 from ..utils._genome import Genome
 
 
-def _run(cmd: list, **kw):
-    p = subprocess.run(cmd, **kw)
-    if p.returncode != 0:
-        raise RuntimeError(f"command failed: {' '.join(map(str, cmd))}")
-
-
 def _ensure_tabix(frags_gz: Path) -> Path:
-    """Ensure ``frags_gz`` has a tabix index next to it (bgzip + sort + tabix)."""
+    """Sort ``frags_gz`` by (chrom, start), re-bgzip it in place, and build
+    the tabix index — all via pysam, no shell dependencies."""
+    import pysam
     frags_gz = Path(frags_gz)
     tbi = frags_gz.with_suffix(frags_gz.suffix + ".tbi")
     if tbi.exists():
         return tbi
-    if shutil.which("tabix") is None:
-        raise RuntimeError(
-            "tabix not found in PATH — conda install -c bioconda tabix (or htslib)"
-        )
-    if shutil.which("bgzip") is None:
-        raise RuntimeError(
-            "bgzip not found in PATH — conda install -c bioconda tabix"
-        )
 
-    # tabix requires bgzip'd + sorted input. bam_to_frags already writes
-    # bgzip'd; but rows aren't guaranteed sorted after the BEDPE step.
-    # Sort + re-bgzip into a sibling file to be safe.
-    sorted_gz = frags_gz.with_suffix(".sorted.tsv.gz")
-    if not sorted_gz.exists():
-        console.level2(f"Sorting + re-bgzipping {frags_gz.name}")
-        tmp = frags_gz.with_suffix(".sorted.tsv")
-        with tmp.open("w") as fout:
-            _run(
-                ["bash", "-c",
-                 f"zcat '{frags_gz}' | sort -k1,1 -k2,2n"],
-                stdout=fout,
-            )
-        _run(["bgzip", "-f", str(tmp)])
-        # Replace original with sorted (keep original suffix expected by caller)
-        tmp_gz = tmp.with_suffix(".tsv.gz")
-        tmp_gz.replace(sorted_gz)
-    # tabix index
-    _run(["tabix", "-f", "-p", "bed", str(sorted_gz)])
-    # Point the original path at the sorted one (symlink) so caller's
-    # path still works, and also expose the .tbi at the original path.
-    if frags_gz.exists() or frags_gz.is_symlink():
-        frags_gz.unlink()
-    frags_gz.symlink_to(sorted_gz.name)
-    tbi_orig = frags_gz.with_suffix(frags_gz.suffix + ".tbi")
-    if tbi_orig.exists() or tbi_orig.is_symlink():
-        tbi_orig.unlink()
-    tbi_orig.symlink_to(sorted_gz.name + ".tbi")
-    return tbi_orig
+    console.level2(f"Sorting + indexing {frags_gz.name}")
+    # bam_to_frags writes bgzip but rows aren't guaranteed sorted after the
+    # BEDPE step. Read (pandas handles gzip/bgzip transparently), sort,
+    # rewrite via pysam.tabix_compress which produces valid bgzip blocks.
+    df = pd.read_csv(frags_gz, sep="\t", header=None)
+    df = df.sort_values([0, 1], kind="mergesort")
+    tmp = frags_gz.with_suffix(".sorted.tsv")
+    df.to_csv(tmp, sep="\t", header=False, index=False)
+    try:
+        pysam.tabix_compress(str(tmp), str(frags_gz), force=True)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
+    pysam.tabix_index(str(frags_gz), preset="bed", force=True)
+    return tbi
 
 
 def bam_to_fragments_bulk(
