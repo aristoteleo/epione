@@ -6,6 +6,12 @@ from ._io import save, load, cached
 from ._findgenes import find_genes, Annotation
 
 from ._call_peaks import merge_peaks
+from ._sampling import (
+    expression_matched_sample,
+    distance_to_nearest_peak,
+    filter_distal_peaks,
+    classify_peaks_by_overlap,
+)
 from ._compat import obs_to_pandas, var_to_pandas
 
 # TOBIAS-inspired footprint analysis functionality
