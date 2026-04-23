@@ -24,6 +24,7 @@ _warnings.filterwarnings(
 _warnings.filterwarnings("ignore", module=r"Bio\..*")
 
 from . import (
+    align,
     bulk,
     pp,
     single,
@@ -34,6 +35,7 @@ from . import (
 
 __all__ = [
     'bulk',
+    'align',
     'pp',
     'single',
     'pl',
