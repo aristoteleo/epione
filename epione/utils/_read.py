@@ -265,7 +265,14 @@ def read_gtf(
             score = parts[5] if len(parts) > 5 else '.'
             strand = parts[6] if len(parts) > 6 else '.'
             frame = parts[7] if len(parts) > 7 else '.'
-            attribute = parts[8] if (keep_attribute and len(parts) > 8) else ''
+            # The raw attribute string is always needed to extract
+            # ``required_attrs``. ``keep_attribute`` only controls
+            # whether it gets stored as its own column on the output
+            # DataFrame. (Previously this guard accidentally blanked
+            # ``attribute`` when ``keep_attribute=False``, so every
+            # req_attrs lookup returned None — see ``_bigwig.load_gtf``
+            # which passes ``keep_attribute=False``.)
+            attribute = parts[8] if len(parts) > 8 else ''
 
             data["seqname"].append(seqname)
             data["source"].append(source)
