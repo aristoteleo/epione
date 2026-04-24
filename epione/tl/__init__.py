@@ -99,6 +99,8 @@ from ._umap import umap
 
 from ._clusters import clusters
 
+from ._differential import differential_peaks
+
 
 __all__ = [
     "bindetect",
@@ -134,4 +136,5 @@ __all__ = [
     "compute_deviations",
     "umap",
     "clusters",
+    "differential_peaks",
 ]
