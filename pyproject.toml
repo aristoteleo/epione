@@ -86,6 +86,9 @@ test = [
     'patsy',
     'pydeseq2',
     'inmoose',
+    # pychromvar is lazy-imported by tl._background_peaks and exercised by
+    # the existing tests/test_chromvar.py tests.
+    'pychromvar',
 ]
 full = [
     'epione[diffexp,motif,footprint,upstream]',
