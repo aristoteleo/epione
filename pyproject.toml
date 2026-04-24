@@ -89,6 +89,10 @@ test = [
     # pychromvar is lazy-imported by tl._background_peaks and exercised by
     # the existing tests/test_chromvar.py tests.
     'pychromvar',
+    # igraph + leidenalg drive the community-detection path used by
+    # tl._coaccessibility (tests/test_coaccessibility.py).
+    'igraph',
+    'leidenalg',
 ]
 full = [
     'epione[diffexp,motif,footprint,upstream]',
