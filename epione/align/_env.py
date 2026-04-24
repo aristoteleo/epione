@@ -35,6 +35,10 @@ _INSTALL_HINTS = {
     "bgzip": "mamba install -c bioconda -y tabix",
     "findMotifsGenome.pl": "mamba install -c bioconda -y homer",
     "fastp": "mamba install -c bioconda -y fastp",
+    # Hi-C stack (epione.hic)
+    "pairtools": "pip install pairtools",
+    "cooler":    "pip install cooler",
+    "pairix":    "mamba install -c bioconda -y pairix",
 }
 
 
@@ -193,6 +197,7 @@ def ensure_dir(path: Union[str, Path]) -> Path:
 ATAC_TOOLS = ("bowtie2", "samtools", "bedtools", "macs2", "tabix", "bgzip", "featureCounts")
 RNA_TOOLS = ("STAR", "samtools", "htseq-count", "featureCounts")
 MOTIF_TOOLS = ("findMotifsGenome.pl",)
+HIC_TOOLS = ("bowtie2", "samtools", "pairtools", "cooler")
 
 
 __all__ = [
