@@ -29,18 +29,14 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: "pip"
 
-      - name: Install project
+      - name: Install project with test extras
         run: |
           python -m pip install --upgrade pip
-          # Core runtime deps + test deps. Heavy optional deps (snapatac2,
-          # MOODS-python, pyjaspar) are skipped here; the corresponding
-          # tests do pytest.importorskip to stay green without them.
-          pip install numpy scipy pandas scikit-learn matplotlib
-          pip install anndata muon loompy pyBigWig pyfaidx pysam
-          pip install pyranges colormaps patsy pydeseq2 inmoose
-          pip install pytest pytest-timeout
-          # Install epione itself without its heavy extras.
-          pip install -e . --no-deps
+          # Runtime deps live in [project.dependencies]; backends exercised
+          # by the test suite live in [project.optional-dependencies.test].
+          # Heavy extras (snapatac2 / torch / MOODS / pyjaspar) stay out —
+          # tests that need them use pytest.importorskip.
+          pip install -e '.[test]'
 
       - name: Import smoke test
         run: |
