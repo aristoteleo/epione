@@ -26,21 +26,76 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Bio-Informatics"
 ]
 dependencies = [
+    # Core scientific stack — imported at package load time.
+    'numpy',
+    'scipy',
+    'pandas',
+    'scikit-learn',
+    'matplotlib',
+    'seaborn',
+    'networkx',
+    'tqdm',
+    'requests',
+    'h5py',
+    'kneed',
+    'pooch',
+    # Genomics IO + data structures — imported at package load time.
+    'anndata',
+    'mudata',
     'muon>=0.1',
+    'scanpy',
     'pyBigWig>=0.3',
+    'pysam',
+    'pyranges',
+    'pyfaidx',
+    # Misc imported at load time.
+    'colormaps',
+    # Legacy single-cell paths.
     'loompy>=3.0.7',
-    'pyrange',
-    'snapatac2',
-    'colormaps'
 ]
 
 [project.optional-dependencies]
+# Extras pulled in only when the matching feature is actually called.
+# Kept out of `dependencies` so `pip install epione` stays lightweight.
+diffexp = [
+    'patsy',         # design matrices for edgepy backend
+    'pydeseq2',
+    'inmoose',
+]
+motif = [
+    'MOODS-python',
+    'pyjaspar',
+    'torch',         # find_motifs_genome GPU PWM scan
+    'mpmath',        # extreme-tail binomial
+    'logomaker',     # PWM logos in epione.pl.homer_motif_table
+]
+footprint = [
+    'MOODS-python',
+    'pyjaspar',
+    'deeptoolsintervals',
+    'pynndescent',
+]
+upstream = [
+    # Heavy single-cell preprocessing; pulls Rust deps.
+    'snapatac2',
+]
+test = [
+    'pytest>=7',
+    'pytest-timeout',
+    # Backends + extras exercised by test_tl_differential / test_pl_differential.
+    'patsy',
+    'pydeseq2',
+    'inmoose',
+    # pychromvar is lazy-imported by tl._background_peaks and exercised by
+    # the existing tests/test_chromvar.py tests.
+    'pychromvar',
+    # igraph + leidenalg drive the community-detection path used by
+    # tl._coaccessibility (tests/test_coaccessibility.py).
+    'igraph',
+    'leidenalg',
+]
 full = [
-  "MOODS-python",
-  "pysam",
-  "pynndescent",
-  "pyjaspar",
-  "deeptoolsintervals"
+    'epione[diffexp,motif,footprint,upstream]',
 ]
 
 
