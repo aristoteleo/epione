@@ -20,7 +20,7 @@ from .pipeline import bam_to_frags
 from ._env import (
     tool_path, check_tools, build_env, run_cmd, ensure_dir,
     resolve_executable,
-    ATAC_TOOLS, RNA_TOOLS, MOTIF_TOOLS,
+    ATAC_TOOLS, RNA_TOOLS, MOTIF_TOOLS, HIC_TOOLS,
 )
 
 __all__ = [
@@ -58,4 +58,5 @@ __all__ = [
     "ATAC_TOOLS",
     "RNA_TOOLS",
     "MOTIF_TOOLS",
+    "HIC_TOOLS",
 ]

@@ -79,6 +79,13 @@ upstream = [
     # Heavy single-cell preprocessing; pulls Rust deps.
     'snapatac2',
 ]
+hic = [
+    # Hi-C matrix IO + balancing + analysis (epione.hic).
+    'cooler>=0.10',
+    'cooltools>=0.7',
+    'pairtools>=1.0',
+    'bioframe',
+]
 test = [
     'pytest>=7',
     'pytest-timeout',
@@ -93,6 +100,11 @@ test = [
     # tl._coaccessibility (tests/test_coaccessibility.py).
     'igraph',
     'leidenalg',
+    # epione.hic stack (tests/test_hic.py).
+    'cooler>=0.10',
+    'cooltools>=0.7',
+    'pairtools>=1.0',
+    'bioframe',
 ]
 full = [
     'epione[diffexp,motif,footprint,upstream]',
