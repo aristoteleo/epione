@@ -1,3 +1,8 @@
+# Modality subpackages (v0.4 architecture). Most existing bulk-ATAC
+# tooling will migrate into ``bulk.atac`` in PR 2; ``bulk.hic`` is
+# already populated.
+from . import atac, hic
+
 # Optional: bigwig visualization utilities (require numpy/pyBigWig/etc.)
 from ._bigwig import bigwig, plot_matrix, plot_matrix_line, plotloc, gene_expression_from_bigwigs
 from ._getScorePerBigWigBin import *  # noqa: F401,F403

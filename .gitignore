@@ -9,7 +9,12 @@ aliyun_analytics_server/
 .ipynb_checkpoints
 __pycache__
 meta.yaml
+# Ignore ad-hoc 'data/' cache dirs in tutorial / notebook scratch areas;
+# the v0.4 package's reference-registry subpackage at epione/data/ is
+# explicitly tracked.
 data
+!epione/data/
+!epione/data/**
 genesets
 temp
 result_simba
