@@ -1,0 +1,110 @@
+"""Single-cell Hi-C input — index a directory of per-cell cools into an
+AnnData skeleton that downstream :func:`impute_cells` / :func:`embedding`
+fill in.
+
+We deliberately do NOT load contacts into memory here; per-cell ``.cool``
+files stay on disk and are streamed during imputation. ``adata.X`` is
+``None`` until :func:`embedding` flattens the imputed matrices.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Optional, Sequence, Union
+
+import numpy as np
+import pandas as pd
+
+
+def load_cool_collection(
+    cool_paths: Sequence[Union[str, Path]],
+    *,
+    cell_ids: Optional[Sequence[str]] = None,
+    obs: Optional[pd.DataFrame] = None,
+    chromosomes: Optional[Sequence[str]] = None,
+):
+    """Index a list of per-cell ``.cool`` files into a cell-level AnnData.
+
+    Arguments:
+        cool_paths: list of ``.cool`` paths, one per cell.
+        cell_ids: parallel list of cell barcodes / IDs. Default: file
+            stem (``Path(p).stem``), which works when filenames already
+            encode the barcode.
+        obs: optional cell metadata. Must align with ``cell_ids`` (same
+            length, in the same order). Joined onto ``adata.obs`` so
+            downstream plots can colour by cell-cycle / batch / cluster.
+        chromosomes: subset of chromosomes to keep for downstream
+            imputation/embedding. ``None`` (default) takes the
+            intersection of chromosomes across all cells (so a cell with
+            a missing chrom doesn't crash later steps).
+
+    Returns:
+        ``AnnData`` with shape ``(n_cells, 0)`` initially. ``obs`` carries
+        ``cool_path`` (str) and any user-supplied metadata. ``uns['hic']``
+        records the chosen ``chromosomes`` and the (assumed-uniform)
+        ``resolution`` in bp.
+    """
+    import anndata as ad
+    import cooler
+
+    cool_paths = [Path(p) for p in cool_paths]
+    if cell_ids is None:
+        cell_ids = [p.stem for p in cool_paths]
+    cell_ids = list(map(str, cell_ids))
+    if len(cell_ids) != len(cool_paths):
+        raise ValueError(
+            f"cell_ids has {len(cell_ids)} entries but cool_paths has "
+            f"{len(cool_paths)}; must match 1:1"
+        )
+    if len(set(cell_ids)) != len(cell_ids):
+        raise ValueError("cell_ids must be unique")
+
+    # Probe the first cool for resolution + master chrom list, then
+    # cross-check the rest. We tolerate cells missing some chroms (will
+    # be intersected) but the binsize MUST match across cells.
+    head = cooler.Cooler(str(cool_paths[0]))
+    resolution = int(head.binsize)
+    common: set = set(head.chromnames)
+    for p in cool_paths[1:]:
+        c = cooler.Cooler(str(p))
+        if int(c.binsize) != resolution:
+            raise ValueError(
+                f"{p} has binsize {c.binsize} bp, expected {resolution} "
+                "bp — all per-cell cools must share a resolution"
+            )
+        common &= set(c.chromnames)
+
+    if chromosomes is None:
+        # Preserve the order from the first cool so downstream feature
+        # vectors are deterministic.
+        chromosomes = [c for c in head.chromnames if c in common]
+    else:
+        chromosomes = list(chromosomes)
+        missing = set(chromosomes) - common
+        if missing:
+            raise ValueError(
+                f"requested chromosomes not present in every cell: {sorted(missing)}"
+            )
+
+    obs_df = pd.DataFrame(index=pd.Index(cell_ids, name="cell_id"))
+    obs_df["cool_path"] = [str(p) for p in cool_paths]
+    if obs is not None:
+        if len(obs) != len(cell_ids):
+            raise ValueError(
+                f"obs has {len(obs)} rows but {len(cell_ids)} cells"
+            )
+        obs_in = obs.copy()
+        obs_in.index = obs_df.index
+        for col in obs_in.columns:
+            obs_df[col] = obs_in[col].values
+
+    adata = ad.AnnData(X=np.zeros((len(cell_ids), 0), dtype=np.float32),
+                       obs=obs_df)
+    adata.uns["hic"] = {
+        "chromosomes": list(chromosomes),
+        "resolution": resolution,
+        "n_chrom_bins": {
+            ch: int(np.ceil(head.chromsizes[ch] / resolution))
+            for ch in chromosomes
+        },
+    }
+    return adata
