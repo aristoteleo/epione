@@ -1039,3 +1039,89 @@ def add_arrow(
         multialignment='center',
         horizontalalignment='center'
     )
+
+# ---------------------------------------------------------------------------
+# sc-Hi-C cell-embedding scatter (moved from single/hic/_plot.py in v0.4 PR3)
+# ---------------------------------------------------------------------------
+
+def plot_embedding(
+    adata,
+    *,
+    basis: str = "X_pca",
+    components: tuple = (1, 2),
+    color=None,
+    cmap: str = "tab10",
+    s: float = 16.0,
+    figsize: tuple = (5.0, 4.0),
+    title=None,
+    ax=None,
+):
+    """Lightweight scatter for an sc-Hi-C cell embedding (PCA / UMAP / TSNE).
+
+    Distinct from :func:`embedding` above: this helper takes a single
+    ``basis`` key and one optional ``color`` column, keeping the API
+    minimal for the canonical sc-Hi-C tutorial flow. For multi-panel
+    figures, scanpy-compatible legends, dotplots etc., use the richer
+    :func:`embedding` (also in this module).
+
+    Arguments:
+        adata: AnnData from :func:`epione.single.hic.embedding`. Must
+            contain ``adata.obsm[basis]``.
+        basis: key into ``adata.obsm``. Defaults to ``X_pca``; use
+            ``X_umap`` after ``sc.tl.umap``.
+        components: 1-indexed component pair to plot.
+        color: ``adata.obs`` column to colour by. Categorical →
+            discrete ``cmap``; numeric → continuous (overrides
+            categorical-only ``cmap`` like ``'tab10'``).
+        cmap, s, figsize, title, ax: cosmetic.
+
+    Returns:
+        ``(fig, ax)``.
+    """
+    import numpy as np
+    import matplotlib.pyplot as plt
+    from matplotlib import colormaps
+
+    if basis not in adata.obsm:
+        raise KeyError(
+            f"adata.obsm[{basis!r}] not found. Run "
+            "epione.single.hic.embedding() (sets X_pca) or scanpy's "
+            "sc.tl.umap (sets X_umap) first."
+        )
+    coords = np.asarray(adata.obsm[basis])
+    i, j = components[0] - 1, components[1] - 1
+    x, y = coords[:, i], coords[:, j]
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+    else:
+        fig = ax.figure
+
+    if color is None or color not in adata.obs.columns:
+        ax.scatter(x, y, s=s, c="#3a6eb3", alpha=0.85,
+                   edgecolors="white", linewidths=0.4)
+    else:
+        col = adata.obs[color]
+        if str(col.dtype) == "category" or col.dtype == object:
+            cats = list(col.astype("category").cat.categories)
+            cm = colormaps.get_cmap(cmap)
+            for k, cat in enumerate(cats):
+                m = (col == cat).values
+                ax.scatter(x[m], y[m],
+                           s=s, color=cm(k % cm.N), label=str(cat),
+                           alpha=0.85, edgecolors="white", linewidths=0.4)
+            ax.legend(frameon=False, fontsize=8, loc="best",
+                      title=color, title_fontsize=8)
+        else:
+            sc = ax.scatter(x, y, s=s, c=col.values,
+                            cmap="viridis", alpha=0.85,
+                            edgecolors="white", linewidths=0.4)
+            fig.colorbar(sc, ax=ax, label=color, shrink=0.8)
+
+    label_basis = basis.replace("X_", "").upper()
+    ax.set_xlabel(f"{label_basis} {components[0]}")
+    ax.set_ylabel(f"{label_basis} {components[1]}")
+    ax.set_title(title or f"sc-Hi-C cells ({label_basis})")
+    for sp in ("top", "right"):
+        ax.spines[sp].set_visible(False)
+    return fig, ax

@@ -5,7 +5,15 @@ from ._differential import volcano, ma_plot
 from ._base import *
 
 from ._embedding import (
-    embedding, umap, tsne, pca, diffmap, draw_graph
+    embedding, umap, tsne, pca, diffmap, draw_graph,
+    plot_embedding,  # sc-Hi-C cell-embedding scatter (v0.4 PR3)
+)
+
+from ._contact import (
+    plot_contact_matrix,
+    plot_decay_curve,
+    plot_coverage,
+    plot_cell_contacts,
 )
 
 from ._peak2gene import plot_peak2gene
@@ -34,6 +42,9 @@ __all__ = [
     "volcano",
     "ma_plot",
     "embedding", "umap", "tsne", "pca", "diffmap", "draw_graph",
+    "plot_embedding",
+    "plot_contact_matrix", "plot_decay_curve", "plot_coverage",
+    "plot_cell_contacts",
     "plot_peak2gene",
     "plot_footprints",
     "plot_multi_scale_footprint",
