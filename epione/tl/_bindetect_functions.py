@@ -42,10 +42,10 @@ from pybedtools import BedTool
 
 #Internal functions and classes
 
-from ..utils.regions import *
+from epione.core.regions import *
 #from tobias.utils.sequences import *
-from ..utils.utilities import *
-from ..utils.motifs import *
+from epione.core.utilities import *
+from epione.core.motifs import *
 from ..utils.signals import *
 from ..utils import console
 

@@ -1,17 +1,33 @@
-"""Pure-format readers / writers (no subprocess, no analysis).
+"""Pure-format readers / writers — no subprocess, no analysis.
 
-Future home of:
+Public API:
 
-    * BED / BedGraph / narrowPeak / broadPeak readers (currently in
-      :mod:`epione.utils._read`)
-    * GTF / FASTA / FASTQ readers (currently in :mod:`epione.utils`)
-    * Cool / pairs file readers (currently in :mod:`epione.bulk.hic`)
-    * AnnData read / write helpers
-
-Populated incrementally during the v0.4 architecture refactor;
-this stub exists so :mod:`epione.io` is a stable import target
-from PR 1 onward.
+    :func:`read_ATAC_10x`         CellRanger / 10x ATAC matrix → AnnData
+    :func:`read_gtf`              GTF / GFF3 → DataFrame
+    :func:`read_features`         feature/peak file readers
+    :func:`get_gene_annotation`   coordinate ↔ gene annotation
+    :func:`convert_gff_to_gtf`    format conversion
+    :func:`save`, :func:`load`    pickle / h5ad cache helpers
+    :func:`cached`                memoising decorator (writes to disk)
 """
 from __future__ import annotations
 
-__all__: list[str] = []
+from ._read import (
+    read_ATAC_10x,
+    read_gtf,
+    read_features,
+    get_gene_annotation,
+    convert_gff_to_gtf,
+)
+from ._helpers import save, load, cached
+
+__all__ = [
+    "read_ATAC_10x",
+    "read_gtf",
+    "read_features",
+    "get_gene_annotation",
+    "convert_gff_to_gtf",
+    "save",
+    "load",
+    "cached",
+]

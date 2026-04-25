@@ -29,7 +29,7 @@ import pandas as pd
 import scipy.sparse as sp
 from anndata import AnnData
 
-from ..utils._genome import Genome
+from epione.core.genome import Genome
 from ..utils import console
 
 
@@ -731,14 +731,14 @@ def make_gene_matrix(
 
     # Accept a Genome (resolve via get_gene_annotation), a GTF/GFF3 path
     # (same), or a ready DataFrame.
-    from ..utils._genome import Genome
+    from epione.core.genome import Genome
     if isinstance(gene_anno, Genome):
-        from ..utils._read import get_gene_annotation
+        from epione.io._read import get_gene_annotation
         gene_anno = get_gene_annotation(gene_anno)
     elif isinstance(gene_anno, (str, Path)):
         p = str(gene_anno)
         if p.endswith((".gtf", ".gff", ".gff3", ".gtf.gz", ".gff.gz", ".gff3.gz")):
-            from ..utils._read import get_gene_annotation
+            from epione.io._read import get_gene_annotation
             gene_anno = get_gene_annotation(p)
         else:
             gene_anno = pd.read_csv(p, sep="\t")

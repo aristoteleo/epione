@@ -1,4 +1,10 @@
-from ._genome import Genome, register_datasets
+"""Pre-built reference :class:`Genome` instances (GRCh37/38, GRCm38/39).
+
+The class lives in :mod:`epione.core.genome`; this module instantiates
+the canonical genomes that nearly every analysis needs and registers
+their fetcher callbacks so files are downloaded on first access.
+"""
+from epione.core.genome import Genome, register_datasets
 from pooch import Decompress
 
 GRCh37 = Genome(

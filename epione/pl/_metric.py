@@ -146,7 +146,7 @@ def fragment_histogram(
         Infer the filetype if ending on {`'.pdf'`, `'.png'`, `'.svg'`}.
     """
     from scanpy.plotting._utils import savefig_or_show
-    from ..utils._read import fetch_regions_to_df
+    from epione.io._read import fetch_regions_to_df
 
     if isinstance(data, AnnData):
         adata = data
