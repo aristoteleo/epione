@@ -546,18 +546,7 @@ def plot_contact_triangle(
     import matplotlib.pyplot as plt
 
     clr = cooler.Cooler(str(cool_path))
-    if ":" in region:
-        _chrom_part, _span_part = region.split(":", 1)
-        region_clean = (
-            _chrom_part + ":" + _span_part.replace(",", "").replace("_", "")
-        )
-    else:
-        region_clean = region
-    mat = clr.matrix(balance=balance).fetch(region_clean)
-    n = mat.shape[0]
-    binsize = int(clr.binsize)
 
-    # Resolve x-axis extents.
     if ":" in region:
         chrom, span = region.split(":", 1)
         lo_str, hi_str = span.replace(",", "").replace("_", "").split("-")
@@ -567,11 +556,23 @@ def plot_contact_triangle(
         lo = 0
         hi = int(clr.chromsizes[chrom])
 
+    binsize = int(clr.binsize)
+
+    # Pad the fetched window by max_distance/2 on each side so that
+    # cells whose midpoint sits inside [lo, hi] but whose endpoints are
+    # outside still get rendered. Without this, the rendered band has
+    # triangular cut-offs at both edges instead of rectangular ends.
+    pad = int(max_distance) // 2 if max_distance is not None else 0
+    chrom_size = int(clr.chromsizes[chrom])
+    fetch_lo = max(0, lo - pad)
+    fetch_hi = min(chrom_size, hi + pad)
+    region_clean = f"{chrom}:{fetch_lo}-{fetch_hi}"
+    mat = clr.matrix(balance=balance).fetch(region_clean)
+    n = mat.shape[0]
+
     # Build a (max_d+1, n) array where row d is the k=d diagonal of the
     # contact matrix — i.e. M_diag[d, p] is the contact between bin p and
-    # bin p+d. Then we plot it with pcolormesh, where each row is shifted
-    # along x by d/2 bins so the cell's centre falls at the midpoint of
-    # the bin-pair (the canonical Hi-C pyramid layout).
+    # bin p+d in the *padded* window.
     if max_distance is not None:
         max_d = min(int(max_distance) // binsize, n - 1)
     else:
@@ -583,10 +584,13 @@ def plot_contact_triangle(
         M_diag[d, : len(diag)] = diag
 
     # Per-row x corners: shift row d by d/2 bins so cell midpoints align
-    # with the bin-pair midpoint. y corners are just d * binsize.
+    # with the bin-pair midpoint. ``fetch_lo`` is the start of the
+    # padded fetched window (used as the absolute genomic origin of
+    # the pcolormesh; ``set_xlim`` below crops to the requested
+    # [lo, hi] range so the band ends are flat / rectangular).
     p_arr = np.arange(n + 1, dtype=float)
     d_arr = np.arange(max_d + 2, dtype=float)
-    Xc = p_arr[None, :] * binsize + lo + d_arr[:, None] * binsize * 0.5
+    Xc = p_arr[None, :] * binsize + fetch_lo + d_arr[:, None] * binsize * 0.5
     Yc = (d_arr[:, None] * binsize) * np.ones_like(Xc)
 
     M = M_diag
