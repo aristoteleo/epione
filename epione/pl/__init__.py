@@ -17,6 +17,7 @@ from ._contact import (
     plot_cell_contacts,
     plot_compartments,
     plot_saddle,
+    plot_insulation,
 )
 
 from ._peak2gene import plot_peak2gene
@@ -50,6 +51,7 @@ __all__ = [
     "plot_decay_curve", "plot_coverage",
     "plot_cell_contacts",
     "plot_compartments", "plot_saddle",
+    "plot_insulation",
     "plot_peak2gene",
     "plot_footprints",
     "plot_multi_scale_footprint",

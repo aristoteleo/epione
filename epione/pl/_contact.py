@@ -624,3 +624,95 @@ def plot_contact_triangle(
         fig.colorbar(mesh, ax=ax, shrink=0.7,
                      label="log10(1+contact)" if log else "contact")
     return fig, ax, mesh
+
+
+def plot_insulation(
+    insulation_df,
+    *,
+    chromosome: str,
+    window_bp: Optional[int] = None,
+    region_start: Optional[int] = None,
+    region_end: Optional[int] = None,
+    boundaries: bool = True,
+    boundaries_df=None,
+    figsize: Tuple[float, float] = (8.0, 1.6),
+    color: str = "#3a6eb3",
+    title: Optional[str] = None,
+    ax=None,
+):
+    """Per-bin insulation-score line plot for one chromosome.
+
+    Renders the diamond-insulation score from :func:`epione.bulk.hic.insulation`
+    as a line; optionally drops vertical ticks at the called TAD
+    boundaries (red by default). Designed to stack on top of a
+    contact-pyramid panel in figures of the Maziak 2026 / Chang 2024
+    style.
+
+    Arguments:
+        insulation_df: output of :func:`epione.bulk.hic.insulation`.
+        chromosome: which chrom to plot.
+        window_bp: which insulation window (when the table holds
+            several). Default = smallest available.
+        region_start, region_end: optional zoom in bp.
+        boundaries: draw vertical ticks at boundaries from
+            ``boundaries_df`` (or auto-extract via
+            :func:`epione.bulk.hic.tad_boundaries`).
+        boundaries_df: pre-computed boundary DataFrame; if ``None``
+            and ``boundaries=True``, derive on the fly.
+        figsize, color, title, ax: cosmetic.
+
+    Returns:
+        ``(fig, ax)``.
+    """
+    import matplotlib.pyplot as plt
+
+    cols = [c for c in insulation_df.columns
+            if c.startswith("log2_insulation_score_")]
+    if not cols:
+        raise KeyError(
+            "insulation_df missing log2_insulation_score_* columns"
+        )
+    avail = [int(c.rsplit("_", 1)[-1]) for c in cols]
+    if window_bp is None:
+        window_bp = min(avail)
+    score_col = f"log2_insulation_score_{int(window_bp)}"
+
+    sub = insulation_df.loc[insulation_df["chrom"] == chromosome].copy()
+    if sub.empty:
+        raise KeyError(
+            f"chromosome {chromosome!r} not in insulation_df"
+        )
+    if region_start is not None:
+        sub = sub[sub["end"] > region_start]
+    if region_end is not None:
+        sub = sub[sub["start"] < region_end]
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+    else:
+        fig = ax.figure
+
+    centers = (sub["start"] + sub["end"]) / 2 / 1e6
+    ax.plot(centers, sub[score_col], color=color, lw=1.0)
+    ax.axhline(0, color="black", lw=0.4, alpha=0.6)
+
+    if boundaries:
+        if boundaries_df is None:
+            from ..bulk.hic._insulation import tad_boundaries
+            boundaries_df = tad_boundaries(insulation_df, window_bp=window_bp)
+        bsub = boundaries_df[boundaries_df["chrom"] == chromosome]
+        if region_start is not None:
+            bsub = bsub[bsub["end"] > region_start]
+        if region_end is not None:
+            bsub = bsub[bsub["start"] < region_end]
+        bcenters = (bsub["start"] + bsub["end"]) / 2 / 1e6
+        ymin, ymax = ax.get_ylim()
+        ax.vlines(bcenters, ymin, ymin + 0.1 * (ymax - ymin),
+                  color="#c13e3e", lw=0.6, alpha=0.85)
+
+    ax.set_xlabel(f"{chromosome} (Mb)")
+    ax.set_ylabel(f"log2 insulation\n(window {int(window_bp)/1000:.0f} kb)")
+    ax.set_title(title or f"insulation — {chromosome}")
+    for sp in ("top", "right"):
+        ax.spines[sp].set_visible(False)
+    return fig, ax
