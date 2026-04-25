@@ -1,9 +1,20 @@
-"""epione top-level package.
+"""epione top-level package — v0.4 architecture.
 
-Keep __init__ lightweight to avoid importing heavy optional dependencies at import time.
-Subpackages (bulk, pp, single, pl, utils) can be imported on demand:
-    import epione.bulk
-    import epione.pp
+Subpackage map (call-chain shown alongside):
+
+    epione.bulk.{atac, hic}      bulk analyses, modality-specific
+    epione.single.{atac, hic}    single-cell analyses, modality-specific
+    epione.pp / .tl / .pl        cross-modality preprocessing / analysis / plotting
+    epione.io                    pure format read/write (BED, cool, pairs, h5ad, ...)
+    epione.upstream              FASTQ → BAM → bigwig / pairs → cool pipelines
+    epione.core                  pure-Python infrastructure (Genome, motifs, regions, console)
+    epione.data                  reference registries (GRCh38, JASPAR, ...)
+    epione.datasets              fetchable example datasets for tutorials
+
+Subpackages are imported lazily-friendly (heavy optional deps deferred
+to first use). Deprecated aliases (``epione.hic``, ``epione.sc_hic``)
+still resolve in v0.4 with a :class:`DeprecationWarning`; they will be
+removed in v0.5.
 """
 
 # Suppress noisy third-party warnings that fire on import. anndata's
@@ -15,34 +26,44 @@ Subpackages (bulk, pp, single, pl, utils) can be imported on demand:
 import warnings as _warnings
 _warnings.filterwarnings("ignore", category=FutureWarning, module=r"anndata\..*")
 _warnings.filterwarnings("ignore", category=FutureWarning, module=r"anndata$")
-# Filter by message so we don't need to import Biopython (which itself
-# prints a BiopythonWarning when imported from inside a source tree).
 _warnings.filterwarnings(
     "ignore",
     message=r"You may be importing Biopython from inside the source tree.*",
 )
 _warnings.filterwarnings("ignore", module=r"Bio\..*")
 
+# Canonical v0.4 subpackages.
 from . import (
-    align,
-    bulk,
-    hic,
+    align,        # → migrates into ``upstream`` in PR 2
+    bulk,         # bulk.atac, bulk.hic
+    core,         # populated incrementally
+    data,         # populated incrementally
+    datasets,     # populated incrementally
+    io,           # populated incrementally
     pp,
-    sc_hic,
-    single,
     pl,
+    single,       # single.atac, single.hic
     tl,
-    utils,
+    upstream,
+    utils,        # → migrates into core/io in PR 4
 )
 
+# Deprecated aliases (kept for v0.4; removed in v0.5).
+# Importing them is what triggers the DeprecationWarning, so we don't
+# eagerly resolve them here; users hit the warning the first time they
+# write ``import epione.hic`` / ``import epione.sc_hic``.
+
 __all__ = [
-    'bulk',
-    'align',
-    'hic',
-    'pp',
-    'sc_hic',
-    'single',
-    'pl',
-    'tl',
-    'utils',
+    "align",
+    "bulk",
+    "core",
+    "data",
+    "datasets",
+    "io",
+    "pp",
+    "pl",
+    "single",
+    "tl",
+    "upstream",
+    "utils",
 ]
