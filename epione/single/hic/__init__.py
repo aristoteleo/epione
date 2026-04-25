@@ -18,7 +18,10 @@ from __future__ import annotations
 from ._io import load_cool_collection, load_scool_cells
 from ._impute import impute_cell_chromosome, impute_cells
 from ._embed import embedding
-from ._plot import plot_embedding, plot_cell_contacts
+# Plotting helpers live in :mod:`epione.pl` since v0.4 (PR 3); import
+# them from there so ``epi.single.hic.plot_embedding`` still resolves.
+from epione.pl._embedding import plot_embedding
+from epione.pl._contact import plot_cell_contacts
 
 __all__ = [
     "load_cool_collection",

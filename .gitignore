@@ -32,6 +32,9 @@ epione_guide/api/_autosummary/
 # Per-tutorial data cache (downloaded / symlinked at notebook run time)
 epione_guide/tutorials/**/data_chromvar/
 epione_guide/tutorials/**/motif_db_*
+# Per-tutorial outputs / large fixtures (notebook run-time scratch)
+epione_guide/tutorials/**/result/
+epione_guide/tutorials/**/data-tobias-2020/
 *tobias
 
 # Cython build artifacts
