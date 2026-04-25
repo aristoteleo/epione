@@ -19,13 +19,14 @@ Phase 1 (this module) covers:
 """
 from __future__ import annotations
 
-from .io import load_cool_collection
+from .io import load_cool_collection, load_scool_cells
 from .impute import impute_cell_chromosome, impute_cells
 from .embed import embedding
 from .plot import plot_embedding, plot_cell_contacts
 
 __all__ = [
     "load_cool_collection",
+    "load_scool_cells",
     "impute_cell_chromosome",
     "impute_cells",
     "embedding",
