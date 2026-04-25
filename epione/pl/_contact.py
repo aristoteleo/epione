@@ -1,9 +1,19 @@
-"""Hi-C contact-matrix visualisation.
+"""Hi-C contact-matrix visualisation (bulk + single-cell).
 
-Minimal, publication-shaped log-scale heatmap for a genomic region,
-reading directly from a ``.cool`` file via the cooler API. A richer
-composite "Hi-C + tracks + TADs" panel will land in Phase 4 alongside
-:mod:`epione.pl._peak2gene` / :func:`epione.bulk.bigwig.plot_track_multi`.
+Single home for every Hi-C heatmap / decay / coverage helper, regardless
+of whether the source is a bulk ``.cool`` or a per-cell imputed ``.npz``
+inside an sc-Hi-C AnnData (output of :mod:`epione.single.hic`).
+
+Functions:
+
+    * :func:`plot_contact_matrix`  bulk-cool log-scale region heatmap
+    * :func:`plot_decay_curve`     P(s) genomic-distance vs mean-contact
+    * :func:`plot_coverage`        per-bin coverage + ICE weight panels
+    * :func:`plot_cell_contacts`   per-cell heatmap from sc-Hi-C imputed
+                                    matrices (raw vs imputed view)
+
+A richer composite "Hi-C + tracks + TADs" panel will land in
+:func:`plot_track_multi` (PR alongside the v0.4 datasets module).
 """
 from __future__ import annotations
 
@@ -279,3 +289,89 @@ def plot_coverage(
             a.spines[sp].set_visible(False)
     fig.tight_layout()
     return fig, axes
+
+
+def plot_cell_contacts(
+    adata,
+    cell_id: str,
+    *,
+    chromosome: str,
+    use_imputed: bool = True,
+    log: bool = True,
+    cmap: str = "YlOrRd",
+    figsize: Tuple[float, float] = (5.0, 4.5),
+    ax=None,
+):
+    """Per-cell contact heatmap for a single chromosome.
+
+    Useful for sanity-checking imputation: the raw matrix should look
+    speckled (sparse contacts), the imputed one should show a clear
+    diagonal + off-diagonal density.
+
+    Arguments:
+        adata: AnnData from :func:`epione.single.hic.load_cool_collection`
+            (or :func:`load_scool_cells`).
+        cell_id: row in ``adata.obs_names``.
+        chromosome: e.g. ``'chr1'``.
+        use_imputed: read the imputed ``.npz`` (requires
+            :func:`epione.single.hic.impute_cells` to have run).
+            ``False`` reads raw counts from the original ``.cool``
+            for comparison.
+        log, cmap, figsize, ax: cosmetic.
+
+    Returns:
+        ``(fig, ax)``.
+    """
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import LogNorm, Normalize
+
+    if cell_id not in adata.obs_names:
+        raise KeyError(f"cell_id {cell_id!r} not in adata.obs_names")
+
+    if use_imputed:
+        info = adata.uns.get("hic", {})
+        imputed_dir = info.get("imputed_dir")
+        if imputed_dir is None:
+            raise ValueError(
+                "adata.uns['hic']['imputed_dir'] not set — call with "
+                "use_imputed=False or run epione.single.hic.impute_cells "
+                "first"
+            )
+        z = np.load(Path(imputed_dir) / f"{cell_id}.npz")
+        if chromosome not in z.files:
+            raise KeyError(
+                f"chromosome {chromosome!r} not in imputed file for "
+                f"{cell_id}; available: {sorted(z.files)}"
+            )
+        mat = z[chromosome]
+    else:
+        import cooler
+        cool_path = adata.obs.loc[cell_id, "cool_path"]
+        clr = cooler.Cooler(str(cool_path))
+        mat = np.asarray(clr.matrix(balance=False).fetch(chromosome),
+                         dtype=np.float64)
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+    else:
+        fig = ax.figure
+
+    finite = mat[np.isfinite(mat) & (mat > 0)]
+    vmin = float(np.quantile(finite, 0.01)) if finite.size else 0.0
+    vmax = float(np.quantile(finite, 0.99)) if finite.size else 1.0
+    if log and vmax > 0:
+        vmin = max(vmin, 1e-6)
+        norm = LogNorm(vmin=vmin, vmax=max(vmax, vmin * 10))
+    else:
+        norm = Normalize(vmin=vmin, vmax=vmax if vmax > 0 else 1.0)
+
+    img = ax.imshow(mat, cmap=cmap, norm=norm, interpolation="none")
+    ax.set_title(
+        f"{cell_id} - {chromosome}"
+        + (" (imputed)" if use_imputed else " (raw)")
+    )
+    ax.set_xlabel("bin")
+    ax.set_ylabel("bin")
+    fig.colorbar(img, ax=ax, shrink=0.8,
+                 label="log contact" if log else "contact")
+    return fig, ax

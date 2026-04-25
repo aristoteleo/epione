@@ -14,7 +14,13 @@ Public API (flat — call as ``epi.bulk.hic.X``):
 from __future__ import annotations
 
 from ._balance import balance_cool
-from ._plot import plot_contact_matrix, plot_decay_curve, plot_coverage
+# Plotting helpers live in :mod:`epione.pl` since v0.4 (PR 3); import
+# them from there so ``epi.bulk.hic.plot_contact_matrix`` still resolves.
+from epione.pl._contact import (
+    plot_contact_matrix,
+    plot_decay_curve,
+    plot_coverage,
+)
 
 __all__ = [
     "balance_cool",
