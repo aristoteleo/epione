@@ -96,3 +96,175 @@ def plot_contact_matrix(
         fig.colorbar(img, ax=ax, shrink=0.8,
                      label="log contact" if log else "contact")
     return fig, ax, img
+
+
+def plot_decay_curve(
+    cool_path: Union[str, Path],
+    *,
+    chromosomes: Optional[list] = None,
+    balance: bool = True,
+    max_offset: Optional[int] = None,
+    figsize: Tuple[float, float] = (5.5, 4.0),
+    title: Optional[str] = None,
+    color: str = "#3a6eb3",
+    ax=None,
+):
+    """Contact-decay curve P(s) — mean contact frequency vs genomic
+    separation, the canonical Hi-C QC plot.
+
+    For each diagonal offset ``s`` (in bin units), we average all
+    intra-chromosome cells at that offset across the requested
+    chromosomes. Plotted on log-log axes the curve should be roughly
+    linear with slope around -1 for a healthy library; a flat
+    plateau or non-monotone shape signals contamination, undersampled
+    libraries, or aggressive over-balancing.
+
+    Arguments:
+        cool_path: path to the ``.cool`` (balanced or raw).
+        chromosomes: subset to compute on. Default: all.
+        balance: use balanced contacts when True (requires
+            ``balance_cool`` to have been run).
+        max_offset: cap the x-axis at this many bins. ``None`` = full
+            chromosome span.
+        figsize, title, color: cosmetic. Default colour matches the
+            ``Tcell`` blue used in the footprint tutorial.
+        ax: optional existing axis.
+
+    Returns:
+        ``(fig, ax, df)`` — the figure / axis and a long DataFrame of
+        ``(offset_bin, distance_bp, mean_contact, n_pairs)`` per row,
+        useful for further plotting / fitting.
+    """
+    import cooler
+    import pandas as pd
+    import matplotlib.pyplot as plt
+
+    clr = cooler.Cooler(str(cool_path))
+    binsize = int(clr.binsize)
+    chromosomes = chromosomes or list(clr.chromnames)
+
+    rows = []
+    for chrom in chromosomes:
+        mat = clr.matrix(balance=balance, sparse=False).fetch(chrom)
+        n = mat.shape[0]
+        upper = max_offset if max_offset is not None else n - 1
+        for k in range(min(upper + 1, n)):
+            diag = np.diag(mat, k=k)
+            finite = diag[np.isfinite(diag)]
+            if finite.size == 0:
+                continue
+            rows.append({
+                "chrom": chrom,
+                "offset_bin": k,
+                "distance_bp": k * binsize,
+                "mean_contact": float(finite.mean()),
+                "n_pairs": int(finite.size),
+            })
+    df = pd.DataFrame(rows)
+    if df.empty:
+        raise RuntimeError(
+            "no contacts to plot — check that the cool has data for the "
+            "requested chromosomes."
+        )
+
+    # Aggregate across chromosomes by offset.
+    agg = (df.groupby("offset_bin")
+           .agg(distance_bp=("distance_bp", "first"),
+                mean_contact=("mean_contact", "mean"),
+                n_pairs=("n_pairs", "sum"))
+           .reset_index())
+    # Drop offset 0 — self-contacts are dominated by diagonal artefacts.
+    agg = agg[agg["offset_bin"] > 0]
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+    else:
+        fig = ax.figure
+    ax.loglog(agg["distance_bp"], agg["mean_contact"],
+              color=color, lw=1.4)
+    ax.set_xlabel("genomic distance (bp)")
+    ax.set_ylabel("mean contact" + (" (balanced)" if balance else " (raw)"))
+    ax.set_title(title or f"P(s) — {Path(cool_path).name}")
+    for sp in ("top", "right"):
+        ax.spines[sp].set_visible(False)
+    return fig, ax, df
+
+
+def plot_coverage(
+    cool_path: Union[str, Path],
+    *,
+    balance: bool = False,
+    bins: int = 50,
+    figsize: Tuple[float, float] = (8.0, 3.5),
+    ax=None,
+):
+    """Per-bin total contact-coverage distribution — diagnostic for
+    `balance_cool`'s `mad_max` / `min_nnz` filtering.
+
+    Renders side-by-side: (left) the histogram of per-bin coverage
+    on a log y-axis, (right) the per-bin balance ``weight`` if
+    available, also on log y. Bins with zero/NaN weight are masked
+    by ICE and excluded from balanced contacts.
+
+    Arguments:
+        cool_path: path to the ``.cool``.
+        balance: if True, take coverage from the balanced matrix; else
+            raw counts. Most informative as raw + showing where the
+            ICE mask landed.
+        bins: histogram bin count.
+        figsize, ax: cosmetic.
+
+    Returns:
+        ``(fig, axes)`` with two axes (coverage hist, weight hist).
+    """
+    import cooler
+    import matplotlib.pyplot as plt
+
+    clr = cooler.Cooler(str(cool_path))
+    bin_tab = clr.bins()[:]
+    # Per-bin sum from raw or balanced matrix.
+    cov_per_bin = np.zeros(len(bin_tab), dtype=np.float64)
+    for chrom in clr.chromnames:
+        mat = clr.matrix(balance=balance, sparse=False).fetch(chrom)
+        # Bins for this chrom.
+        idx = bin_tab.query("chrom == @chrom").index.to_numpy()
+        cov_per_bin[idx] = np.nansum(mat, axis=1)
+    has_weight = "weight" in bin_tab.columns
+
+    if ax is None:
+        fig, axes = plt.subplots(1, 2 if has_weight else 1, figsize=figsize)
+        if not has_weight:
+            axes = [axes]
+    else:
+        fig = ax.figure
+        axes = [ax]
+
+    finite = cov_per_bin[cov_per_bin > 0]
+    axes[0].hist(np.log10(finite + 1e-9), bins=bins,
+                 color="#3a6eb3", alpha=0.7, edgecolor="white", lw=0.4)
+    axes[0].set_xlabel(r"log$_{10}$ per-bin coverage")
+    axes[0].set_ylabel("bins")
+    axes[0].set_title("Per-bin contact coverage")
+    n_zero = int((cov_per_bin == 0).sum())
+    axes[0].text(0.02, 0.95, f"{n_zero} zero-coverage bins",
+                 transform=axes[0].transAxes,
+                 va="top", ha="left", fontsize=8, color="#666")
+
+    if has_weight:
+        w = bin_tab["weight"].to_numpy()
+        finite_w = w[np.isfinite(w) & (w > 0)]
+        axes[1].hist(np.log10(finite_w), bins=bins,
+                     color="#c13e3e", alpha=0.7, edgecolor="white", lw=0.4)
+        axes[1].set_xlabel(r"log$_{10}$ ICE weight")
+        axes[1].set_ylabel("bins")
+        axes[1].set_title("ICE balance weights")
+        n_masked = int(np.isnan(w).sum())
+        axes[1].text(0.02, 0.95, f"{n_masked} masked bins",
+                     transform=axes[1].transAxes,
+                     va="top", ha="left", fontsize=8, color="#666")
+
+    for a in axes:
+        for sp in ("top", "right"):
+            a.spines[sp].set_visible(False)
+    fig.tight_layout()
+    return fig, axes

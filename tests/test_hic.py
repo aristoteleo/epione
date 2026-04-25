@@ -110,6 +110,42 @@ def test_balance_cool_idempotent(tmp_path):
     assert res2["reused_existing"]
 
 
+def test_plot_decay_curve(tmp_path):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import epione as epi
+
+    pairs_gz, sizes = _make_synthetic_pairs(tmp_path)
+    out_cool = tmp_path / "synt.cool"
+    epi.hic.pairs_to_cool(pairs_gz, sizes, out_cool, binsize=50_000)
+
+    fig, ax, df = epi.hic.plot_decay_curve(
+        out_cool, balance=False, figsize=(5, 3),
+    )
+    assert ax.get_xscale() == "log"
+    assert ax.get_yscale() == "log"
+    # Power-law decay in synthetic data should give monotone-ish decline.
+    assert df["mean_contact"].iloc[0] >= df["mean_contact"].iloc[-1]
+    plt.close(fig)
+
+
+def test_plot_coverage_two_panels_after_balance(tmp_path):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import epione as epi
+
+    pairs_gz, sizes = _make_synthetic_pairs(tmp_path)
+    out_cool = tmp_path / "synt.cool"
+    epi.hic.pairs_to_cool(pairs_gz, sizes, out_cool, binsize=50_000)
+    epi.hic.balance_cool(out_cool, mad_max=10, min_nnz=1, ignore_diags=0)
+
+    fig, axes = epi.hic.plot_coverage(out_cool, balance=False, figsize=(8, 3))
+    assert len(axes) == 2  # coverage + weight panels after balance
+    plt.close(fig)
+
+
 def test_plot_contact_matrix_renders(tmp_path):
     import matplotlib
     matplotlib.use("Agg")
