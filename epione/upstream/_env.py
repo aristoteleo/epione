@@ -1,4 +1,4 @@
-"""Env / tool resolution helpers for epione.align.
+"""Env / tool resolution helpers for epione.upstream.
 
 Jupyter kernels frequently inherit a ``PATH`` that doesn't include
 their own conda env's ``bin/`` (e.g. when the kernelspec was

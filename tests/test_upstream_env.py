@@ -1,4 +1,4 @@
-"""Tests for epione.align._env — the tool-resolver the upstream
+"""Tests for epione.upstream._env — the tool-resolver the upstream
 pipelines rely on.
 
 Covers the Jupyter-kernel-without-activated-env bug that was fixed in
@@ -17,7 +17,7 @@ import pytest
 
 def test_resolve_executable_uses_path_first(tmp_path, monkeypatch):
     """When the tool is on PATH, resolve_executable should return that."""
-    from epione.align._env import resolve_executable
+    from epione.upstream._env import resolve_executable
 
     # Make a fake 'foo' binary in a dir, then prepend it to PATH.
     foo = tmp_path / "foo"
@@ -34,7 +34,7 @@ def test_resolve_executable_falls_back_to_sys_executable_parent(tmp_path, monkey
     ``sys.executable`` the resolver should find it. Simulates the
     Jupyter-kernel situation where PATH was inherited without the
     conda env's ``bin/``."""
-    from epione.align import _env as env_mod
+    from epione.upstream import _env as env_mod
 
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -54,7 +54,7 @@ def test_resolve_executable_falls_back_to_sys_executable_parent(tmp_path, monkey
 
 
 def test_resolve_executable_raises_when_missing(monkeypatch):
-    from epione.align._env import resolve_executable
+    from epione.upstream._env import resolve_executable
 
     monkeypatch.setenv("PATH", "/nonexistent")
     with pytest.raises(FileNotFoundError):
@@ -62,7 +62,7 @@ def test_resolve_executable_raises_when_missing(monkeypatch):
 
 
 def test_check_tools_returns_mapping(tmp_path, monkeypatch, capsys):
-    from epione.align._env import check_tools
+    from epione.upstream._env import check_tools
 
     foo = tmp_path / "foo"
     foo.write_text("#!/bin/sh\n")
@@ -77,7 +77,7 @@ def test_check_tools_returns_mapping(tmp_path, monkeypatch, capsys):
 def test_build_env_prepends_active_env_bin():
     """``build_env`` must put ``<sys.executable>/../`` at the front of
     PATH so subprocesses inherit it even if the caller's PATH missed it."""
-    from epione.align._env import build_env
+    from epione.upstream._env import build_env
 
     env = build_env()
     env_bin = str(Path(sys.executable).parent)
@@ -85,7 +85,7 @@ def test_build_env_prepends_active_env_bin():
 
 
 def test_build_env_respects_extra_env_and_paths():
-    from epione.align._env import build_env
+    from epione.upstream._env import build_env
 
     env = build_env(extra_paths=["/extra"], extra_env={"MYFLAG": "1"})
     parts = env["PATH"].split(os.pathsep)
@@ -93,14 +93,18 @@ def test_build_env_respects_extra_env_and_paths():
     assert env["MYFLAG"] == "1"
 
 
-def test_bulk_env_mirrors_align_env_api():
-    """epione.bulk._env and epione.align._env should expose the same
-    surface — they're pure-Python duplicates of the same algorithm."""
-    from epione.align import _env as align_env
+def test_bulk_env_mirrors_upstream_env_api():
+    """epione.bulk._env and epione.upstream._env should expose the same
+    surface — they're pure-Python duplicates of the same algorithm.
+
+    PR 4 will collapse the duplication by moving ``epione.bulk._env``
+    out of ``bulk/`` (it's not bulk-specific) into ``epione.core`` or
+    a re-export from ``epione.upstream``."""
+    from epione.upstream import _env as upstream_env
     from epione.bulk import _env as bulk_env
 
     for sym in ("resolve_executable", "tool_path", "check_tools",
                 "build_env", "run_cmd", "ATAC_TOOLS", "RNA_TOOLS",
                 "MOTIF_TOOLS"):
-        assert hasattr(align_env, sym), f"align missing {sym}"
-        assert hasattr(bulk_env, sym),  f"bulk missing {sym}"
+        assert hasattr(upstream_env, sym), f"upstream missing {sym}"
+        assert hasattr(bulk_env, sym),     f"bulk missing {sym}"
