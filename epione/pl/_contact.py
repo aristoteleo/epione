@@ -496,3 +496,127 @@ def plot_compartments(
     for sp in ("top", "right"):
         ax.spines[sp].set_visible(False)
     return fig, ax
+
+
+def plot_contact_triangle(
+    cool_path: Union[str, Path],
+    region: str,
+    *,
+    balance: bool = True,
+    cmap: str = "Reds",
+    vmin: float = 0.0,
+    vmax: Optional[float] = None,
+    max_distance: Optional[int] = None,
+    log: bool = False,
+    figsize: Tuple[float, float] = (8.0, 1.6),
+    title: Optional[str] = None,
+    ax=None,
+    colorbar: bool = True,
+):
+    """45-degree rotated 'pyramid' contact map for a genomic region.
+
+    Renders the upper triangle of the contact matrix as a flat
+    horizontal band — the canonical Hi-C pyramid view used in
+    Maziak et al. 2026 Fig 1c (and in HiGlass / cooltools tutorials).
+    Genomic position runs along the x-axis; contact distance from
+    the diagonal runs up the y-axis. Useful for comparing many
+    stages stacked above one another.
+
+    Arguments:
+        cool_path: ``.cool`` / ``.mcool::resolutions/N`` path.
+        region: UCSC-style interval. Underscores / commas in
+            coordinates are stripped before passing to cooler.
+        balance: use balanced contacts (requires ``balance_cool`` to
+            have been run, or an mcool layer with ``weight``).
+        cmap, vmin, vmax: matplotlib colour mapping. ``vmax=None``
+            auto-detects the 99-th percentile of finite values.
+        max_distance: cap the displayed contact distance in bp; the
+            band above that is cropped. Useful for fine-resolution
+            cool where short-range contacts dominate. ``None`` =
+            full upper triangle (height = window width / 2).
+        log: log-scale colour mapping (``log10(1 + contacts)``).
+            Default linear, matching the paper's Fig 1c.
+        figsize, title, ax, colorbar: cosmetic.
+
+    Returns:
+        ``(fig, ax, mesh)`` — the figure, axis, and the
+        ``QuadMesh`` returned by ``ax.pcolormesh``.
+    """
+    import cooler
+    import matplotlib.pyplot as plt
+
+    clr = cooler.Cooler(str(cool_path))
+    if ":" in region:
+        _chrom_part, _span_part = region.split(":", 1)
+        region_clean = (
+            _chrom_part + ":" + _span_part.replace(",", "").replace("_", "")
+        )
+    else:
+        region_clean = region
+    mat = clr.matrix(balance=balance).fetch(region_clean)
+    n = mat.shape[0]
+    binsize = int(clr.binsize)
+
+    # Resolve x-axis extents.
+    if ":" in region:
+        chrom, span = region.split(":", 1)
+        lo_str, hi_str = span.replace(",", "").replace("_", "").split("-")
+        lo, hi = int(lo_str), int(hi_str)
+    else:
+        chrom = region
+        lo = 0
+        hi = int(clr.chromsizes[chrom])
+
+    # Build a (max_d+1, n) array where row d is the k=d diagonal of the
+    # contact matrix — i.e. M_diag[d, p] is the contact between bin p and
+    # bin p+d. Then we plot it with pcolormesh, where each row is shifted
+    # along x by d/2 bins so the cell's centre falls at the midpoint of
+    # the bin-pair (the canonical Hi-C pyramid layout).
+    if max_distance is not None:
+        max_d = min(int(max_distance) // binsize, n - 1)
+    else:
+        max_d = n - 1
+
+    M_diag = np.full((max_d + 1, n), np.nan)
+    for d in range(max_d + 1):
+        diag = np.diag(mat, k=d)
+        M_diag[d, : len(diag)] = diag
+
+    # Per-row x corners: shift row d by d/2 bins so cell midpoints align
+    # with the bin-pair midpoint. y corners are just d * binsize.
+    p_arr = np.arange(n + 1, dtype=float)
+    d_arr = np.arange(max_d + 2, dtype=float)
+    Xc = p_arr[None, :] * binsize + lo + d_arr[:, None] * binsize * 0.5
+    Yc = (d_arr[:, None] * binsize) * np.ones_like(Xc)
+
+    M = M_diag
+
+    if log:
+        with np.errstate(invalid="ignore"):
+            M = np.log10(M + 1.0)
+    finite = M[np.isfinite(M)]
+    if vmax is None:
+        vmax = float(np.quantile(finite, 0.99)) if finite.size else 1.0
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+    else:
+        fig = ax.figure
+
+    mesh = ax.pcolormesh(
+        Xc, Yc, M, cmap=cmap, vmin=vmin, vmax=vmax, shading="auto",
+    )
+    ax.set_xlim(lo, hi)
+    ax.set_ylim(0, max_distance if max_distance is not None else (hi - lo))
+    # Aspect = 'auto' so the band is wide-and-thin (matching the
+    # canonical Maziak Fig 1c stacked layout); the caller controls the
+    # actual visual aspect via ``figsize``.
+    ax.set_xlabel(f"{chrom} position (bp)")
+    ax.set_ylabel("contact distance (bp)")
+    ax.set_title(title or f"{Path(cool_path).name} — {region}")
+    for sp in ("top", "right"):
+        ax.spines[sp].set_visible(False)
+    if colorbar:
+        fig.colorbar(mesh, ax=ax, shrink=0.7,
+                     label="log10(1+contact)" if log else "contact")
+    return fig, ax, mesh

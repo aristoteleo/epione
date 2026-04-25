@@ -11,6 +11,7 @@ from ._embedding import (
 
 from ._contact import (
     plot_contact_matrix,
+    plot_contact_triangle,
     plot_decay_curve,
     plot_coverage,
     plot_cell_contacts,
@@ -45,7 +46,8 @@ __all__ = [
     "ma_plot",
     "embedding", "umap", "tsne", "pca", "diffmap", "draw_graph",
     "plot_embedding",
-    "plot_contact_matrix", "plot_decay_curve", "plot_coverage",
+    "plot_contact_matrix", "plot_contact_triangle",
+    "plot_decay_curve", "plot_coverage",
     "plot_cell_contacts",
     "plot_compartments", "plot_saddle",
     "plot_peak2gene",
