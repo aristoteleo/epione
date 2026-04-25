@@ -11,7 +11,7 @@ from scipy.sparse import csr_matrix
 from scipy import sparse as sp
 import anndata
 from ._getScorePerBigWigBin import getScorePerBin
-from ..utils import console
+from epione.utils import console
 import multiprocessing as mp
 
 
@@ -477,7 +477,7 @@ class bigwig(object):
         """
         with console.group_node('Load GTF file', last=True, level=1):
             console.node('Reading GTF...', last=False, level=2)
-            from ..utils import read_gtf
+            from epione.utils import read_gtf
             # Parse only essential attributes and pre-filter for speed
             # Keep attribute string to support plotting labels fallback
             features = read_gtf(
