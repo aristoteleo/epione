@@ -8,14 +8,14 @@ The canonical Hi-C upstream looks like::
       → .cool        (cooler cload pairs at binsize)
       → balanced     (cooler balance, in place)
 
-This module covers the BAM → .cool half; the BAM is produced via the
-existing :mod:`epione.align.bowtie2` (see :ref:`t_upstream_hic`).
+This module covers the BAM → .cool half; the BAM is produced via
+:mod:`epione.upstream.bowtie2`.
 
 We shell out to the ``pairtools`` and ``cooler`` CLIs rather than use
 their Python APIs directly because each stage streams multi-gigabyte
 records and the CLI chain (``parse | sort | dedup | select``) is the
 tested happy path in the cooler / pairtools docs. Every invocation
-goes through :func:`epione.align._env.build_env` so subprocesses see
+goes through :func:`epione.upstream._env.build_env` so subprocesses see
 the active conda env's ``bin/`` regardless of how the caller's PATH
 was set up.
 """
@@ -27,7 +27,7 @@ import subprocess
 from pathlib import Path
 from typing import Optional, Sequence, Union
 
-from ..align._env import build_env, resolve_executable
+from ._env import build_env, resolve_executable
 
 
 HIC_TOOLS: Sequence[str] = (
@@ -68,7 +68,7 @@ def pairs_from_bam(
             and then *name-sorted* merged — pairtools pairs R1 and R2 by
             read name.
         chrom_sizes: 2-column TSV of chromosome sizes. Pass the same
-            file used by :mod:`epione.align.reference`.
+            file used by :mod:`epione.upstream.reference`.
         out_pairs: destination ``.pairs.gz`` path. The companion ``.px2``
             tabix index and ``.stats`` file are written alongside.
         min_mapq: minimum MAPQ filter applied during ``pairtools parse``.
