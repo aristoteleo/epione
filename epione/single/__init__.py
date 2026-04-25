@@ -1,3 +1,8 @@
+# Modality subpackages (v0.4 architecture). Existing scATAC tooling
+# will migrate into ``single.atac`` in PR 2; ``single.hic`` is
+# already populated.
+from . import atac, hic
+
 from ._call_peaks import macs3, merge_peaks
 
 from ._pseudobulk import (

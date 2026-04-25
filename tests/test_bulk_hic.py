@@ -1,10 +1,14 @@
-"""Smoke tests for epione.hic — build, correct, plot end-to-end on a
-synthetic pairs file.
+"""Smoke tests for the bulk Hi-C pipeline (v0.4 layout):
 
-Skips :func:`pairs_from_bam` because it requires a real Hi-C BAM.
-Everything downstream works on a synthetic 4DN-format `.pairs` with a
-loop-like diagonal motif, which is enough to exercise the ``pairs_to_cool``,
-``balance_cool`` and ``plot_contact_matrix`` code paths.
+  * :func:`epione.upstream.pairs_to_cool`
+  * :func:`epione.bulk.hic.balance_cool`
+  * :func:`epione.bulk.hic.plot_contact_matrix` /
+    :func:`epione.bulk.hic.plot_decay_curve` /
+    :func:`epione.bulk.hic.plot_coverage`
+
+Skips :func:`epione.upstream.pairs_from_bam` because it requires a
+real Hi-C BAM. Everything else works on a synthetic 4DN-format
+``.pairs`` with a loop-like diagonal motif.
 """
 from __future__ import annotations
 
@@ -60,7 +64,7 @@ def test_pairs_to_cool_builds_matrix(tmp_path):
 
     pairs_gz, sizes = _make_synthetic_pairs(tmp_path)
     out_cool = tmp_path / "synt.cool"
-    res = epi.hic.pairs_to_cool(
+    res = epi.upstream.pairs_to_cool(
         pairs_path=pairs_gz, chrom_sizes=sizes,
         out_cool=out_cool, binsize=50_000,
     )
@@ -80,9 +84,9 @@ def test_balance_cool_writes_weight_column(tmp_path):
 
     pairs_gz, sizes = _make_synthetic_pairs(tmp_path)
     out_cool = tmp_path / "synt.cool"
-    epi.hic.pairs_to_cool(pairs_gz, sizes, out_cool, binsize=50_000)
+    epi.upstream.pairs_to_cool(pairs_gz, sizes, out_cool, binsize=50_000)
 
-    stats = epi.hic.balance_cool(
+    stats = epi.bulk.hic.balance_cool(
         out_cool, mad_max=10, min_nnz=1, ignore_diags=0, max_iters=50,
     )
     assert "converged" in stats
@@ -103,10 +107,10 @@ def test_balance_cool_idempotent(tmp_path):
 
     pairs_gz, sizes = _make_synthetic_pairs(tmp_path)
     out_cool = tmp_path / "synt.cool"
-    epi.hic.pairs_to_cool(pairs_gz, sizes, out_cool, binsize=50_000)
+    epi.upstream.pairs_to_cool(pairs_gz, sizes, out_cool, binsize=50_000)
 
-    epi.hic.balance_cool(out_cool, mad_max=10, min_nnz=1, ignore_diags=0)
-    res2 = epi.hic.balance_cool(out_cool, mad_max=10, min_nnz=1, ignore_diags=0)
+    epi.bulk.hic.balance_cool(out_cool, mad_max=10, min_nnz=1, ignore_diags=0)
+    res2 = epi.bulk.hic.balance_cool(out_cool, mad_max=10, min_nnz=1, ignore_diags=0)
     assert res2["reused_existing"]
 
 
@@ -118,9 +122,9 @@ def test_plot_decay_curve(tmp_path):
 
     pairs_gz, sizes = _make_synthetic_pairs(tmp_path)
     out_cool = tmp_path / "synt.cool"
-    epi.hic.pairs_to_cool(pairs_gz, sizes, out_cool, binsize=50_000)
+    epi.upstream.pairs_to_cool(pairs_gz, sizes, out_cool, binsize=50_000)
 
-    fig, ax, df = epi.hic.plot_decay_curve(
+    fig, ax, df = epi.bulk.hic.plot_decay_curve(
         out_cool, balance=False, figsize=(5, 3),
     )
     assert ax.get_xscale() == "log"
@@ -138,10 +142,10 @@ def test_plot_coverage_two_panels_after_balance(tmp_path):
 
     pairs_gz, sizes = _make_synthetic_pairs(tmp_path)
     out_cool = tmp_path / "synt.cool"
-    epi.hic.pairs_to_cool(pairs_gz, sizes, out_cool, binsize=50_000)
-    epi.hic.balance_cool(out_cool, mad_max=10, min_nnz=1, ignore_diags=0)
+    epi.upstream.pairs_to_cool(pairs_gz, sizes, out_cool, binsize=50_000)
+    epi.bulk.hic.balance_cool(out_cool, mad_max=10, min_nnz=1, ignore_diags=0)
 
-    fig, axes = epi.hic.plot_coverage(out_cool, balance=False, figsize=(8, 3))
+    fig, axes = epi.bulk.hic.plot_coverage(out_cool, balance=False, figsize=(8, 3))
     assert len(axes) == 2  # coverage + weight panels after balance
     plt.close(fig)
 
@@ -154,9 +158,9 @@ def test_plot_contact_matrix_renders(tmp_path):
 
     pairs_gz, sizes = _make_synthetic_pairs(tmp_path)
     out_cool = tmp_path / "synt.cool"
-    epi.hic.pairs_to_cool(pairs_gz, sizes, out_cool, binsize=50_000)
+    epi.upstream.pairs_to_cool(pairs_gz, sizes, out_cool, binsize=50_000)
 
-    fig, ax, img = epi.hic.plot_contact_matrix(
+    fig, ax, img = epi.bulk.hic.plot_contact_matrix(
         out_cool, region="chr_synt", balance=False,
         figsize=(4, 3.5), title="synt",
     )
