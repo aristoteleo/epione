@@ -13,7 +13,7 @@ from urllib.parse import unquote
 from typing import Optional, Union
 from tqdm import tqdm
 
-from ..utils import console
+from epione.core import console
 
 def read_ATAC_10x(matrix, cell_names='', var_names='', path_file=''):
     """
@@ -94,7 +94,7 @@ def get_gene_annotation(
     >>> epi.tl.add_gene_score_matrix(adata, gene_anno=genes, use_x="auto")
     """
     # Resolve Genome → annotation path.
-    from ._genome import Genome
+    from epione.core.genome import Genome
     if isinstance(genome_or_path, Genome):
         path = str(genome_or_path.annotation)
     else:

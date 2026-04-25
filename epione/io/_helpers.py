@@ -10,7 +10,7 @@ import pickle
 from pathlib import Path
 from typing import Any, Optional
 
-from . import console
+from epione.core import console
 
 
 def _is_h5ad(path: str) -> bool:

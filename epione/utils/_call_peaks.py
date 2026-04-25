@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from ._genome import Genome
+from epione.core.genome import Genome
 from ..single.atac._call_peaks import merge_peaks as _merge_peaks_impl
 
 

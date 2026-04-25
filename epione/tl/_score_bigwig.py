@@ -24,7 +24,7 @@ import warnings
 
 # Try to import Cython optimized functions
 try:
-    from ..utils._footprint_cython import (
+    from epione.core._footprint_cython import (
         tobias_footprint_array, 
         fos_score_array,
         fast_rolling_mean,

@@ -22,7 +22,7 @@ import numpy as np
 import pandas as pd
 
 from ..utils import console
-from ..utils._genome import Genome
+from epione.core.genome import Genome
 
 
 # ---------------------------------------------------------------------------

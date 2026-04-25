@@ -35,7 +35,7 @@ import numpy as np
 import pandas as pd
 
 from ..utils import console
-from ..utils._genome import Genome
+from epione.core.genome import Genome
 from ._footprint import (
     _seq_to_codes, _codes_to_kmers, compute_tn5_bias_table,
 )

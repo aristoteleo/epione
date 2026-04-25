@@ -1,23 +1,29 @@
-"""Pre-built reference registries — instances of :class:`epione.core.genome.Genome`,
-PWM databases, etc.
+"""Pre-built reference registries — instances of :class:`epione.core.genome.Genome`.
 
-Use cases:
+The :class:`Genome` class lives in :mod:`epione.core.genome`; this
+module instantiates the canonical genomes (GRCh37/38, GRCm38/39) so
+they're available without recreating fetcher closures every time.
 
-    * ``epi.data.GRCh38`` — pre-built ``Genome`` for human;
-      pulls FASTA / GTF / chrom.sizes on first access, caches under
-      ``~/.cache/epione/``.
-    * ``epi.data.GRCm39`` — mouse counterpart.
-    * ``epi.data.JASPAR_2024`` — PWM database object ready to feed
-      ``epione.core.motifs.find_motifs_genome``.
+Example::
 
-Distinguished from :mod:`epione.datasets` (example bio data for
-tutorials) — *this* module is for foundational references that nearly
-every analysis uses.
+    import epione as epi
+    genome = epi.data.GRCh38
+    fasta_path = genome.fasta()  # downloads on first call, caches
 
-Populated during the v0.4 refactor when :mod:`epione.utils.genome`
-splits class definitions (→ :mod:`epione.core.genome`) from instances
-(→ here).
+Distinguished from :mod:`epione.datasets` (downloadable example bio
+data for tutorials).
 """
 from __future__ import annotations
 
-__all__: list[str] = []
+from .genomes import GRCh37, GRCh38, GRCm38, GRCm39, hg19, hg38, mm10, mm39
+
+__all__ = [
+    "GRCh37",
+    "GRCh38",
+    "GRCm38",
+    "GRCm39",
+    "hg19",
+    "hg38",
+    "mm10",
+    "mm39",
+]

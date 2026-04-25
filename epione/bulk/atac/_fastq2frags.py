@@ -947,7 +947,7 @@ def call_peaks_macs2(
 
 def _epione_datasets():
     try:
-        from epione.utils._genome import register_datasets
+        from epione.core.genome import register_datasets
     except Exception as e:
         raise RuntimeError("epione.utils._genome.register_datasets not available") from e
     return register_datasets()

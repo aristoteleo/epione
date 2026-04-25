@@ -1,4 +1,4 @@
-from ..utils._genome import Genome
+from epione.core.genome import Genome
 import gzip
 import numpy as np
 from pathlib import Path
@@ -7,7 +7,7 @@ import os
 from typing import Union, Optional, Literal
 import pandas as pd
 from anndata import AnnData
-from ..utils.genome import Genome
+from epione.core.genome import Genome
 
 
 from tqdm import tqdm
