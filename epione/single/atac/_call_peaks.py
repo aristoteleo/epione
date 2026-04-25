@@ -27,7 +27,7 @@ import numpy as np
 import pandas as pd
 from anndata import AnnData
 
-from epione.utils.genome import Genome
+from epione.core.genome import Genome
 from epione.utils import console
 
 

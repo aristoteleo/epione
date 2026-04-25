@@ -5,7 +5,7 @@ import pandas as pd
 import multiprocessing
 from tqdm import tqdm
 
-from ._read import read_gtf
+from epione.io._read import read_gtf
 
 def find_genes(adata,
                  gtf_file,

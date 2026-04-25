@@ -27,7 +27,7 @@ import numpy as np
 import pandas as pd
 
 from epione.utils import console
-from epione.utils._genome import Genome
+from epione.core.genome import Genome
 
 
 def _ensure_tabix(frags_gz: Path) -> Path:

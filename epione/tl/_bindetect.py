@@ -42,9 +42,9 @@ import pyBigWig as pybw
 
 
 from ._bindetect_functions import *
-from ..utils.utilities import *
-from ..utils.regions import *
-from ..utils.motifs import *
+from epione.core.utilities import *
+from epione.core.regions import *
+from epione.core.motifs import *
 from ..utils import console
 
 #For warnings from curve_fit

@@ -58,7 +58,7 @@ def bam_to_frags(
     return out_frags_gz
 def _epione_datasets():
     try:
-        from epione.utils._genome import register_datasets
+        from epione.core.genome import register_datasets
     except Exception as e:
         raise RuntimeError("epione.utils._genome.register_datasets not available") from e
     return register_datasets()
