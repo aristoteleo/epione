@@ -375,3 +375,252 @@ def plot_cell_contacts(
     fig.colorbar(img, ax=ax, shrink=0.8,
                  label="log contact" if log else "contact")
     return fig, ax
+
+
+def plot_saddle(
+    saddle_mat,
+    edges=None,
+    *,
+    cmap: str = "coolwarm",
+    vmin: float = -1.0,
+    vmax: float = 1.0,
+    figsize: Tuple[float, float] = (4.5, 4.0),
+    title: Optional[str] = None,
+    label: str = "log2(O/E)",
+    ax=None,
+):
+    """A/B compartment saddle plot.
+
+    Heatmap of mean log2(observed / expected) contact frequency across
+    bin-pairs binned by their compartment eigenvector quantile. Strong
+    AA / BB on the diagonal corners + weak AB / BA on the
+    anti-diagonal corners is the signature of a well-compartmentalised
+    genome; flatness signals weak compartmentalisation (e.g. early
+    embryos, mitotic).
+
+    Arguments:
+        saddle_mat: ``(n_bins, n_bins)`` matrix from
+            :func:`epione.bulk.hic.saddle`. log2-transformed
+            internally if the input is on linear scale (we detect
+            ``≥0`` everywhere → assume linear O/E and log2 it).
+        edges: per-bin quantile edges (only used to label the colour
+            bar / axes; pass the second return of
+            :func:`epione.bulk.hic.saddle`).
+        cmap, vmin, vmax: colour scale for log2(O/E). Default
+            ``coolwarm`` with ±1 limits is the cooltools convention.
+        figsize, title, ax: cosmetic.
+        label: colour-bar label.
+
+    Returns:
+        ``(fig, ax, img)``.
+    """
+    import matplotlib.pyplot as plt
+
+    M = np.asarray(saddle_mat, dtype=np.float64)
+    if (M >= 0).all():
+        with np.errstate(divide="ignore"):
+            M = np.log2(M)
+        M = np.where(np.isfinite(M), M, np.nan)
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+    else:
+        fig = ax.figure
+
+    img = ax.imshow(M, origin="lower", cmap=cmap, vmin=vmin, vmax=vmax,
+                    interpolation="none")
+    n = M.shape[0]
+    # Tick at corners + middle for orientation.
+    ax.set_xticks([0, n / 2 - 0.5, n - 1])
+    ax.set_yticks([0, n / 2 - 0.5, n - 1])
+    ax.set_xticklabels(["B", " ", "A"])
+    ax.set_yticklabels(["B", " ", "A"])
+    ax.set_xlabel("compartment quantile")
+    ax.set_ylabel("compartment quantile")
+    ax.set_title(title or "A/B saddle")
+    fig.colorbar(img, ax=ax, shrink=0.8, label=label)
+    return fig, ax, img
+
+
+def plot_compartments(
+    eig_track,
+    *,
+    chromosome: str,
+    track_column: str = "E1",
+    figsize: Tuple[float, float] = (8.0, 1.8),
+    color_pos: str = "#c13e3e",
+    color_neg: str = "#3a6eb3",
+    title: Optional[str] = None,
+    ax=None,
+):
+    """Compartment eigenvector track for one chromosome.
+
+    Bar plot in two colours — red where ``E1 > 0`` (A compartment),
+    blue where ``E1 < 0`` (B). The horizontal axis is genomic position
+    in megabases.
+
+    Arguments:
+        eig_track: per-bin DataFrame from
+            :func:`epione.bulk.hic.compartments`.
+        chromosome: which chrom to plot.
+        track_column: column to plot. Default ``E1``.
+        figsize, color_pos, color_neg, title, ax: cosmetic.
+
+    Returns:
+        ``(fig, ax)``.
+    """
+    import matplotlib.pyplot as plt
+
+    sub = eig_track.loc[eig_track["chrom"] == chromosome].copy()
+    if sub.empty:
+        raise KeyError(
+            f"chromosome {chromosome!r} not in eig_track; available: "
+            f"{sorted(eig_track['chrom'].unique())}"
+        )
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+    else:
+        fig = ax.figure
+
+    starts = sub["start"].to_numpy() / 1e6
+    widths = (sub["end"] - sub["start"]).to_numpy() / 1e6
+    vals = sub[track_column].to_numpy()
+    colors = [color_pos if v > 0 else color_neg for v in np.nan_to_num(vals)]
+    ax.bar(starts, vals, width=widths, color=colors, align="edge",
+           edgecolor="none")
+    ax.axhline(0, color="black", lw=0.5)
+    ax.set_xlabel(f"{chromosome} (Mb)")
+    ax.set_ylabel(track_column)
+    ax.set_title(title or f"compartments — {chromosome}")
+    for sp in ("top", "right"):
+        ax.spines[sp].set_visible(False)
+    return fig, ax
+
+
+def plot_contact_triangle(
+    cool_path: Union[str, Path],
+    region: str,
+    *,
+    balance: bool = True,
+    cmap: str = "Reds",
+    vmin: float = 0.0,
+    vmax: Optional[float] = None,
+    max_distance: Optional[int] = None,
+    log: bool = False,
+    figsize: Tuple[float, float] = (8.0, 1.6),
+    title: Optional[str] = None,
+    ax=None,
+    colorbar: bool = True,
+):
+    """45-degree rotated 'pyramid' contact map for a genomic region.
+
+    Renders the upper triangle of the contact matrix as a flat
+    horizontal band — the canonical Hi-C pyramid view used in
+    Maziak et al. 2026 Fig 1c (and in HiGlass / cooltools tutorials).
+    Genomic position runs along the x-axis; contact distance from
+    the diagonal runs up the y-axis. Useful for comparing many
+    stages stacked above one another.
+
+    Arguments:
+        cool_path: ``.cool`` / ``.mcool::resolutions/N`` path.
+        region: UCSC-style interval. Underscores / commas in
+            coordinates are stripped before passing to cooler.
+        balance: use balanced contacts (requires ``balance_cool`` to
+            have been run, or an mcool layer with ``weight``).
+        cmap, vmin, vmax: matplotlib colour mapping. ``vmax=None``
+            auto-detects the 99-th percentile of finite values.
+        max_distance: cap the displayed contact distance in bp; the
+            band above that is cropped. Useful for fine-resolution
+            cool where short-range contacts dominate. ``None`` =
+            full upper triangle (height = window width / 2).
+        log: log-scale colour mapping (``log10(1 + contacts)``).
+            Default linear, matching the paper's Fig 1c.
+        figsize, title, ax, colorbar: cosmetic.
+
+    Returns:
+        ``(fig, ax, mesh)`` — the figure, axis, and the
+        ``QuadMesh`` returned by ``ax.pcolormesh``.
+    """
+    import cooler
+    import matplotlib.pyplot as plt
+
+    clr = cooler.Cooler(str(cool_path))
+
+    if ":" in region:
+        chrom, span = region.split(":", 1)
+        lo_str, hi_str = span.replace(",", "").replace("_", "").split("-")
+        lo, hi = int(lo_str), int(hi_str)
+    else:
+        chrom = region
+        lo = 0
+        hi = int(clr.chromsizes[chrom])
+
+    binsize = int(clr.binsize)
+
+    # Pad the fetched window by max_distance/2 on each side so that
+    # cells whose midpoint sits inside [lo, hi] but whose endpoints are
+    # outside still get rendered. Without this, the rendered band has
+    # triangular cut-offs at both edges instead of rectangular ends.
+    pad = int(max_distance) // 2 if max_distance is not None else 0
+    chrom_size = int(clr.chromsizes[chrom])
+    fetch_lo = max(0, lo - pad)
+    fetch_hi = min(chrom_size, hi + pad)
+    region_clean = f"{chrom}:{fetch_lo}-{fetch_hi}"
+    mat = clr.matrix(balance=balance).fetch(region_clean)
+    n = mat.shape[0]
+
+    # Build a (max_d+1, n) array where row d is the k=d diagonal of the
+    # contact matrix — i.e. M_diag[d, p] is the contact between bin p and
+    # bin p+d in the *padded* window.
+    if max_distance is not None:
+        max_d = min(int(max_distance) // binsize, n - 1)
+    else:
+        max_d = n - 1
+
+    M_diag = np.full((max_d + 1, n), np.nan)
+    for d in range(max_d + 1):
+        diag = np.diag(mat, k=d)
+        M_diag[d, : len(diag)] = diag
+
+    # Per-row x corners: shift row d by d/2 bins so cell midpoints align
+    # with the bin-pair midpoint. ``fetch_lo`` is the start of the
+    # padded fetched window (used as the absolute genomic origin of
+    # the pcolormesh; ``set_xlim`` below crops to the requested
+    # [lo, hi] range so the band ends are flat / rectangular).
+    p_arr = np.arange(n + 1, dtype=float)
+    d_arr = np.arange(max_d + 2, dtype=float)
+    Xc = p_arr[None, :] * binsize + fetch_lo + d_arr[:, None] * binsize * 0.5
+    Yc = (d_arr[:, None] * binsize) * np.ones_like(Xc)
+
+    M = M_diag
+
+    if log:
+        with np.errstate(invalid="ignore"):
+            M = np.log10(M + 1.0)
+    finite = M[np.isfinite(M)]
+    if vmax is None:
+        vmax = float(np.quantile(finite, 0.99)) if finite.size else 1.0
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+    else:
+        fig = ax.figure
+
+    mesh = ax.pcolormesh(
+        Xc, Yc, M, cmap=cmap, vmin=vmin, vmax=vmax, shading="auto",
+    )
+    ax.set_xlim(lo, hi)
+    ax.set_ylim(0, max_distance if max_distance is not None else (hi - lo))
+    # Aspect = 'auto' so the band is wide-and-thin (matching the
+    # canonical Maziak Fig 1c stacked layout); the caller controls the
+    # actual visual aspect via ``figsize``.
+    ax.set_xlabel(f"{chrom} position (bp)")
+    ax.set_ylabel("contact distance (bp)")
+    ax.set_title(title or f"{Path(cool_path).name} — {region}")
+    for sp in ("top", "right"):
+        ax.spines[sp].set_visible(False)
+    if colorbar:
+        fig.colorbar(mesh, ax=ax, shrink=0.7,
+                     label="log10(1+contact)" if log else "contact")
+    return fig, ax, mesh
