@@ -375,3 +375,124 @@ def plot_cell_contacts(
     fig.colorbar(img, ax=ax, shrink=0.8,
                  label="log contact" if log else "contact")
     return fig, ax
+
+
+def plot_saddle(
+    saddle_mat,
+    edges=None,
+    *,
+    cmap: str = "coolwarm",
+    vmin: float = -1.0,
+    vmax: float = 1.0,
+    figsize: Tuple[float, float] = (4.5, 4.0),
+    title: Optional[str] = None,
+    label: str = "log2(O/E)",
+    ax=None,
+):
+    """A/B compartment saddle plot.
+
+    Heatmap of mean log2(observed / expected) contact frequency across
+    bin-pairs binned by their compartment eigenvector quantile. Strong
+    AA / BB on the diagonal corners + weak AB / BA on the
+    anti-diagonal corners is the signature of a well-compartmentalised
+    genome; flatness signals weak compartmentalisation (e.g. early
+    embryos, mitotic).
+
+    Arguments:
+        saddle_mat: ``(n_bins, n_bins)`` matrix from
+            :func:`epione.bulk.hic.saddle`. log2-transformed
+            internally if the input is on linear scale (we detect
+            ``≥0`` everywhere → assume linear O/E and log2 it).
+        edges: per-bin quantile edges (only used to label the colour
+            bar / axes; pass the second return of
+            :func:`epione.bulk.hic.saddle`).
+        cmap, vmin, vmax: colour scale for log2(O/E). Default
+            ``coolwarm`` with ±1 limits is the cooltools convention.
+        figsize, title, ax: cosmetic.
+        label: colour-bar label.
+
+    Returns:
+        ``(fig, ax, img)``.
+    """
+    import matplotlib.pyplot as plt
+
+    M = np.asarray(saddle_mat, dtype=np.float64)
+    if (M >= 0).all():
+        with np.errstate(divide="ignore"):
+            M = np.log2(M)
+        M = np.where(np.isfinite(M), M, np.nan)
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+    else:
+        fig = ax.figure
+
+    img = ax.imshow(M, origin="lower", cmap=cmap, vmin=vmin, vmax=vmax,
+                    interpolation="none")
+    n = M.shape[0]
+    # Tick at corners + middle for orientation.
+    ax.set_xticks([0, n / 2 - 0.5, n - 1])
+    ax.set_yticks([0, n / 2 - 0.5, n - 1])
+    ax.set_xticklabels(["B", " ", "A"])
+    ax.set_yticklabels(["B", " ", "A"])
+    ax.set_xlabel("compartment quantile")
+    ax.set_ylabel("compartment quantile")
+    ax.set_title(title or "A/B saddle")
+    fig.colorbar(img, ax=ax, shrink=0.8, label=label)
+    return fig, ax, img
+
+
+def plot_compartments(
+    eig_track,
+    *,
+    chromosome: str,
+    track_column: str = "E1",
+    figsize: Tuple[float, float] = (8.0, 1.8),
+    color_pos: str = "#c13e3e",
+    color_neg: str = "#3a6eb3",
+    title: Optional[str] = None,
+    ax=None,
+):
+    """Compartment eigenvector track for one chromosome.
+
+    Bar plot in two colours — red where ``E1 > 0`` (A compartment),
+    blue where ``E1 < 0`` (B). The horizontal axis is genomic position
+    in megabases.
+
+    Arguments:
+        eig_track: per-bin DataFrame from
+            :func:`epione.bulk.hic.compartments`.
+        chromosome: which chrom to plot.
+        track_column: column to plot. Default ``E1``.
+        figsize, color_pos, color_neg, title, ax: cosmetic.
+
+    Returns:
+        ``(fig, ax)``.
+    """
+    import matplotlib.pyplot as plt
+
+    sub = eig_track.loc[eig_track["chrom"] == chromosome].copy()
+    if sub.empty:
+        raise KeyError(
+            f"chromosome {chromosome!r} not in eig_track; available: "
+            f"{sorted(eig_track['chrom'].unique())}"
+        )
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+    else:
+        fig = ax.figure
+
+    starts = sub["start"].to_numpy() / 1e6
+    widths = (sub["end"] - sub["start"]).to_numpy() / 1e6
+    vals = sub[track_column].to_numpy()
+    colors = [color_pos if v > 0 else color_neg for v in np.nan_to_num(vals)]
+    ax.bar(starts, vals, width=widths, color=colors, align="edge",
+           edgecolor="none")
+    ax.axhline(0, color="black", lw=0.5)
+    ax.set_xlabel(f"{chromosome} (Mb)")
+    ax.set_ylabel(track_column)
+    ax.set_title(title or f"compartments — {chromosome}")
+    for sp in ("top", "right"):
+        ax.spines[sp].set_visible(False)
+    return fig, ax
