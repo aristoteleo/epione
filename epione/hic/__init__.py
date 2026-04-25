@@ -18,12 +18,14 @@ from __future__ import annotations
 
 from .build import pairs_from_bam, pairs_to_cool, HIC_TOOLS
 from .correct import balance_cool
-from .plot import plot_contact_matrix
+from .plot import plot_contact_matrix, plot_decay_curve, plot_coverage
 
 __all__ = [
     "pairs_from_bam",
     "pairs_to_cool",
     "balance_cool",
     "plot_contact_matrix",
+    "plot_decay_curve",
+    "plot_coverage",
     "HIC_TOOLS",
 ]
