@@ -57,7 +57,10 @@ def plot_contact_matrix(
     from matplotlib.colors import LogNorm, Normalize
 
     clr = cooler.Cooler(str(cool_path))
-    mat = clr.matrix(balance=balance).fetch(region)
+    # cooler's region parser rejects Python-style underscores + commas
+    # in coordinate literals; normalise before passing.
+    region_clean = region.replace(",", "").replace("_", "")
+    mat = clr.matrix(balance=balance).fetch(region_clean)
     finite = mat[np.isfinite(mat)]
     if vmin is None:
         vmin = float(np.quantile(finite, 0.01)) if finite.size else 0.0
