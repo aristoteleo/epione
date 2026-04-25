@@ -4,7 +4,7 @@ import os
 import sys
 import shutil
 import warnings
-from ..utils import console
+from epione.utils import console
 
 # deepTools packages
 from ._mapreduce import mapReduce

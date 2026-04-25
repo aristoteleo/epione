@@ -1,14 +1,14 @@
 """Peak merge utility — re-exports the pure-Python implementation from
-:mod:`epione.single._call_peaks`. Accepts per-sample peak dicts in any of
-the common formats (pandas / polars / bare DataFrame) and normalises
-to the pandas pipeline used by the merger.
+:mod:`epione.single.atac._call_peaks`. Accepts per-sample peak dicts in
+any of the common formats (pandas / polars / bare DataFrame) and
+normalises to the pandas pipeline used by the merger.
 """
 from __future__ import annotations
 
 import pandas as pd
 
 from ._genome import Genome
-from ..single._call_peaks import merge_peaks as _merge_peaks_impl
+from ..single.atac._call_peaks import merge_peaks as _merge_peaks_impl
 
 
 def merge_peaks(

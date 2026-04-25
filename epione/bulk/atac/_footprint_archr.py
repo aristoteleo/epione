@@ -26,8 +26,8 @@ from typing import Dict, List, Optional, Sequence, Union
 import numpy as np
 import pandas as pd
 
-from ..utils import console
-from ..utils._genome import Genome
+from epione.utils import console
+from epione.utils._genome import Genome
 
 
 def _ensure_tabix(frags_gz: Path) -> Path:
@@ -196,7 +196,7 @@ def footprint_archr(
                                     names=["chrom", "start", "end"],
                                     usecols=[0, 1, 2])
 
-    from ..tl._footprint import get_footprints
+    from epione.tl._footprint import get_footprints
     fp = get_footprints(
         adata,
         positions=positions,
