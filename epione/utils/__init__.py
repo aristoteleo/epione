@@ -66,6 +66,9 @@ from epione.core._compat import obs_to_pandas, var_to_pandas  # noqa: F401
 # Module-level shim attributes so ``from epione.utils import console``
 # / ``from epione.utils import motifs`` keep resolving.
 from epione.core import console, logger, motifs, regions, utilities  # noqa: F401
+# ``epi.utils.genome.hg19`` style access — instances live at
+# :mod:`epione.data.genomes` since PR 4.
+from epione.data import genomes as genome  # noqa: F401
 
 # The thin merge_peaks wrapper specific to utils stays here (it's a
 # pandas-tolerant shim around single.atac._call_peaks.merge_peaks).
