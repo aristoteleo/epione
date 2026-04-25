@@ -27,7 +27,9 @@ import io
 
 #Bio-specific packages
 from Bio import motifs
-import logomaker
+# Heavy optional deps (used only inside specific methods) are imported
+# lazily so ``import epione`` succeeds without them installed; the
+# ``Logo`` / ``logomaker`` viz path imports them at call time.
 import MOODS.scan
 import MOODS.tools
 import MOODS.parsers
@@ -1062,6 +1064,10 @@ class OneMotif:
 
 		if not motif_len:
 			motif_len = df.shape[0]
+
+		# logomaker is heavy + optional — keep the import lazy so the
+		# rest of this module loads without it.
+		import logomaker
 
 		# transform matrix to information based values
 		info_df = logomaker.transform_matrix(df, from_type="counts", to_type="information")

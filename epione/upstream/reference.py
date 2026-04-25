@@ -125,9 +125,9 @@ def prepare_reference(
 
 def fetch_genome_fasta(genome: str) -> Path:
     try:
-        from epione.utils._genome import register_datasets
+        from epione.core.genome import register_datasets
     except Exception as e:
-        raise RuntimeError("epione.utils._genome.register_datasets not available") from e
+        raise RuntimeError("epione.core.genome.register_datasets not available") from e
     ds = register_datasets()
     key_map = {
         "GRCh37": "gencode_v41_GRCh37.fa.gz",
@@ -143,9 +143,9 @@ def fetch_genome_fasta(genome: str) -> Path:
 
 def fetch_genome_annotation(genome: str) -> Path:
     try:
-        from epione.utils._genome import register_datasets
+        from epione.core.genome import register_datasets
     except Exception as e:
-        raise RuntimeError("epione.utils._genome.register_datasets not available") from e
+        raise RuntimeError("epione.core.genome.register_datasets not available") from e
     ds = register_datasets()
     key_map = {
         "GRCh37": "gencode_v41_GRCh37.gff3.gz",
