@@ -40,3 +40,9 @@ epione_guide/tutorials/**/data-tobias-2020/
 # Cython build artifacts
 *.so
 *.pycepione_guide/tutorials/**/genome/
+# Upstream tutorial scratch dirs (FASTQ + ref + result, downloaded at notebook run time)
+epione_guide/tutorials/**/galaxy_atac_demo/
+epione_guide/tutorials/**/galaxy_chipseq_demo/
+epione_guide/tutorials/**/galaxy_cutrun_demo/
+epione_guide/tutorials/**/heme_footprint/
+epione_guide/tutorials/**/label_transfer/
