@@ -1,31 +1,39 @@
-"""Hi-C analysis module — native Python wrappers over cooler + cooltools
-+ pairtools for contact matrix construction, balancing, and visualisation.
+"""DEPRECATED: ``epione.hic`` was split in v0.4 between
 
-Design mirrors :mod:`epione.align` (upstream) and
-:mod:`epione.bulk.footprint_archr` (analysis wrapper): every entry
-point takes canonical paths (BAM, chrom.sizes, .cool) and returns the
-next artefact in the pipeline, so a tutorial can thread a FASTQ ->
-BAM -> pairs -> .cool -> balanced .cool -> compartments / TADs / loops
-flow with one epione call per stage.
+* :mod:`epione.upstream` — pipeline ops (``pairs_from_bam``, ``pairs_to_cool``)
+* :mod:`epione.bulk.hic` — bulk Hi-C analysis (``balance_cool``, plotting)
 
-Phase 1 (this module) covers:
-    * :func:`pairs_from_bam`   — BAM → deduped, filtered .pairs.gz
-    * :func:`pairs_to_cool`    — pairs.gz → .cool at a given binsize
-    * :func:`balance_cool`     — ICE-balance a .cool in place
-    * :func:`plot_contact_matrix` — quick log-scale heatmap for a region
+The old import path still works but emits a :class:`DeprecationWarning`.
+This alias will be removed in v0.5.
 """
 from __future__ import annotations
 
-from .build import pairs_from_bam, pairs_to_cool, HIC_TOOLS
-from .correct import balance_cool
-from .plot import plot_contact_matrix, plot_decay_curve, plot_coverage
+import warnings as _warnings
+
+_warnings.warn(
+    "epione.hic was split in v0.4: use epione.upstream for "
+    "pairs_from_bam / pairs_to_cool and epione.bulk.hic for balance_cool "
+    "+ plotting. This alias will be removed in v0.5.",
+    DeprecationWarning,
+    stacklevel=2,
+)
+
+# Re-export the canonical surface from the new locations so user code
+# still works.
+from epione.upstream import pairs_from_bam, pairs_to_cool, HIC_TOOLS  # noqa: F401
+from epione.bulk.hic import (  # noqa: F401
+    balance_cool,
+    plot_contact_matrix,
+    plot_decay_curve,
+    plot_coverage,
+)
 
 __all__ = [
     "pairs_from_bam",
     "pairs_to_cool",
+    "HIC_TOOLS",
     "balance_cool",
     "plot_contact_matrix",
     "plot_decay_curve",
     "plot_coverage",
-    "HIC_TOOLS",
 ]

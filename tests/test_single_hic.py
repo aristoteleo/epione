@@ -1,5 +1,5 @@
-"""Smoke tests for epione.sc_hic — load → impute → embed end-to-end on
-a synthetic 8-cell collection.
+"""Smoke tests for :mod:`epione.single.hic` — load → impute → embed
+end-to-end on a synthetic 8-cell collection.
 
 Each cell is a tiny .cool built from random 4DN-format pairs, so no
 real Hi-C aligner / dataset is needed. Cells are split into two
@@ -61,7 +61,7 @@ def _make_cell_cool(out_dir: Path, cell_id: str, *,
     pysam.tabix_compress(str(pairs_path), str(pairs_gz), force=True)
 
     cool_path = out_dir / f"{cell_id}.cool"
-    epi.hic.pairs_to_cool(
+    epi.upstream.pairs_to_cool(
         pairs_path=pairs_gz, chrom_sizes=sizes_path,
         out_cool=cool_path, binsize=50_000,
     )
@@ -107,7 +107,7 @@ def test_impute_cell_chromosome_pure_function():
         C[i, j] += 1
         C[j, i] += 1
 
-    P = epi.sc_hic.impute_cell_chromosome(
+    P = epi.single.hic.impute_cell_chromosome(
         C, pad=1, rwr_alpha=0.05, top_pct=0.1,
     )
     assert P.shape == (n, n)
@@ -122,7 +122,7 @@ def test_load_cool_collection_indexes_cells(tmp_path):
     import epione as epi
 
     cool_paths, cell_ids, obs = _build_collection(tmp_path, n_per_group=2)
-    adata = epi.sc_hic.load_cool_collection(
+    adata = epi.single.hic.load_cool_collection(
         cool_paths, cell_ids=cell_ids, obs=obs,
     )
     assert adata.n_obs == 4
@@ -140,11 +140,11 @@ def test_impute_cells_writes_per_cell_npz(tmp_path):
     import epione as epi
 
     cool_paths, cell_ids, obs = _build_collection(tmp_path, n_per_group=2)
-    adata = epi.sc_hic.load_cool_collection(
+    adata = epi.single.hic.load_cool_collection(
         cool_paths, cell_ids=cell_ids, obs=obs,
     )
     out_dir = tmp_path / "imputed"
-    epi.sc_hic.impute_cells(
+    epi.single.hic.impute_cells(
         adata, out_dir=out_dir,
         pad=1, rwr_alpha=0.05, top_pct=0.1,
         progress=False,
@@ -162,16 +162,16 @@ def test_impute_cells_skips_existing(tmp_path):
     import epione as epi
 
     cool_paths, cell_ids, obs = _build_collection(tmp_path, n_per_group=2)
-    adata = epi.sc_hic.load_cool_collection(
+    adata = epi.single.hic.load_cool_collection(
         cool_paths, cell_ids=cell_ids, obs=obs,
     )
     out_dir = tmp_path / "imputed"
-    epi.sc_hic.impute_cells(adata, out_dir=out_dir, progress=False)
+    epi.single.hic.impute_cells(adata, out_dir=out_dir, progress=False)
     # Touch an .npz with junk content; if overwrite=False it must not
     # be touched.
     junk = out_dir / f"{cell_ids[0]}.npz"
     junk.write_bytes(b"")
-    epi.sc_hic.impute_cells(
+    epi.single.hic.impute_cells(
         adata, out_dir=out_dir, overwrite=False, progress=False,
     )
     assert junk.read_bytes() == b""
@@ -185,14 +185,14 @@ def test_embedding_separates_two_groups(tmp_path):
     import epione as epi
 
     cool_paths, cell_ids, obs = _build_collection(tmp_path, n_per_group=4)
-    adata = epi.sc_hic.load_cool_collection(
+    adata = epi.single.hic.load_cool_collection(
         cool_paths, cell_ids=cell_ids, obs=obs,
     )
-    epi.sc_hic.impute_cells(
+    epi.single.hic.impute_cells(
         adata, out_dir=tmp_path / "imputed",
         pad=1, rwr_alpha=0.05, top_pct=0.1, progress=False,
     )
-    new = epi.sc_hic.embedding(
+    new = epi.single.hic.embedding(
         adata, n_components=4, standardise=True,
     )
     assert "X_pca" in new.obsm
@@ -211,16 +211,16 @@ def test_plot_embedding_renders(tmp_path):
     import epione as epi
 
     cool_paths, cell_ids, obs = _build_collection(tmp_path, n_per_group=2)
-    adata = epi.sc_hic.load_cool_collection(
+    adata = epi.single.hic.load_cool_collection(
         cool_paths, cell_ids=cell_ids, obs=obs,
     )
-    epi.sc_hic.impute_cells(
+    epi.single.hic.impute_cells(
         adata, out_dir=tmp_path / "imputed",
         pad=1, rwr_alpha=0.05, top_pct=0.1, progress=False,
     )
-    new = epi.sc_hic.embedding(adata, n_components=2)
+    new = epi.single.hic.embedding(adata, n_components=2)
 
-    fig, ax = epi.sc_hic.plot_embedding(
+    fig, ax = epi.single.hic.plot_embedding(
         new, basis="X_pca", color="group", figsize=(4, 3),
     )
     assert fig is not None and ax is not None
@@ -234,23 +234,23 @@ def test_plot_cell_contacts_imputed_vs_raw(tmp_path):
     import epione as epi
 
     cool_paths, cell_ids, obs = _build_collection(tmp_path, n_per_group=1)
-    adata = epi.sc_hic.load_cool_collection(
+    adata = epi.single.hic.load_cool_collection(
         cool_paths, cell_ids=cell_ids, obs=obs,
     )
     cid = cell_ids[0]
 
     # Raw works without impute_cells having run.
-    fig_raw, _ = epi.sc_hic.plot_cell_contacts(
+    fig_raw, _ = epi.single.hic.plot_cell_contacts(
         adata, cell_id=cid, chromosome="chr_a", use_imputed=False,
         figsize=(4, 3.5),
     )
     plt.close(fig_raw)
 
-    epi.sc_hic.impute_cells(
+    epi.single.hic.impute_cells(
         adata, out_dir=tmp_path / "imputed",
         pad=1, rwr_alpha=0.05, top_pct=0.1, progress=False,
     )
-    fig_imp, _ = epi.sc_hic.plot_cell_contacts(
+    fig_imp, _ = epi.single.hic.plot_cell_contacts(
         adata, cell_id=cid, chromosome="chr_a", use_imputed=True,
         figsize=(4, 3.5),
     )
