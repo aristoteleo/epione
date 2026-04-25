@@ -58,8 +58,16 @@ def plot_contact_matrix(
 
     clr = cooler.Cooler(str(cool_path))
     # cooler's region parser rejects Python-style underscores + commas
-    # in coordinate literals; normalise before passing.
-    region_clean = region.replace(",", "").replace("_", "")
+    # inside coordinate literals (chr2L:10_000_000-13_000_000), but
+    # underscores are legal in chrom names (chr_synt). Strip only on
+    # the span side of the colon.
+    if ":" in region:
+        _chrom_part, _span_part = region.split(":", 1)
+        region_clean = (
+            _chrom_part + ":" + _span_part.replace(",", "").replace("_", "")
+        )
+    else:
+        region_clean = region
     mat = clr.matrix(balance=balance).fetch(region_clean)
     finite = mat[np.isfinite(mat)]
     if vmin is None:
