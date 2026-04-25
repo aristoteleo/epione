@@ -93,18 +93,18 @@ def test_build_env_respects_extra_env_and_paths():
     assert env["MYFLAG"] == "1"
 
 
-def test_bulk_env_mirrors_upstream_env_api():
-    """epione.bulk._env and epione.upstream._env should expose the same
-    surface — they're pure-Python duplicates of the same algorithm.
+def test_bulk_atac_env_mirrors_upstream_env_api():
+    """epione.bulk.atac._env and epione.upstream._env should expose the
+    same surface — they're pure-Python duplicates of the same algorithm.
 
-    PR 4 will collapse the duplication by moving ``epione.bulk._env``
-    out of ``bulk/`` (it's not bulk-specific) into ``epione.core`` or
-    a re-export from ``epione.upstream``."""
+    PR 4 will collapse the duplication by moving the env helpers out
+    of ``bulk/atac/`` into ``epione.core`` or a re-export from
+    :mod:`epione.upstream`."""
     from epione.upstream import _env as upstream_env
-    from epione.bulk import _env as bulk_env
+    from epione.bulk.atac import _env as bulk_atac_env
 
     for sym in ("resolve_executable", "tool_path", "check_tools",
                 "build_env", "run_cmd", "ATAC_TOOLS", "RNA_TOOLS",
                 "MOTIF_TOOLS"):
-        assert hasattr(upstream_env, sym), f"upstream missing {sym}"
-        assert hasattr(bulk_env, sym),     f"bulk missing {sym}"
+        assert hasattr(upstream_env, sym),  f"upstream missing {sym}"
+        assert hasattr(bulk_atac_env, sym), f"bulk.atac missing {sym}"

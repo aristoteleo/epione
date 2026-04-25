@@ -43,7 +43,7 @@ def resolve_tool(name: str, explicit: Optional[str] = None) -> str:
         return explicit
 
     try:
-        from ..bulk._env import tool_path
+        from ._env import tool_path
 
         return tool_path(name)
     except Exception:

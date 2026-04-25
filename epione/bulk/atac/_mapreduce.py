@@ -1,6 +1,6 @@
 import multiprocessing
 import random
-from ..utils import console
+from epione.utils import console
 
 debug = 0
 
