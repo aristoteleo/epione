@@ -39,4 +39,4 @@ epione_guide/tutorials/**/data-tobias-2020/
 
 # Cython build artifacts
 *.so
-*.pyc
+*.pycepione_guide/tutorials/**/genome/
