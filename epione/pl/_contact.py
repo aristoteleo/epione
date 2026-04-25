@@ -716,3 +716,133 @@ def plot_insulation(
     for sp in ("top", "right"):
         ax.spines[sp].set_visible(False)
     return fig, ax
+
+
+def plot_apa(
+    apa_matrix,
+    *,
+    flank: Optional[int] = None,
+    binsize: Optional[int] = None,
+    cmap: str = "coolwarm",
+    vmin: float = -1.0,
+    vmax: float = 1.0,
+    log: bool = True,
+    figsize: Tuple[float, float] = (4.0, 3.6),
+    title: Optional[str] = None,
+    ax=None,
+    colorbar: bool = True,
+):
+    """Aggregate peak-analysis (APA) heatmap from
+    :func:`epione.bulk.hic.pileup`.
+
+    Arguments:
+        apa_matrix: 2-D mean observed-over-expected matrix.
+        flank, binsize: tick-label hints; if both supplied, axis ticks
+            show distance from feature centre in kb.
+        cmap, vmin, vmax: ``coolwarm ±1`` log2(O/E) is the cooltools
+            APA convention. ``log`` log2-transforms a linear input.
+        figsize, title, ax, colorbar: cosmetic.
+
+    Returns:
+        ``(fig, ax, img)``.
+    """
+    import matplotlib.pyplot as plt
+
+    M = np.asarray(apa_matrix, dtype=np.float64)
+    if log and (M >= 0).all():
+        with np.errstate(divide="ignore"):
+            M = np.log2(M)
+        M = np.where(np.isfinite(M), M, np.nan)
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+    else:
+        fig = ax.figure
+
+    img = ax.imshow(M, origin="lower", cmap=cmap,
+                    vmin=vmin, vmax=vmax, interpolation="none")
+    n = M.shape[0]
+    if flank is not None and binsize is not None:
+        # tick at ±flank corners + 0 centre
+        ticks = [0, n // 2, n - 1]
+        ax.set_xticks(ticks)
+        ax.set_yticks(ticks)
+        labels = [f"-{flank/1000:.0f} kb", "0", f"+{flank/1000:.0f} kb"]
+        ax.set_xticklabels(labels)
+        ax.set_yticklabels(labels)
+    ax.set_title(title or "APA")
+    if colorbar:
+        fig.colorbar(img, ax=ax, shrink=0.8,
+                     label="log2(O/E)" if log else "O/E")
+    return fig, ax, img
+
+
+def plot_loops(
+    cool_path,
+    region: str,
+    loops_df,
+    *,
+    balance: bool = True,
+    cmap: str = "YlOrRd",
+    log: bool = True,
+    figsize: Tuple[float, float] = (6.0, 5.5),
+    loop_color: str = "#1f4e79",
+    loop_marker: str = "o",
+    loop_size: float = 30.0,
+    title: Optional[str] = None,
+    ax=None,
+):
+    """Contact-matrix heatmap with called loop dots overlaid.
+
+    Renders :func:`plot_contact_matrix` for ``region`` and adds
+    scatter markers at every loop in ``loops_df`` whose anchors fall
+    inside the window — the canonical figure 1 / 3 panel from
+    Maziak 2026 / Chang 2024 showing dot-finder calls in context.
+
+    Arguments:
+        cool_path: ``.cool`` / ``.mcool::resolutions/N``.
+        region: UCSC interval (underscores / commas allowed).
+        loops_df: BEDPE-shaped DataFrame from
+            :func:`epione.bulk.hic.loops` (must have ``chrom1, start1,
+            end1, chrom2, start2, end2``).
+        balance, cmap, log: forwarded to ``plot_contact_matrix``.
+        figsize, ax, title: cosmetic.
+        loop_color, loop_marker, loop_size: scatter style for the
+            overlay.
+
+    Returns:
+        ``(fig, ax)``.
+    """
+    import matplotlib.pyplot as plt
+
+    fig, ax_, _ = plot_contact_matrix(
+        cool_path, region=region,
+        balance=balance, cmap=cmap, log=log,
+        figsize=figsize, title=title, ax=ax, colorbar=True,
+    )
+
+    chrom = region.split(":", 1)[0] if ":" in region else region
+    if ":" in region:
+        span = region.split(":", 1)[1]
+        lo_str, hi_str = span.replace(",", "").replace("_", "").split("-")
+        lo, hi = int(lo_str), int(hi_str)
+    else:
+        import cooler
+        c = cooler.Cooler(str(cool_path))
+        lo = 0
+        hi = int(c.chromsizes[chrom])
+
+    sub = loops_df[
+        (loops_df["chrom1"] == chrom) & (loops_df["chrom2"] == chrom)
+        & (loops_df["start1"] >= lo) & (loops_df["end1"] <= hi)
+        & (loops_df["start2"] >= lo) & (loops_df["end2"] <= hi)
+    ]
+    x = (sub["start1"] + sub["end1"]) / 2
+    y = (sub["start2"] + sub["end2"]) / 2
+    # plot_contact_matrix uses extent=[lo, hi, hi, lo] — so y-axis is
+    # flipped. Plot loops at both (x, y) and (y, x) so they show up on
+    # both upper / lower triangles, matching the symmetric heatmap.
+    ax_.scatter(np.r_[x, y], np.r_[y, x],
+                s=loop_size, marker=loop_marker,
+                facecolors="none", edgecolors=loop_color, linewidths=1.2)
+    return fig, ax_
