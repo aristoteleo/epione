@@ -1,6 +1,6 @@
-"""Single-cell Hi-C input — index a directory of per-cell cools into an
-AnnData skeleton that downstream :func:`impute_cells` / :func:`embedding`
-fill in.
+"""Single-cell Hi-C input — index a directory of per-cell cools (or one
+``.scool`` bundle) into an AnnData skeleton that downstream
+:func:`impute_cells` / :func:`embedding` fill in.
 
 We deliberately do NOT load contacts into memory here; per-cell ``.cool``
 files stay on disk and are streamed during imputation. ``adata.X`` is
@@ -108,3 +108,82 @@ def load_cool_collection(
         },
     }
     return adata
+
+
+def load_scool_cells(
+    scool_path: Union[str, Path],
+    *,
+    cell_names: Optional[Sequence[str]] = None,
+    obs: Optional[pd.DataFrame] = None,
+    chromosomes: Optional[Sequence[str]] = None,
+):
+    """Index cells inside a multi-cell ``.scool`` HDF5 bundle.
+
+    Two on-disk layouts are supported:
+
+    * **Modern scool** (Bioinformatics 2021): cells live under
+      ``/cells/<name>``. This is what ``cooler.fileops.list_scool_cells``
+      enumerates; URIs become ``<path>::/cells/<name>``.
+    * **Legacy multi-cool** (HiCMatrix / HiCExplorer pre-2021,
+      including the Zenodo Nagano 2017 bundle): each cell is a
+      *top-level* HDF5 group with the standard cooler layout. URIs
+      become ``<path>::/<name>``.
+
+    The wrapper auto-detects format by trying the modern layout first
+    and falling back to legacy. Either way it forwards a list of
+    cooler URIs to :func:`load_cool_collection`, so downstream
+    :func:`impute_cells` / :func:`embedding` see one cell per row.
+
+    Arguments:
+        scool_path: path to the ``.scool`` HDF5 file.
+        cell_names: subset of cells to load. ``None`` (default) loads
+            every cell in the bundle.
+        obs: cell metadata. Joined positionally with ``cell_names``.
+        chromosomes: subset of chromosomes; passed through to
+            :func:`load_cool_collection`. Use to drop ``*_random`` /
+            ``chrUn`` etc. that are present in some Hi-C cools.
+
+    Returns:
+        AnnData of shape ``(n_cells, 0)`` with ``cool_path`` column
+        holding the per-cell URI.
+    """
+    import h5py
+
+    scool_path = str(scool_path)
+    cell_uri_prefix = "::/cells/"
+    try:
+        import cooler.fileops
+        available = cooler.fileops.list_scool_cells(scool_path)
+        # ``list_scool_cells`` returns ``/cells/<name>`` style paths;
+        # strip the ``/cells/`` prefix to expose just the cell name.
+        available = [
+            c.split("/cells/", 1)[-1] if "/cells/" in c else c
+            for c in available
+        ]
+    except OSError:
+        # Legacy multi-cool: each cell is a top-level group with the
+        # standard ``bins / chroms / indexes / pixels`` layout.
+        with h5py.File(scool_path, "r") as h:
+            available = [
+                k for k in h.keys()
+                if isinstance(h[k], h5py.Group)
+                and "bins" in h[k] and "pixels" in h[k]
+            ]
+        cell_uri_prefix = "::/"
+
+    if cell_names is None:
+        cell_names = available
+    else:
+        cell_names = list(map(str, cell_names))
+        missing = [c for c in cell_names if c not in available]
+        if missing:
+            raise KeyError(
+                f"{len(missing)} requested cell(s) not in scool — first "
+                f"few: {missing[:5]}"
+            )
+
+    cool_paths = [f"{scool_path}{cell_uri_prefix}{c}" for c in cell_names]
+    return load_cool_collection(
+        cool_paths, cell_ids=cell_names, obs=obs,
+        chromosomes=chromosomes,
+    )
