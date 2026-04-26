@@ -18,6 +18,8 @@ from ._contact import (
     plot_compartments,
     plot_saddle,
     plot_insulation,
+    plot_loops,
+    plot_apa,
 )
 
 from ._peak2gene import plot_peak2gene
@@ -52,6 +54,7 @@ __all__ = [
     "plot_cell_contacts",
     "plot_compartments", "plot_saddle",
     "plot_insulation",
+    "plot_loops", "plot_apa",
     "plot_peak2gene",
     "plot_footprints",
     "plot_multi_scale_footprint",
