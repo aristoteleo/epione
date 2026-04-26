@@ -846,3 +846,88 @@ def plot_loops(
                 s=loop_size, marker=loop_marker,
                 facecolors="none", edgecolors=loop_color, linewidths=1.2)
     return fig, ax_
+
+
+def plot_correlation_heatmap(
+    corr,
+    *,
+    names: Optional[list] = None,
+    cmap: str = "RdBu_r",
+    vmin: Optional[float] = None,
+    vmax: Optional[float] = None,
+    annotate: bool = True,
+    annot_fmt: str = ".2f",
+    annot_fontsize: float = 7.0,
+    figsize: Tuple[float, float] = (4.5, 4.0),
+    title: Optional[str] = None,
+    ax=None,
+    colorbar: bool = True,
+):
+    """Symmetric celltype × celltype correlation heatmap (Chang 2024 Fig 1f).
+
+    Renders a square heatmap of the matrix returned by
+    :func:`epione.single.hic.cluster_correlation` — diverging RdBu_r
+    by default, with cell values annotated. Designed for the small-N
+    case (≤ ~20 celltypes); for larger N, switch to ``annotate=False``.
+
+    Arguments:
+        corr: square correlation matrix as a ``DataFrame`` (with
+            row/column = celltype names) or 2-D ``ndarray``.
+        names: celltype labels — required if ``corr`` is an ndarray;
+            ignored if ``corr`` is a DataFrame.
+        cmap, vmin, vmax: colourmap + range. Default ``vmin = corr.min()``,
+            ``vmax = 1.0``.
+        annotate: write the correlation value in each cell.
+        annot_fmt, annot_fontsize: annotation format / size.
+        figsize, ax, title, colorbar: cosmetic.
+
+    Returns:
+        ``(fig, ax, img)``.
+    """
+    import matplotlib.pyplot as plt
+    import pandas as pd
+
+    if isinstance(corr, pd.DataFrame):
+        names = list(corr.index)
+        M = corr.to_numpy()
+    else:
+        M = np.asarray(corr)
+        if names is None:
+            names = [str(i) for i in range(M.shape[0])]
+        if len(names) != M.shape[0]:
+            raise ValueError("len(names) must equal corr.shape[0]")
+
+    if vmin is None:
+        vmin = float(np.nanmin(M))
+    if vmax is None:
+        vmax = 1.0
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+    else:
+        fig = ax.figure
+
+    img = ax.imshow(M, cmap=cmap, vmin=vmin, vmax=vmax,
+                    interpolation="none")
+    n = M.shape[0]
+    ax.set_xticks(range(n))
+    ax.set_yticks(range(n))
+    ax.set_xticklabels(names, rotation=45, ha="right")
+    ax.set_yticklabels(names)
+
+    if annotate:
+        for i in range(n):
+            for j in range(n):
+                v = M[i, j]
+                if not np.isfinite(v):
+                    continue
+                rel = (v - vmin) / max(vmax - vmin, 1e-9)
+                color = "white" if (rel < 0.2 or rel > 0.8) else "black"
+                ax.text(j, i, format(v, annot_fmt),
+                        ha="center", va="center",
+                        color=color, fontsize=annot_fontsize)
+
+    ax.set_title(title or "celltype correlation")
+    if colorbar:
+        fig.colorbar(img, ax=ax, shrink=0.8, label="Pearson r")
+    return fig, ax, img
