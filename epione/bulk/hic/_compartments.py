@@ -72,6 +72,10 @@ def compartments(
     clr = cooler.Cooler(_resolve_uri(cool_path, resolution))
     if chromosomes is None:
         chromosomes = list(clr.chromnames)
+    # cooltools requires view_df to be ordered the same as the cool's
+    # chromnames, so re-sort the user-supplied subset to match.
+    chrom_order = {c: i for i, c in enumerate(clr.chromnames)}
+    chromosomes = sorted(set(chromosomes), key=lambda c: chrom_order.get(c, 1 << 30))
 
     view_df = pd.DataFrame({
         "chrom": list(chromosomes),
@@ -166,7 +170,9 @@ def saddle(
 
     clr = cooler.Cooler(_resolve_uri(cool_path, resolution))
     if chromosomes is None:
-        chromosomes = sorted(eig_track["chrom"].dropna().unique())
+        chromosomes = list(eig_track["chrom"].dropna().unique())
+    chrom_order = {c: i for i, c in enumerate(clr.chromnames)}
+    chromosomes = sorted(set(chromosomes), key=lambda c: chrom_order.get(c, 1 << 30))
 
     view_df = pd.DataFrame({
         "chrom": list(chromosomes),
