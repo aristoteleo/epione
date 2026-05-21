@@ -51,7 +51,7 @@ def differential_peaks(
     metadata: Optional[pd.DataFrame] = None,
     design: str = "~condition",
     contrast: Optional[Sequence[str]] = None,
-    backend: Literal["pydeseq2", "edgepy"] = "pydeseq2",
+    backend: Literal["pydeseq2", "edgepy", "poisson"] = "pydeseq2",
     min_count: int = 10,
     min_samples: int = 1,
     alpha: float = 0.05,
@@ -75,7 +75,13 @@ def differential_peaks(
         contrast: ``(factor, level_a, level_b)`` — test ``level_a`` versus
             ``level_b``, reporting positive log2FoldChange when the feature
             is higher in ``level_a``. **Required.**
-        backend: ``'pydeseq2'`` or ``'edgepy'``.
+        backend: ``'pydeseq2'`` or ``'edgepy'`` (both need biological
+            replicates), or ``'poisson'`` for the **no-replicate** case
+            (one sample per condition) — a per-region exact Poisson /
+            binomial test of the two conditions' counts against the
+            library-size-expected ratio. Use ``'poisson'`` for n=1 TF
+            ChIP-seq / CUT&RUN; ``pydeseq2`` / ``edgepy`` raise a clear
+            error if called with a single sample per condition.
         min_count: drop features whose total count across all samples is
             below this (pre-filter; saves compute and avoids zero-inflation
             regressions in both backends).
@@ -119,20 +125,25 @@ def differential_peaks(
     counts_df = counts_df.loc[:, keep]
 
     backend = backend.lower()
-    if backend == "pydeseq2":
-        res = _run_pydeseq2(
-            counts_df, meta, design, contrast,
-            alpha=alpha, n_cpus=n_cpus, quiet=quiet,
-            **backend_kwargs,
-        )
-    elif backend == "edgepy":
-        res = _run_edgepy(
-            counts_df, meta, design, contrast,
-            quiet=quiet, **backend_kwargs,
-        )
+    if backend == "poisson":
+        res = _run_poisson(counts_df, meta, contrast, **backend_kwargs)
+    elif backend in ("pydeseq2", "edgepy"):
+        _require_replicates(counts_df, meta, contrast, backend)
+        if backend == "pydeseq2":
+            res = _run_pydeseq2(
+                counts_df, meta, design, contrast,
+                alpha=alpha, n_cpus=n_cpus, quiet=quiet,
+                **backend_kwargs,
+            )
+        else:
+            res = _run_edgepy(
+                counts_df, meta, design, contrast,
+                quiet=quiet, **backend_kwargs,
+            )
     else:
         raise ValueError(
-            f"Unknown backend {backend!r}. Use 'pydeseq2' or 'edgepy'."
+            f"Unknown backend {backend!r}. Use 'pydeseq2', 'edgepy' or "
+            "'poisson'."
         )
 
     # Ensure canonical column set + order. Missing columns become NaN.
@@ -413,4 +424,253 @@ def _bh_fdr(pvals: np.ndarray) -> np.ndarray:
     return out
 
 
-__all__ = ["differential_peaks"]
+# ---------------------------------------------------------------------------
+# No-replicate (Poisson) backend
+# ---------------------------------------------------------------------------
+
+def _require_replicates(counts_df, meta, contrast, backend):
+    """Raise a clear, actionable error if a count-based backend is asked to
+    run with only one sample per condition (it cannot estimate dispersion)."""
+    factor = contrast[0]
+    if factor not in meta.columns:
+        return
+    per_level = meta.groupby(factor).size()
+    a, b = contrast[1], contrast[2]
+    if int(per_level.get(a, 0)) < 2 or int(per_level.get(b, 0)) < 2:
+        raise ValueError(
+            f"backend={backend!r} needs >=2 samples per condition to "
+            f"estimate dispersion, but contrast levels have "
+            f"{int(per_level.get(a,0))} ({a}) and {int(per_level.get(b,0))} "
+            f"({b}) sample(s). For a no-replicate design use "
+            "backend='poisson'."
+        )
+
+
+def _run_poisson(counts_df, meta, contrast, *, pseudocount: float = 0.5,
+                 **_kwargs) -> pd.DataFrame:
+    """No-replicate differential test.
+
+    Pools (sums) the replicate counts of each condition and applies a
+    per-region **exact binomial test** of the foreground count against the
+    library-size-expected proportion — the standard one-vs-one ChIP-seq /
+    ATAC-seq comparison when there is no replication to estimate dispersion.
+    """
+    from scipy.stats import binomtest
+    factor, level_a, level_b = contrast
+    a_idx = meta.index[meta[factor].astype(str) == str(level_a)]
+    b_idx = meta.index[meta[factor].astype(str) == str(level_b)]
+    if len(a_idx) == 0 or len(b_idx) == 0:
+        raise ValueError(
+            f"contrast levels {level_a!r}/{level_b!r} not both present in "
+            f"metadata column {factor!r}."
+        )
+    a = counts_df.loc[a_idx].sum(axis=0).to_numpy(dtype=float)
+    b = counts_df.loc[b_idx].sum(axis=0).to_numpy(dtype=float)
+    lib_a, lib_b = float(a.sum()), float(b.sum())
+    if lib_a <= 0 or lib_b <= 0:
+        raise ValueError("one condition has zero total counts.")
+    p0 = lib_a / (lib_a + lib_b)
+    a_int = np.rint(a).astype(np.int64)
+    tot = np.rint(a + b).astype(np.int64)
+    pvals = np.ones(len(a), dtype=float)
+    for i in range(len(a)):
+        if tot[i] > 0:
+            pvals[i] = binomtest(int(a_int[i]), int(tot[i]), p0).pvalue
+    log2fc = np.log2(((a + pseudocount) / lib_a) /
+                     ((b + pseudocount) / lib_b))
+    base = (a / lib_a + b / lib_b) * (0.5e6)        # mean CPM (baseMean role)
+    return pd.DataFrame({
+        "baseMean": base,
+        "log2FoldChange": log2fc,
+        "lfcSE": np.nan,
+        "stat": np.nan,
+        "pvalue": pvals,
+        "padj": _bh_fdr(pvals),
+    }, index=counts_df.columns)
+
+
+# ---------------------------------------------------------------------------
+# Building the region x sample quantification matrix
+# ---------------------------------------------------------------------------
+
+def count_reads_in_peaks(
+    bam_files,
+    peaks: pd.DataFrame,
+    *,
+    chrom_col: str = "chrom",
+    start_col: str = "start",
+    end_col: str = "end",
+    min_mapq: int = 0,
+) -> pd.DataFrame:
+    """Count reads overlapping each peak region in each BAM file.
+
+    The standard first step of a count-based differential ChIP-seq /
+    ATAC-seq analysis: turn aligned reads + a peak set into the
+    region x sample count matrix that :func:`differential_peaks` consumes
+    (the ``bedtools multicov`` / ``featureCounts`` equivalent).
+
+    Arguments:
+        bam_files: a mapping ``{sample_name: bam_path}`` (each BAM
+            coordinate-sorted with a ``.bai`` index), or a list of BAM
+            paths (the path string is then used as the sample name).
+        peaks: DataFrame with ``chrom_col`` / ``start_col`` / ``end_col``
+            columns — typically a consensus / union peak set.
+        chrom_col, start_col, end_col: the interval column names in ``peaks``.
+        min_mapq: ignore reads below this mapping quality (0 = count all).
+
+    Returns:
+        DataFrame, rows = peaks (``peaks``' index), columns = samples,
+        values = integer read counts. Transpose (``.T``) before passing to
+        :func:`differential_peaks`, which expects samples x regions.
+
+    Example:
+        >>> counts = epi.tl.count_reads_in_peaks(
+        ...     {'ctrl': 'ctrl.bam', 'trt': 'trt.bam'}, consensus_peaks)
+        >>> res = epi.tl.differential_peaks(
+        ...     counts=counts.T, metadata=meta,
+        ...     contrast=('condition', 'trt', 'ctrl'), backend='poisson')
+    """
+    import pysam
+    items = (list(bam_files.items()) if isinstance(bam_files, dict)
+             else [(str(p), p) for p in bam_files])
+    chroms = peaks[chrom_col].astype(str).to_numpy()
+    starts = peaks[start_col].astype(np.int64).to_numpy()
+    ends = peaks[end_col].astype(np.int64).to_numpy()
+    n = len(peaks)
+    cb = ((lambda r: (not r.is_unmapped) and r.mapping_quality >= min_mapq)
+          if min_mapq > 0 else "all")
+    out = {}
+    for sample, path in items:
+        bam = pysam.AlignmentFile(str(path), "rb")
+        refs = set(bam.references)
+        col = np.zeros(n, dtype=np.int64)
+        for i in range(n):
+            if chroms[i] in refs:
+                col[i] = bam.count(chroms[i], int(starts[i]), int(ends[i]),
+                                   read_callback=cb)
+        bam.close()
+        out[str(sample)] = col
+    return pd.DataFrame(out, index=peaks.index)
+
+
+def _merge_intervals_table(df: pd.DataFrame,
+                           chrom_col: str = "chrom") -> pd.DataFrame:
+    """Merge overlapping/book-ended intervals into a non-overlapping union;
+    return a chrom/start/end DataFrame sorted by (chrom, start)."""
+    rows = []
+    for c, g in df.groupby(chrom_col, sort=True):
+        s = g["start"].astype(np.int64).to_numpy()
+        e = g["end"].astype(np.int64).to_numpy()
+        order = np.argsort(s)
+        s, e = s[order], e[order]
+        cs, ce = int(s[0]), int(e[0])
+        for i in range(1, len(s)):
+            if s[i] <= ce:
+                ce = max(ce, int(e[i]))
+            else:
+                rows.append((str(c), cs, ce)); cs, ce = int(s[i]), int(e[i])
+        rows.append((str(c), cs, ce))
+    return pd.DataFrame(rows, columns=[chrom_col, "start", "end"])
+
+
+def peak_signal_matrix(
+    peak_files,
+    *,
+    value_col: str = "signalValue",
+    chrom_col: str = "chrom",
+    agg: str = "max",
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Build a consensus-region x sample signal matrix from per-sample
+    narrowPeak files — the quantification path when BAMs / bigWigs are not
+    available.
+
+    Merges every sample's peaks into one consensus interval set, then for
+    each consensus region records each sample's per-peak signal (the
+    narrowPeak ``signalValue`` fold-enrichment by default); a region a
+    sample did not call gets 0. ``log2`` ratios of the resulting signal
+    between conditions give a quantitative differential-occupancy readout —
+    far more informative than a peak presence/absence overlap.
+
+    Arguments:
+        peak_files: mapping ``{sample_name: narrowPeak_path}``.
+        value_col: which narrowPeak column to read as the per-peak signal —
+            ``'signalValue'`` (fold-enrichment, default), ``'score'``,
+            ``'pValue'`` or ``'qValue'``.
+        chrom_col: chromosome column name in the returned ``regions`` table.
+        agg: how to combine when several of one sample's peaks fall inside a
+            consensus region — ``'max'`` (default), ``'sum'`` or ``'mean'``.
+
+    Returns:
+        ``(signal, regions)``. ``signal`` is a DataFrame
+        (consensus regions x samples) of per-region signal; ``regions`` is
+        the matching consensus interval table (``chrom`` / ``start`` /
+        ``end``) with the same row index, ready for :func:`annotate_peaks`.
+
+    Example:
+        >>> signal, regions = epi.tl.peak_signal_matrix(
+        ...     {'ctrl1': 'c1.narrowPeak', 'trt1': 't1.narrowPeak'})
+        >>> import numpy as np
+        >>> log2fc = np.log2((signal[['trt1']].mean(1) + 1) /
+        ...                  (signal[['ctrl1']].mean(1) + 1))
+    """
+    _NP_COLS = ["chrom", "start", "end", "name", "score", "strand",
+                "signalValue", "pValue", "qValue", "peak"]
+    if value_col not in _NP_COLS[4:]:
+        raise ValueError(f"value_col must be one of {_NP_COLS[4:]}")
+    if not isinstance(peak_files, dict):
+        raise TypeError("peak_files must be a {sample: path} mapping")
+    try:
+        aggfun = {"max": np.max, "sum": np.sum, "mean": np.mean}[agg]
+    except KeyError:
+        raise ValueError("agg must be 'max', 'sum' or 'mean'")
+
+    frames = {}
+    all_peaks = []
+    for sample, path in peak_files.items():
+        df = pd.read_csv(path, sep="\t", header=None, comment="#",
+                         names=_NP_COLS, usecols=range(10))
+        df = df[["chrom", "start", "end", value_col]].copy()
+        df["chrom"] = df["chrom"].astype(str)
+        df["start"] = df["start"].astype(np.int64)
+        df["end"] = df["end"].astype(np.int64)
+        frames[str(sample)] = df
+        all_peaks.append(df[["chrom", "start", "end"]])
+
+    merged = _merge_intervals_table(pd.concat(all_peaks, ignore_index=True))
+    merged = merged.reset_index(drop=True)               # 0..N-1 positions
+
+    # position lookup per chrom: sorted merged-region starts/ends.
+    merged_by_chrom = {}
+    for c, g in merged.groupby("chrom", sort=False):
+        merged_by_chrom[c] = (g["start"].to_numpy(), g["end"].to_numpy(),
+                              g.index.to_numpy())
+
+    sig = np.zeros((len(merged), len(frames)), dtype=float)
+    for col_j, (sample, df) in enumerate(frames.items()):
+        acc = {}                                          # region_pos -> [values]
+        for c, g in df.groupby("chrom", sort=False):
+            ref = merged_by_chrom.get(c)
+            if ref is None:
+                continue
+            mstart, mend, mpos = ref
+            for pk in g.itertuples(index=False):
+                # each input peak lies wholly inside exactly one merged region
+                j = int(np.searchsorted(mstart, pk.start, side="right")) - 1
+                if 0 <= j < len(mstart) and mstart[j] <= pk.start <= mend[j]:
+                    acc.setdefault(int(mpos[j]), []).append(
+                        float(getattr(pk, value_col)))
+        for pos, vals in acc.items():
+            sig[pos, col_j] = float(aggfun(vals))
+
+    region_ids = [f"region_{i}" for i in range(len(merged))]
+    signal = pd.DataFrame(sig, index=region_ids, columns=list(frames))
+    regions = merged.rename(columns={"chrom": chrom_col})
+    regions.index = region_ids
+    return signal, regions
+
+
+__all__ = [
+    "differential_peaks",
+    "count_reads_in_peaks",
+    "peak_signal_matrix",
+]
