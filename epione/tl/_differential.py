@@ -447,15 +447,32 @@ def _require_replicates(counts_df, meta, contrast, backend):
 
 
 def _run_poisson(counts_df, meta, contrast, *, pseudocount: float = 0.5,
-                 **_kwargs) -> pd.DataFrame:
+                 alternative: str = "two-sided", **_kwargs) -> pd.DataFrame:
     """No-replicate differential test.
 
     Pools (sums) the replicate counts of each condition and applies a
     per-region **exact binomial test** of the foreground count against the
     library-size-expected proportion — the standard one-vs-one ChIP-seq /
     ATAC-seq comparison when there is no replication to estimate dispersion.
+
+    ``alternative`` sets the test direction and should match the question:
+
+    - ``'two-sided'`` (default) — test for **any** change; use when the
+      question is "what changed" / "is there a difference".
+    - ``'less'`` — test only for a **decrease** in the first contrast
+      level (``log2FoldChange < 0``); use for a directional question
+      such as "which regions are *reduced* / *lost*".
+    - ``'greater'`` — test only for an **increase** in the first contrast
+      level; use for "which regions are *gained* / *increased*".
+
+    A one-sided test is the correct, more powerful choice when the
+    question itself is directional — it is not p-hacking, because the
+    direction was fixed by the question before the data was seen.
     """
     from scipy.stats import binomtest
+    if alternative not in ("two-sided", "less", "greater"):
+        raise ValueError(
+            "alternative must be 'two-sided', 'less' or 'greater'")
     factor, level_a, level_b = contrast
     a_idx = meta.index[meta[factor].astype(str) == str(level_a)]
     b_idx = meta.index[meta[factor].astype(str) == str(level_b)]
@@ -475,7 +492,8 @@ def _run_poisson(counts_df, meta, contrast, *, pseudocount: float = 0.5,
     pvals = np.ones(len(a), dtype=float)
     for i in range(len(a)):
         if tot[i] > 0:
-            pvals[i] = binomtest(int(a_int[i]), int(tot[i]), p0).pvalue
+            pvals[i] = binomtest(int(a_int[i]), int(tot[i]), p0,
+                                 alternative=alternative).pvalue
     log2fc = np.log2(((a + pseudocount) / lib_a) /
                      ((b + pseudocount) / lib_b))
     base = (a / lib_a + b / lib_b) * (0.5e6)        # mean CPM (baseMean role)

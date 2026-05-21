@@ -73,6 +73,31 @@ def test_poisson_backend_ranks_planted_top():
     assert recall >= 0.7, f"poisson recovered only {recall:.0%} of planted"
 
 
+def test_poisson_backend_one_sided():
+    """alternative='less' flags only the planted-down regions; the
+    planted-up regions stay non-significant under a depletion-only test."""
+    counts, meta, (n_up, n_dn) = _make_one_vs_one()
+    res = differential_peaks(
+        counts=counts, metadata=meta,
+        contrast=("condition", "trt", "ctrl"), backend="poisson",
+        alternative="less", min_count=5, min_samples=1, quiet=True,
+    )
+    dn = res.loc[[f"region_{i + n_up}" for i in range(n_dn)], "padj"]
+    up = res.loc[[f"region_{i}" for i in range(n_up)], "padj"]
+    assert (dn < 0.05).mean() > 0.7, "planted-down not caught by 'less'"
+    assert (up > 0.5).mean() > 0.7, "planted-up wrongly flagged by 'less'"
+
+
+def test_poisson_backend_rejects_bad_alternative():
+    counts, meta, _ = _make_one_vs_one(n_features=120)
+    with pytest.raises(ValueError, match="alternative"):
+        differential_peaks(
+            counts=counts, metadata=meta,
+            contrast=("condition", "trt", "ctrl"), backend="poisson",
+            alternative="lower", quiet=True,
+        )
+
+
 def test_count_backends_reject_no_replicate_design():
     """pydeseq2 / edgepy must refuse a one-vs-one design and name the
     poisson backend in the error."""
