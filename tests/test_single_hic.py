@@ -138,6 +138,7 @@ def test_load_cool_collection_indexes_cells(tmp_path):
 
 
 def test_impute_cells_writes_per_cell_npz(tmp_path):
+    pytest.importorskip("schicluster")
     import epione as epi
 
     cool_paths, cell_ids, obs = _build_collection(tmp_path, n_per_group=2)
@@ -183,6 +184,7 @@ def test_embedding_separates_two_groups(tmp_path):
     with the group label. With group A (short-range) vs group B
     (long-range) decay this should be near-perfect even at 8 cells.
     """
+    pytest.importorskip("schicluster")
     import epione as epi
 
     cool_paths, cell_ids, obs = _build_collection(tmp_path, n_per_group=4)
@@ -206,6 +208,7 @@ def test_embedding_separates_two_groups(tmp_path):
 
 
 def test_plot_embedding_renders(tmp_path):
+    pytest.importorskip("schicluster")
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -229,6 +232,7 @@ def test_plot_embedding_renders(tmp_path):
 
 
 def test_plot_cell_contacts_imputed_vs_raw(tmp_path):
+    pytest.importorskip("schicluster")
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
