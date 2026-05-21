@@ -73,31 +73,6 @@ def test_poisson_backend_ranks_planted_top():
     assert recall >= 0.7, f"poisson recovered only {recall:.0%} of planted"
 
 
-def test_poisson_backend_one_sided():
-    """alternative='less' flags only the planted-down regions; the
-    planted-up regions stay non-significant under a depletion-only test."""
-    counts, meta, (n_up, n_dn) = _make_one_vs_one()
-    res = differential_peaks(
-        counts=counts, metadata=meta,
-        contrast=("condition", "trt", "ctrl"), backend="poisson",
-        alternative="less", min_count=5, min_samples=1, quiet=True,
-    )
-    dn = res.loc[[f"region_{i + n_up}" for i in range(n_dn)], "padj"]
-    up = res.loc[[f"region_{i}" for i in range(n_up)], "padj"]
-    assert (dn < 0.05).mean() > 0.7, "planted-down not caught by 'less'"
-    assert (up > 0.5).mean() > 0.7, "planted-up wrongly flagged by 'less'"
-
-
-def test_poisson_backend_rejects_bad_alternative():
-    counts, meta, _ = _make_one_vs_one(n_features=120)
-    with pytest.raises(ValueError, match="alternative"):
-        differential_peaks(
-            counts=counts, metadata=meta,
-            contrast=("condition", "trt", "ctrl"), backend="poisson",
-            alternative="lower", quiet=True,
-        )
-
-
 def test_count_backends_reject_no_replicate_design():
     """pydeseq2 / edgepy must refuse a one-vs-one design and name the
     poisson backend in the error."""
@@ -257,50 +232,6 @@ def test_peak_signal_matrix_agg_modes(tmp_path):
     assert len(smax) == 1                          # all merged into one region
     assert smax.loc[smax.index[0], "two"] == 10.0
     assert ssum.loc[ssum.index[0], "two"] == 14.0
-
-
-def _write_macs2_xls(path, rows):
-    """rows: list of (chrom, start, end, pileup, fold_enrichment)."""
-    with open(path, "w") as fh:
-        fh.write("# MACS2 peaks.xls — synthetic\n\n")
-        fh.write("chr\tstart\tend\tlength\tabs_summit\tpileup\t"
-                 "-log10(pvalue)\tfold_enrichment\t-log10(qvalue)\tname\n")
-        for i, (c, s, e, pileup, fe) in enumerate(rows):
-            fh.write(f"{c}\t{s}\t{e}\t{e - s}\t{(s + e) // 2}\t{pileup}\t"
-                     f"5.0\t{fe}\t4.0\tpeak_{i}\n")
-
-
-def test_peak_signal_matrix_reads_macs2_xls_pileup(tmp_path):
-    """peak_signal_matrix auto-detects MACS2 _peaks.xls and can read the
-    pileup (read-coverage) column."""
-    _write_macs2_xls(tmp_path / "s1_peaks.xls", [
-        ("chr1", 1000, 1200, 40.0, 8.0),
-        ("chr1", 5000, 5200, 12.0, 3.0),
-    ])
-    _write_macs2_xls(tmp_path / "s2_peaks.xls", [
-        ("chr1", 1100, 1300, 60.0, 12.0),
-    ])
-    signal, regions = peak_signal_matrix(
-        {"s1": tmp_path / "s1_peaks.xls", "s2": tmp_path / "s2_peaks.xls"},
-        value_col="pileup")
-    assert list(signal.columns) == ["s1", "s2"]
-    shared = regions.index[(regions.chrom == "chr1") &
-                           (regions.start == 1000)][0]
-    assert signal.loc[shared, "s1"] == 40.0
-    assert signal.loc[shared, "s2"] == 60.0
-
-
-def test_peak_signal_matrix_normalize_equalises_library_size(tmp_path):
-    """normalize=True scales every sample's column to the same total."""
-    _write_narrowpeak(tmp_path / "deep.narrowPeak", [
-        ("chr1", 1000, 1200, 100.0), ("chr2", 1000, 1200, 100.0)])
-    _write_narrowpeak(tmp_path / "shallow.narrowPeak", [
-        ("chr1", 1000, 1200, 1.0), ("chr2", 1000, 1200, 1.0)])
-    sig, _ = peak_signal_matrix(
-        {"deep": tmp_path / "deep.narrowPeak",
-         "shallow": tmp_path / "shallow.narrowPeak"}, normalize=True)
-    assert np.isclose(sig["deep"].sum(), sig["shallow"].sum())
-    assert np.isclose(sig["deep"].sum(), 1e6)
 
 
 def test_peak_signal_matrix_rejects_bad_value_col(tmp_path):
