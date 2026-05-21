@@ -95,6 +95,7 @@ def test_impute_cell_chromosome_pure_function():
     """Smoke test: a sparse symmetric input becomes a smooth, mostly-sparse
     output with non-negative values and (approximately) symmetric.
     """
+    pytest.importorskip("schicluster")  # pure function calls it directly
     import epione as epi
 
     rng = np.random.default_rng(42)
