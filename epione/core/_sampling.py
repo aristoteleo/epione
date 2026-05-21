@@ -375,3 +375,227 @@ def classify_peaks_by_overlap(
         earlier.append(L)
 
     return pd.concat(out_frames, ignore_index=True)
+
+
+# ----------------------------------------------------------------------
+# Genomic-feature annotation of a peak set (ChIPseeker-style).
+# ----------------------------------------------------------------------
+
+def _merge_intervals(df: pd.DataFrame, chrom_col: str = "chrom") -> dict:
+    """Return ``{chrom: (starts, ends)}`` of merged, sorted, non-overlapping
+    intervals — collapsing an interval list to a flat covered set so an
+    "overlaps any" test is fast and unambiguous."""
+    out = {}
+    for c, g in df.groupby(chrom_col, sort=False):
+        s = g["start"].astype(np.int64).to_numpy()
+        e = g["end"].astype(np.int64).to_numpy()
+        if len(s) == 0:
+            continue
+        order = np.argsort(s)
+        s, e = s[order], e[order]
+        ms, me = [int(s[0])], [int(e[0])]
+        for i in range(1, len(s)):
+            if s[i] <= me[-1]:                 # overlapping / book-ended
+                me[-1] = max(me[-1], int(e[i]))
+            else:
+                ms.append(int(s[i])); me.append(int(e[i]))
+        out[str(c)] = (np.asarray(ms, dtype=np.int64),
+                       np.asarray(me, dtype=np.int64))
+    return out
+
+
+def _bh_fdr(pvals: np.ndarray) -> np.ndarray:
+    """Benjamini-Hochberg FDR for a small p-value vector (no statsmodels
+    dependency)."""
+    p = np.asarray(pvals, dtype=float)
+    n = len(p)
+    if n == 0:
+        return p
+    order = np.argsort(p)
+    ranked = p[order] * n / (np.arange(n) + 1)
+    ranked = np.minimum.accumulate(ranked[::-1])[::-1]
+    out = np.empty(n, dtype=float)
+    out[order] = np.clip(ranked, 0.0, 1.0)
+    return out
+
+
+def annotate_peaks(
+    peaks: pd.DataFrame,
+    gtf,
+    *,
+    promoter_upstream: int = 2000,
+    promoter_downstream: int = 2000,
+    precedence: Sequence[str] = ("promoter", "exon", "intron", "intergenic"),
+    chrom_col: str = "chrom",
+    gene_type: Optional[str] = "protein_coding",
+    feature_col: str = "feature",
+) -> pd.DataFrame:
+    """Assign every peak a single genomic-feature class from a GTF.
+
+    Classifies each peak as ``promoter`` / ``exon`` / ``intron`` /
+    ``intergenic`` — the standard ChIP-seq / ATAC-seq peak annotation
+    (the equivalent of ChIPseeker's ``annotatePeak``). A peak that
+    overlaps several feature kinds is assigned the **highest-precedence**
+    class only, so each peak is counted exactly once and the four
+    classes partition the peak set.
+
+    Knowing *where* a peak set sits — promoter-proximal vs distal /
+    intronic / intergenic — is what turns a list of peaks into a
+    regulatory statement, so this is a routine step after peak calling
+    or differential-peak analysis.
+
+    Arguments:
+        peaks: DataFrame with ``chrom_col``, ``start``, ``end`` columns
+            (e.g. a narrowPeak table or a differential-peak set).
+        gtf: a GTF/GFF3 path (``.gz`` ok) or an :class:`~epione.utils.genome.Genome`
+            — anything :func:`epione.utils.get_gene_annotation` accepts.
+        promoter_upstream: bp upstream of a TSS counted as promoter
+            (strand-aware). Default 2000.
+        promoter_downstream: bp downstream of a TSS counted as promoter
+            (strand-aware). Default 2000 — i.e. promoter = TSS +/- 2 kb.
+        precedence: feature classes ordered highest-priority first. A peak
+            overlapping more than one is assigned the earliest class in
+            this tuple. Default ``promoter > exon > intron > intergenic``.
+        chrom_col: chromosome column name in ``peaks``.
+        gene_type: gene biotype filter passed to ``get_gene_annotation``
+            (e.g. ``"protein_coding"``). Pass ``None`` for a GTF that has
+            no biotype attribute (some refGene-style GTFs).
+        feature_col: name of the output class column. Default ``"feature"``.
+
+    Returns:
+        A copy of ``peaks`` with one added column (``feature_col``) holding
+        the feature class of each peak.
+
+    Example:
+        >>> ann = epi.utils.annotate_peaks(gained_peaks, 'genes.gtf')
+        >>> ann['feature'].value_counts(normalize=True)
+        intergenic    0.52
+        intron        0.31
+        promoter      0.12
+        exon          0.05
+    """
+    known = {"promoter", "exon", "intron", "intergenic"}
+    bad = [c for c in precedence if c not in known]
+    if bad:
+        raise ValueError(f"precedence has unknown classes {bad}; "
+                         f"allowed: {sorted(known)}")
+
+    out = peaks.copy()
+    if len(peaks) == 0:
+        out[feature_col] = pd.Series([], dtype=object)
+        return out
+
+    from epione.io._read import get_gene_annotation  # lazy: avoid import cycle
+
+    genes = get_gene_annotation(gtf, feature="gene", gene_type=gene_type)
+    exons = get_gene_annotation(gtf, feature="exon", gene_type=gene_type)
+
+    plus = genes["strand"].astype(str).to_numpy() == "+"
+    g_start = genes["start"].astype(np.int64).to_numpy()
+    g_end = genes["end"].astype(np.int64).to_numpy()
+    tss = np.where(plus, g_start, g_end)
+    p_start = np.where(plus, tss - promoter_upstream, tss - promoter_downstream)
+    p_end = np.where(plus, tss + promoter_downstream, tss + promoter_upstream)
+
+    prom_df = pd.DataFrame({"chrom": genes["chrom"].astype(str),
+                            "start": np.maximum(p_start, 0), "end": p_end})
+    body_df = pd.DataFrame({"chrom": genes["chrom"].astype(str),
+                            "start": g_start, "end": g_end})
+    exon_df = pd.DataFrame({"chrom": exons["chrom"].astype(str),
+                            "start": exons["start"].astype(np.int64),
+                            "end": exons["end"].astype(np.int64)})
+
+    idx_prom = _merge_intervals(prom_df)
+    idx_exon = _merge_intervals(exon_df)
+    idx_body = _merge_intervals(body_df)
+
+    ch = peaks[chrom_col].astype(str).to_numpy()
+    s = peaks["start"].astype(np.int64).to_numpy()
+    e = peaks["end"].astype(np.int64).to_numpy()
+
+    masks = {
+        "promoter": _overlaps_any(ch, s, e, idx_prom),
+        "exon": _overlaps_any(ch, s, e, idx_exon),
+        "intron": _overlaps_any(ch, s, e, idx_body),   # gene body; demoted by precedence
+        "intergenic": np.ones(len(peaks), dtype=bool),
+    }
+    cls = np.empty(len(peaks), dtype=object)
+    for name in reversed(list(precedence)):            # low priority first; high overwrites
+        cls[masks[name]] = name
+    out[feature_col] = cls
+    return out
+
+
+def peak_feature_enrichment(
+    foreground_peaks: pd.DataFrame,
+    background_peaks: pd.DataFrame,
+    gtf,
+    *,
+    classes: Sequence[str] = ("promoter", "exon", "intron", "intergenic"),
+    chrom_col: str = "chrom",
+    **annotate_kwargs,
+) -> pd.DataFrame:
+    """Test which genomic-feature classes are enriched in a foreground peak
+    set relative to a background peak set (Fisher's exact test).
+
+    The standard use is asking *where* a set of differential peaks
+    concentrates: annotate the gained (or lost) peaks and a background set
+    — typically the unchanged / non-differential peaks, which controls for
+    the assay's overall genomic bias — and test each feature class with a
+    2x2 Fisher's exact test.
+
+    Arguments:
+        foreground_peaks: the peak set of interest (e.g. gained / lost
+            differential peaks). DataFrame with ``chrom_col/start/end``.
+        background_peaks: the reference set (e.g. unchanged peaks, or all
+            called peaks). Using the unchanged peaks as background tests
+            for a *redistribution* on top of the assay's baseline bias.
+        gtf: GTF/GFF3 path or Genome — passed to :func:`annotate_peaks`.
+        classes: feature classes to report. Default all four.
+        chrom_col: chromosome column name in both peak tables.
+        **annotate_kwargs: forwarded to :func:`annotate_peaks`
+            (``promoter_upstream``, ``gene_type``, ...).
+
+    Returns:
+        DataFrame, one row per feature class, sorted by p-value:
+        ``feature``, ``fg_count``, ``fg_frac``, ``bg_count``,
+        ``bg_frac``, ``enrichment`` (= ``fg_frac / bg_frac``;
+        ``inf`` if the class is in the foreground but absent from the
+        background, ``NaN`` if absent from both), ``odds_ratio``,
+        ``pvalue``, ``fdr`` (Benjamini-Hochberg). ``enrichment > 1``
+        with a small ``fdr`` is a positively enriched class.
+
+    Example:
+        >>> enr = epi.utils.peak_feature_enrichment(
+        ...     gained_peaks, unchanged_peaks, 'genes.gtf')
+        >>> enr[['feature', 'enrichment', 'pvalue', 'fdr']]
+    """
+    from scipy.stats import fisher_exact  # lazy
+
+    fg = annotate_peaks(foreground_peaks, gtf, chrom_col=chrom_col,
+                        **annotate_kwargs)
+    bg = annotate_peaks(background_peaks, gtf, chrom_col=chrom_col,
+                        **annotate_kwargs)
+    fg_counts = fg["feature"].value_counts()
+    bg_counts = bg["feature"].value_counts()
+    n_fg, n_bg = len(fg), len(bg)
+
+    rows = []
+    for cl in classes:
+        a = int(fg_counts.get(cl, 0)); b = n_fg - a
+        c = int(bg_counts.get(cl, 0)); d = n_bg - c
+        odds, p = fisher_exact([[a, b], [c, d]], alternative="two-sided")
+        fg_frac = a / n_fg if n_fg else np.nan
+        bg_frac = c / n_bg if n_bg else np.nan
+        if bg_frac and bg_frac > 0:
+            enr = fg_frac / bg_frac
+        elif fg_frac and fg_frac > 0:
+            enr = np.inf            # in the foreground, absent from the background
+        else:
+            enr = np.nan            # absent from both -> undefined
+        rows.append(dict(feature=cl, fg_count=a, fg_frac=fg_frac,
+                         bg_count=c, bg_frac=bg_frac,
+                         enrichment=enr, odds_ratio=odds, pvalue=p))
+    res = pd.DataFrame(rows)
+    res["fdr"] = _bh_fdr(res["pvalue"].to_numpy())
+    return res.sort_values("pvalue").reset_index(drop=True)

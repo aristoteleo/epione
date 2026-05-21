@@ -60,6 +60,8 @@ from epione.core._sampling import (  # noqa: F401
     distance_to_nearest_peak,
     filter_distal_peaks,
     classify_peaks_by_overlap,
+    annotate_peaks,
+    peak_feature_enrichment,
 )
 from epione.core._compat import obs_to_pandas, var_to_pandas  # noqa: F401
 
@@ -95,6 +97,8 @@ __all__ = [
     "distance_to_nearest_peak",
     "filter_distal_peaks",
     "classify_peaks_by_overlap",
+    "annotate_peaks",
+    "peak_feature_enrichment",
     "obs_to_pandas",
     "var_to_pandas",
     "console",
