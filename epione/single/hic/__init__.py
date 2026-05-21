@@ -27,7 +27,8 @@ from ._io import load_cool_collection, load_scool_cells
 from ._impute import impute_cell_chromosome, impute_cells
 from ._embed import embedding
 from ._demux import demux_pairs_by_barcode, pseudobulk_by_celltype
-from ._correlation import cluster_correlation
+from ._correlation import cluster_correlation, cell_celltype_correlation
+from ._scgad import scgad_score, load_refflat_genes
 # Plotting helpers live in :mod:`epione.pl` since v0.4 (PR 3); import
 # them from there so ``epi.single.hic.plot_*`` still resolves.
 from epione.pl._embedding import plot_embedding
@@ -42,6 +43,9 @@ __all__ = [
     "demux_pairs_by_barcode",
     "pseudobulk_by_celltype",
     "cluster_correlation",
+    "cell_celltype_correlation",
+    "scgad_score",
+    "load_refflat_genes",
     "plot_embedding",
     "plot_cell_contacts",
     "plot_correlation_heatmap",

@@ -142,3 +142,114 @@ def cluster_correlation(
     corr = np.corrcoef(M)
     df = pd.DataFrame(corr, index=names, columns=names)
     return df, names
+
+
+def cell_celltype_correlation(
+    adata,
+    celltype_cools: Mapping[str, Union[str, Path]],
+    *,
+    chromosomes: Optional[Sequence[str]] = None,
+    resolution: Optional[int] = None,
+    max_distance_bins: int = 20,
+    z_score: bool = True,
+) -> pd.DataFrame:
+    """Per-cell × per-celltype Pearson correlation as a low-dim feature.
+
+    For each cell in ``adata`` (which must have ``adata.uns['hic']``
+    pointing at imputed ``.npz`` files via :func:`impute_cells`) and
+    each celltype reference cool, compute the Pearson correlation
+    between the cell's imputed cis upper-triangle (truncated to
+    ``max_distance_bins``) and the celltype pseudobulk's. Returns a
+    ``cell × celltype`` DataFrame — typically used as feature input
+    to PCA/UMAP for the Chang 2024 Fig 1d-style cell embedding.
+
+    With ``z_score=True`` (default) we per-row z-score the resulting
+    matrix so each cell's features sum to 0 and have unit variance —
+    this drops cell-depth artefacts and makes downstream UMAP
+    discriminate fine subtype despite shared structure.
+
+    Arguments:
+        adata: AnnData from :func:`load_cool_collection` after
+            :func:`impute_cells` has been run. Reads
+            ``adata.uns['hic']['imputed_dir']``.
+        celltype_cools: ``{celltype: cool_path}`` — typically the output
+            of :func:`pseudobulk_by_celltype`. Cools must be balanced
+            and share binsize with the imputed npz.
+        chromosomes: subset; default = ``adata.uns['hic']['chromosomes']``.
+        resolution: bp resolution (for ``.mcool`` URIs).
+        max_distance_bins: cap the upper-triangle distance to this many
+            bins (e.g. ``20`` × 100 kb = 2 Mb). Local TAD-scale signal
+            dominates celltype identity and trans / very-long-range
+            contacts add noise.
+        z_score: per-cell z-score across celltype dimensions. Default
+            ``True``.
+
+    Returns:
+        ``DataFrame`` indexed by cell barcode, columns = celltype name,
+        values = (z-scored) Pearson r.
+    """
+    info = adata.uns.get("hic", {})
+    imputed_dir = Path(info["imputed_dir"])
+    if chromosomes is None:
+        chromosomes = list(info.get("impute_params", {}).get(
+            "chromosomes", info.get("chromosomes", [])))
+
+    import cooler
+    celltypes = list(celltype_cools.keys())
+
+    def _cell_vec_from_arr(P: np.ndarray, max_dist: int) -> np.ndarray:
+        n = P.shape[0]
+        ii, jj = np.triu_indices(n, k=1)
+        keep = (jj - ii) <= max_dist
+        return P[ii[keep], jj[keep]].astype(np.float32)
+
+    # Build celltype reference vectors.
+    ct_vecs = {}
+    for ct in celltypes:
+        clr = cooler.Cooler(_resolve_uri(celltype_cools[ct], resolution))
+        parts = []
+        for ch in chromosomes:
+            try:
+                M = clr.matrix(balance=True, sparse=False).fetch(ch)
+            except Exception:
+                continue
+            v = _cell_vec_from_arr(M, max_distance_bins)
+            v = np.where(np.isfinite(v), v, 0)
+            parts.append(np.log1p(np.maximum(v, 0)))
+        if parts:
+            ct_vecs[ct] = np.concatenate(parts)
+    celltypes = [ct for ct in celltypes if ct in ct_vecs]
+
+    cell_ids = list(adata.obs_names)
+    feats = np.zeros((len(cell_ids), len(celltypes)), dtype=np.float32)
+    for ci, cid in enumerate(cell_ids):
+        npz_path = imputed_dir / f"{cid}.npz"
+        if not npz_path.exists():
+            continue
+        z = np.load(npz_path)
+        parts = []
+        for ch in chromosomes:
+            if ch in z.files:
+                P = z[ch]
+                parts.append(_cell_vec_from_arr(P, max_distance_bins))
+        if not parts:
+            continue
+        cell_vec = np.concatenate(parts)
+        for j, ct in enumerate(celltypes):
+            ctv = ct_vecs[ct]
+            if len(ctv) != len(cell_vec):
+                continue
+            m = np.isfinite(ctv) & np.isfinite(cell_vec)
+            if m.sum() < 100:
+                continue
+            a, b = ctv[m], cell_vec[m]
+            if a.std() == 0 or b.std() == 0:
+                continue
+            feats[ci, j] = float(np.corrcoef(a, b)[0, 1])
+
+    if z_score:
+        mu = feats.mean(axis=1, keepdims=True)
+        sd = feats.std(axis=1, keepdims=True)
+        feats = (feats - mu) / (sd + 1e-9)
+
+    return pd.DataFrame(feats, index=cell_ids, columns=celltypes)
