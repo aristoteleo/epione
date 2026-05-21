@@ -99,7 +99,11 @@ from ._umap import umap
 
 from ._clusters import clusters
 
-from ._differential import differential_peaks
+from ._differential import (
+    differential_peaks,
+    count_reads_in_peaks,
+    peak_signal_matrix,
+)
 
 
 __all__ = [
@@ -137,4 +141,6 @@ __all__ = [
     "umap",
     "clusters",
     "differential_peaks",
+    "count_reads_in_peaks",
+    "peak_signal_matrix",
 ]
