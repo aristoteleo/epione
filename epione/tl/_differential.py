@@ -591,32 +591,81 @@ def _merge_intervals_table(df: pd.DataFrame,
     return pd.DataFrame(rows, columns=[chrom_col, "start", "end"])
 
 
+_NARROWPEAK_COLS = ["chrom", "start", "end", "name", "score", "strand",
+                    "signalValue", "pValue", "qValue", "peak"]
+# MACS2 `_peaks.xls` layout (a tab-delimited table with a header row).
+_MACS2_XLS_COLS = ["chrom", "start", "end", "length", "abs_summit",
+                   "pileup", "neglog10_pvalue", "fold_enrichment",
+                   "neglog10_qvalue", "name"]
+
+
+def _read_peak_file(path, value_col: str) -> pd.DataFrame:
+    """Read a MACS2 narrowPeak **or** a MACS2 ``_peaks.xls`` file and return
+    a ``chrom`` / ``start`` / ``end`` / ``value_col`` DataFrame.
+
+    The two formats are auto-detected: a ``_peaks.xls`` file carries a
+    header row (its first non-comment line starts with ``chr``), a
+    narrowPeak file does not.
+    """
+    import io
+    with open(path) as fh:
+        rows = [ln for ln in fh if ln.strip() and not ln.startswith("#")]
+    if not rows:
+        raise ValueError(f"{path}: no data rows")
+    is_xls = rows[0].split("\t", 1)[0].lower() in ("chr", "chrom")
+    cols = _MACS2_XLS_COLS if is_xls else _NARROWPEAK_COLS
+    body = rows[1:] if is_xls else rows          # xls: drop the header row
+    df = pd.read_csv(io.StringIO("".join(body)), sep="\t", header=None,
+                     names=cols, usecols=range(len(cols)))
+    if value_col not in df.columns:
+        kind = "MACS2 _peaks.xls" if is_xls else "narrowPeak"
+        raise ValueError(
+            f"value_col {value_col!r} is not a column of {kind} file "
+            f"{path}; available: {[c for c in cols if c not in ('chrom','start','end')]}"
+        )
+    out = df[["chrom", "start", "end", value_col]].copy()
+    out["chrom"] = out["chrom"].astype(str)
+    out["start"] = out["start"].astype(np.int64)
+    out["end"] = out["end"].astype(np.int64)
+    out[value_col] = pd.to_numeric(out[value_col], errors="coerce").fillna(0.0)
+    return out
+
+
 def peak_signal_matrix(
     peak_files,
     *,
     value_col: str = "signalValue",
     chrom_col: str = "chrom",
     agg: str = "max",
+    normalize: bool = False,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Build a consensus-region x sample signal matrix from per-sample
-    narrowPeak files — the quantification path when BAMs / bigWigs are not
+    MACS2 peak files — the quantification path when BAMs / bigWigs are not
     available.
 
+    Accepts narrowPeak **and** MACS2 ``_peaks.xls`` files (auto-detected).
     Merges every sample's peaks into one consensus interval set, then for
-    each consensus region records each sample's per-peak signal (the
-    narrowPeak ``signalValue`` fold-enrichment by default); a region a
+    each consensus region records each sample's per-peak signal; a region a
     sample did not call gets 0. ``log2`` ratios of the resulting signal
     between conditions give a quantitative differential-occupancy readout —
     far more informative than a peak presence/absence overlap.
 
     Arguments:
-        peak_files: mapping ``{sample_name: narrowPeak_path}``.
-        value_col: which narrowPeak column to read as the per-peak signal —
-            ``'signalValue'`` (fold-enrichment, default), ``'score'``,
-            ``'pValue'`` or ``'qValue'``.
+        peak_files: mapping ``{sample_name: peak_file_path}`` — narrowPeak
+            or MACS2 ``_peaks.xls``.
+        value_col: which per-peak column to read as the signal. From
+            narrowPeak: ``'signalValue'`` (fold-enrichment, default),
+            ``'score'``, ``'pValue'``, ``'qValue'``. From ``_peaks.xls``:
+            ``'pileup'`` (read-pileup height — the closest available
+            **read-coverage** measure, preferred when no BAMs are
+            supplied) or ``'fold_enrichment'``.
         chrom_col: chromosome column name in the returned ``regions`` table.
         agg: how to combine when several of one sample's peaks fall inside a
             consensus region — ``'max'`` (default), ``'sum'`` or ``'mean'``.
+        normalize: if ``True``, library-size-normalize each sample's column
+            (divide by the column total, scale to per-million) so signal is
+            comparable across samples of different sequencing depth. Do this
+            before any between-condition comparison.
 
     Returns:
         ``(signal, regions)``. ``signal`` is a DataFrame
@@ -626,15 +675,14 @@ def peak_signal_matrix(
 
     Example:
         >>> signal, regions = epi.tl.peak_signal_matrix(
-        ...     {'ctrl1': 'c1.narrowPeak', 'trt1': 't1.narrowPeak'})
-        >>> import numpy as np
-        >>> log2fc = np.log2((signal[['trt1']].mean(1) + 1) /
-        ...                  (signal[['ctrl1']].mean(1) + 1))
+        ...     {'ctrl1': 'c1_peaks.xls', 'trt1': 't1_peaks.xls'},
+        ...     value_col='pileup', normalize=True)
     """
-    _NP_COLS = ["chrom", "start", "end", "name", "score", "strand",
-                "signalValue", "pValue", "qValue", "peak"]
-    if value_col not in _NP_COLS[4:]:
-        raise ValueError(f"value_col must be one of {_NP_COLS[4:]}")
+    if value_col not in _NARROWPEAK_COLS[4:] + ["pileup", "fold_enrichment"]:
+        raise ValueError(
+            "value_col must be a narrowPeak column ('signalValue', 'score', "
+            "'pValue', 'qValue') or a MACS2 xls column ('pileup', "
+            "'fold_enrichment')")
     if not isinstance(peak_files, dict):
         raise TypeError("peak_files must be a {sample: path} mapping")
     try:
@@ -645,12 +693,7 @@ def peak_signal_matrix(
     frames = {}
     all_peaks = []
     for sample, path in peak_files.items():
-        df = pd.read_csv(path, sep="\t", header=None, comment="#",
-                         names=_NP_COLS, usecols=range(10))
-        df = df[["chrom", "start", "end", value_col]].copy()
-        df["chrom"] = df["chrom"].astype(str)
-        df["start"] = df["start"].astype(np.int64)
-        df["end"] = df["end"].astype(np.int64)
+        df = _read_peak_file(path, value_col)
         frames[str(sample)] = df
         all_peaks.append(df[["chrom", "start", "end"]])
 
@@ -679,6 +722,11 @@ def peak_signal_matrix(
                         float(getattr(pk, value_col)))
         for pos, vals in acc.items():
             sig[pos, col_j] = float(aggfun(vals))
+
+    if normalize:
+        colsums = sig.sum(axis=0)
+        colsums[colsums == 0] = 1.0
+        sig = sig / colsums * 1e6                # library-size (per-million)
 
     region_ids = [f"region_{i}" for i in range(len(merged))]
     signal = pd.DataFrame(sig, index=region_ids, columns=list(frames))
