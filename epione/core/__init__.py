@@ -13,10 +13,8 @@ Subpackage map:
     :mod:`epione.core._compat`   numpy-2.x / scanpy-1.10 compat shims
     :mod:`epione.core._findgenes`gene / coordinate annotation lookup
 
-Cython kernels live here too:
-    :mod:`epione.core._footprint_cython` ATAC bias-correct kernel
+Signal kernels live here too (pure-Python / NumPy — no compiled extension):
     :mod:`epione.core.signals`           rolling-window signal ops
-    :mod:`epione.core.sequences`         k-mer / DNA helpers
 
 Pre-built reference *instances* live in :mod:`epione.data`;
 example datasets live in :mod:`epione.datasets`.

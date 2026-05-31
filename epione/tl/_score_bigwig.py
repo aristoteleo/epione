@@ -22,27 +22,10 @@ import multiprocessing as mp
 from scipy import stats, ndimage
 import warnings
 
-# Try to import Cython optimized functions
-try:
-    from epione.core._footprint_cython import (
-        tobias_footprint_array, 
-        fos_score_array,
-        fast_rolling_mean,
-        fast_rolling_max
-    )
-    CYTHON_AVAILABLE = True
-except ImportError:
-    CYTHON_AVAILABLE = False
-    # Only show warning once and make it less prominent
-    import os
-    if not os.environ.get('EPIONE_CYTHON_WARNING_SHOWN'):
-        warnings.warn(
-            "Cython optimizations not available. Install Cython and recompile for better performance. "
-            "Using Python fallback implementations.",
-            UserWarning,
-            stacklevel=2
-        )
-        os.environ['EPIONE_CYTHON_WARNING_SHOWN'] = '1'
+# Footprint scoring uses the vectorised pure-Python implementation in
+# ``calculate_scores_python`` (no compiled extension required). The flag is
+# kept so the scoring branches below read clearly.
+CYTHON_AVAILABLE = False
 
 
 class FootprintScorer:
