@@ -46,7 +46,7 @@ from epione.core.regions import *
 #from tobias.utils.sequences import *
 from epione.core.utilities import *
 from epione.core.motifs import *
-from ..utils.signals import *
+from ..core.signals import *
 from ..utils import console
 
 import warnings
