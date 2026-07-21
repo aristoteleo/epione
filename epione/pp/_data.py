@@ -478,17 +478,27 @@ def add_tile_matrix(
     ).tocsr()
     X.sum_duplicates()
 
-    # Write back. AnnDataOOM supports .X assignment lazily; plain AnnData too.
-    adata.X = X
-    # Also fix var.
+    # Write back. The incoming AnnData usually has **0 vars** (the output of
+    # import_fragments), so assigning the (n_cells, n_tiles) matrix to ``.X``
+    # alone raises "Data matrix has wrong shape ... need to be (n, 0)" — ``X``
+    # and ``var`` must become consistent together. Rebuild the object in place;
+    # fall back to lazy assignment for backed / AnnDataOOM inputs.
     var_df = pd.DataFrame(index=pd.Index(tile_labels, name="tile", dtype=str))
     try:
-        adata.var = var_df
+        rebuilt = AnnData(
+            X=X, obs=adata.obs, var=var_df, uns=dict(adata.uns),
+            obsm=dict(adata.obsm) if len(adata.obsm) else None,
+            obsp=dict(adata.obsp) if len(adata.obsp) else None,
+        )
+        adata._init_as_actual(rebuilt)
     except Exception:
-        # Backed AnnData may not allow arbitrary var replacement; fall
-        # back to attribute setting if available.
-        for col in var_df.columns:
-            adata.var[col] = var_df[col].values
+        # backed / AnnDataOOM: assignment is lazy and shape-tolerant.
+        adata.X = X
+        try:
+            adata.var = var_df
+        except Exception:
+            for col in var_df.columns:
+                adata.var[col] = var_df[col].values
 
     console.level2(f"tile matrix nnz={X.nnz:,}")
     return adata
