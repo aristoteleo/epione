@@ -131,6 +131,7 @@ linked above.
 | ArchR-style peak-to-gene linkage | {func}`epione.tl.peak_to_gene`, {func}`epione.pl.plot_peak2gene` |
 | Peak co-accessibility | {func}`epione.tl.coaccessibility` |
 | Gene-activity score matrix | {func}`epione.tl.add_gene_score_matrix` |
+| ArchR-style pseudo-time trajectory | {func}`epione.tl.add_trajectory`, {func}`epione.tl.get_trajectory`, {func}`epione.tl.trajectory_heatmap_matrix`, {func}`epione.tl.correlate_trajectories`, {func}`epione.pl.plot_trajectory`, {func}`epione.pl.plot_trajectory_heatmap` |
 
 ### Per-barcode peak calling & pseudobulk
 
