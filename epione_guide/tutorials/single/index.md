@@ -17,6 +17,7 @@ t_label_transfer
 t_harmony
 t_footprint
 t_scooby_bridge
+t_trajectory
 ```
 
 

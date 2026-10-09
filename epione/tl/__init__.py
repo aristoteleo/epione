@@ -99,6 +99,13 @@ from ._umap import umap
 
 from ._clusters import clusters
 
+from ._trajectory import (
+    add_trajectory,
+    get_trajectory,
+    trajectory_heatmap_matrix,
+    correlate_trajectories,
+)
+
 from ._differential import (
     differential_peaks,
     count_reads_in_peaks,
@@ -147,4 +154,8 @@ __all__ = [
     "peak_signal_matrix",
     "harmony",
     "run_harmony",
+    "add_trajectory",
+    "get_trajectory",
+    "trajectory_heatmap_matrix",
+    "correlate_trajectories",
 ]

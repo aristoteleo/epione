@@ -24,6 +24,7 @@ from ._contact import (
 )
 
 from ._peak2gene import plot_peak2gene
+from ._trajectory import plot_trajectory, plot_trajectory_heatmap
 
 # Footprint plot re-exported from tl (same object — plot is the
 # natural consumer of the Footprint dataclass that get_footprints
@@ -61,4 +62,6 @@ __all__ = [
     "plot_footprints",
     "plot_multi_scale_footprint",
     "plot_multi_scale_footprint_region",
+    "plot_trajectory",
+    "plot_trajectory_heatmap",
 ]
