@@ -94,6 +94,10 @@ from ._motif_database import build_motif_database, query_motif_database
 from ._background_peaks import add_background_peaks
 from ._chromvar import compute_deviations
 from ._gene_score import add_gene_score_matrix
+from ._peak_anno_enrichment import (
+    peak_anno_enrichment, custom_enrichment,
+    add_peak_annotations, add_archr_annotations,
+)
 
 from ._umap import umap
 
@@ -154,6 +158,8 @@ __all__ = [
     "compute_deviations",
     "add_impute_weights",
     "impute_matrix",
+    "peak_anno_enrichment", "custom_enrichment",
+    "add_peak_annotations", "add_archr_annotations",
     "umap",
     "clusters",
     "differential_peaks",

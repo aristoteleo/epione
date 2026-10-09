@@ -124,6 +124,8 @@ linked above.
 | Motif variability ranking (ArchR `getVarDeviations`) | {func}`epione.tl.var_deviations`, {func}`epione.pl.var_dev` |
 | Correlate two matrices over kNN groups (ArchR `correlateMatrices`) | {func}`epione.tl.correlate_matrices`, {func}`epione.tl.group_means` |
 | Positive TF regulators (ArchR book recipe) | {func}`epione.tl.positive_tf_regulators`, {func}`epione.pl.tf_regulators` |
+| Peak annotations (custom BED sets / ArchR ENCODE, ATAC, Codex databases) | {func}`epione.tl.add_peak_annotations`, {func}`epione.tl.add_archr_annotations` |
+| Motif / annotation enrichment in marker peaks (ArchR `peakAnnoEnrichment`) | {func}`epione.tl.peak_anno_enrichment`, {func}`epione.tl.custom_enrichment`, {func}`epione.pl.enrich_heatmap` |
 | Motif logo / matrix / clustering | {class}`epione.tl.MotifMatrix`, {class}`epione.tl.FormatMotifs`, {class}`epione.tl.ClusterMotifs`, {func}`epione.tl.format_motifs`, {func}`epione.tl.cluster_motifs` |
 | Bulk motif enrichment (HOMER + pure-Python) | {func}`epione.bulk.atac.run_homer_motifs`, {func}`epione.bulk.atac.find_motifs_genome` |
 | HOMER motif results table plot | {func}`epione.pl.homer_motif_table` |
@@ -233,6 +235,7 @@ linked above.
 | Peak-to-gene arc plot | {func}`epione.pl.plot_peak2gene` |
 | Grouped genome browser track (ArchR `plotBrowserTrack`) | {func}`epione.pl.plot_browser_track`, {func}`epione.pl.browser_track_coverage` |
 | Marker / peak-to-gene heatmaps (ArchR) | {func}`epione.pl.marker_heatmap`, {func}`epione.pl.peak2gene_heatmap` |
+| Peak-annotation enrichment heatmap | {func}`epione.pl.enrich_heatmap` |
 | HOMER motif table | {func}`epione.pl.homer_motif_table` |
 | Group distributions / confusion heatmap | {func}`epione.pl.plot_groups`, {func}`epione.pl.plot_confusion_matrix` |
 | Motif variability / positive TF regulators | {func}`epione.pl.var_dev`, {func}`epione.pl.tf_regulators` |

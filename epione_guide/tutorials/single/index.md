@@ -16,6 +16,7 @@ t_browser_track
 t_marker_heatmap
 t_chromvar
 t_tf_regulators
+t_peak_anno_enrichment
 t_label_transfer
 t_harmony
 t_footprint
