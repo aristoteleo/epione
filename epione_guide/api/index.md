@@ -121,6 +121,9 @@ linked above.
 | Annotate peaks × motif matches | {func}`epione.tl.add_motif_matrix` |
 | GC-matched background peaks | {func}`epione.tl.add_background_peaks` |
 | chromVAR deviations / z-scores | {func}`epione.tl.compute_deviations` |
+| Motif variability ranking (ArchR `getVarDeviations`) | {func}`epione.tl.var_deviations`, {func}`epione.pl.var_dev` |
+| Correlate two matrices over kNN groups (ArchR `correlateMatrices`) | {func}`epione.tl.correlate_matrices`, {func}`epione.tl.group_means` |
+| Positive TF regulators (ArchR book recipe) | {func}`epione.tl.positive_tf_regulators`, {func}`epione.pl.tf_regulators` |
 | Motif logo / matrix / clustering | {class}`epione.tl.MotifMatrix`, {class}`epione.tl.FormatMotifs`, {class}`epione.tl.ClusterMotifs`, {func}`epione.tl.format_motifs`, {func}`epione.tl.cluster_motifs` |
 | Bulk motif enrichment (HOMER + pure-Python) | {func}`epione.bulk.atac.run_homer_motifs`, {func}`epione.bulk.atac.find_motifs_genome` |
 | HOMER motif results table plot | {func}`epione.pl.homer_motif_table` |
@@ -230,6 +233,7 @@ linked above.
 | Grouped genome browser track (ArchR `plotBrowserTrack`) | {func}`epione.pl.plot_browser_track`, {func}`epione.pl.browser_track_coverage` |
 | HOMER motif table | {func}`epione.pl.homer_motif_table` |
 | Group distributions / confusion heatmap | {func}`epione.pl.plot_groups`, {func}`epione.pl.plot_confusion_matrix` |
+| Motif variability / positive TF regulators | {func}`epione.pl.var_dev`, {func}`epione.pl.tf_regulators` |
 | Style / font setup | {func}`epione.pl.plot_set` |
 
 ## Deprecated paths (removed in v0.5)

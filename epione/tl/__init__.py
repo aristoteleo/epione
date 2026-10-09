@@ -106,6 +106,9 @@ from ._trajectory import (
     correlate_trajectories,
 )
 from ._impute import add_impute_weights, impute_matrix
+from ._tf_regulators import (
+    var_deviations, correlate_matrices, positive_tf_regulators, group_means,
+)
 
 from ._differential import (
     differential_peaks,
@@ -164,4 +167,8 @@ __all__ = [
     "correlate_trajectories",
     "add_module_score",
     "confusion_matrix",
+    "var_deviations",
+    "correlate_matrices",
+    "positive_tf_regulators",
+    "group_means",
 ]

@@ -14,6 +14,7 @@ t_iterative_lsi
 t_peak_to_gene
 t_browser_track
 t_chromvar
+t_tf_regulators
 t_label_transfer
 t_harmony
 t_footprint
