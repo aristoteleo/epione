@@ -12,6 +12,7 @@ t_preprocess
 t_integrate
 t_iterative_lsi
 t_peak_to_gene
+t_browser_track
 t_chromvar
 t_label_transfer
 t_harmony
