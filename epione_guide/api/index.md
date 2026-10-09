@@ -136,6 +136,7 @@ linked above.
 | Differential peaks (DESeq2 / edgeR) | {func}`epione.tl.differential_peaks` |
 | Volcano / MA / cumulative-distance plots | {func}`epione.pl.volcano`, {func}`epione.pl.ma_plot`, {func}`epione.pl.cumulative_distance` |
 | ArchR-style peak-to-gene linkage | {func}`epione.tl.peak_to_gene`, {func}`epione.pl.plot_peak2gene` |
+| ArchR marker / peak-to-gene heatmaps | {func}`epione.pl.marker_heatmap`, {func}`epione.pl.marker_heatmap_matrix`, {func}`epione.pl.peak2gene_heatmap`, {func}`epione.pl.prepare_peak2gene_heatmap` |
 | Peak co-accessibility | {func}`epione.tl.coaccessibility` |
 | Gene-activity score matrix | {func}`epione.tl.add_gene_score_matrix` |
 | ArchR-style pseudo-time trajectory | {func}`epione.tl.add_trajectory`, {func}`epione.tl.get_trajectory`, {func}`epione.tl.trajectory_heatmap_matrix`, {func}`epione.tl.correlate_trajectories`, {func}`epione.pl.plot_trajectory`, {func}`epione.pl.plot_trajectory_heatmap` |
@@ -231,6 +232,7 @@ linked above.
 | Footprint (per-TF, multi-scale) | {func}`epione.pl.plot_footprints`, {func}`epione.pl.plot_multi_scale_footprint`, {func}`epione.pl.plot_multi_scale_footprint_region` |
 | Peak-to-gene arc plot | {func}`epione.pl.plot_peak2gene` |
 | Grouped genome browser track (ArchR `plotBrowserTrack`) | {func}`epione.pl.plot_browser_track`, {func}`epione.pl.browser_track_coverage` |
+| Marker / peak-to-gene heatmaps (ArchR) | {func}`epione.pl.marker_heatmap`, {func}`epione.pl.peak2gene_heatmap` |
 | HOMER motif table | {func}`epione.pl.homer_motif_table` |
 | Group distributions / confusion heatmap | {func}`epione.pl.plot_groups`, {func}`epione.pl.plot_confusion_matrix` |
 | Motif variability / positive TF regulators | {func}`epione.pl.var_dev`, {func}`epione.pl.tf_regulators` |
