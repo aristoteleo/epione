@@ -224,6 +224,7 @@ linked above.
 | Fragment QC | {func}`epione.pl.frag_size_distr`, {func}`epione.pl.fragment_histogram`, {func}`epione.pl.tss_enrichment`, {func}`epione.pl.plot_joint` |
 | Footprint (per-TF, multi-scale) | {func}`epione.pl.plot_footprints`, {func}`epione.pl.plot_multi_scale_footprint`, {func}`epione.pl.plot_multi_scale_footprint_region` |
 | Peak-to-gene arc plot | {func}`epione.pl.plot_peak2gene` |
+| Grouped genome browser track (ArchR `plotBrowserTrack`) | {func}`epione.pl.plot_browser_track`, {func}`epione.pl.browser_track_coverage` |
 | HOMER motif table | {func}`epione.pl.homer_motif_table` |
 | Style / font setup | {func}`epione.pl.plot_set` |
 

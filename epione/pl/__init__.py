@@ -25,6 +25,7 @@ from ._contact import (
 
 from ._peak2gene import plot_peak2gene
 from ._trajectory import plot_trajectory, plot_trajectory_heatmap
+from ._browser_track import plot_browser_track, browser_track_coverage
 
 # Footprint plot re-exported from tl (same object — plot is the
 # natural consumer of the Footprint dataclass that get_footprints
@@ -59,6 +60,7 @@ __all__ = [
     "plot_loops", "plot_apa",
     "plot_correlation_heatmap",
     "plot_peak2gene",
+    "plot_browser_track", "browser_track_coverage",
     "plot_footprints",
     "plot_multi_scale_footprint",
     "plot_multi_scale_footprint_region",
