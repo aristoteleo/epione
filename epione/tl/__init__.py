@@ -114,6 +114,7 @@ from ._differential import (
 )
 
 from ._harmony import harmony, run_harmony
+from ._module_score import add_module_score, confusion_matrix
 
 
 __all__ = [
@@ -161,4 +162,6 @@ __all__ = [
     "get_trajectory",
     "trajectory_heatmap_matrix",
     "correlate_trajectories",
+    "add_module_score",
+    "confusion_matrix",
 ]
