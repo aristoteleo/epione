@@ -31,6 +31,7 @@ from ._var_dev import var_dev, tf_regulators
 from ._marker_heatmap import (
     marker_heatmap, marker_heatmap_matrix, peak2gene_heatmap, prepare_peak2gene_heatmap,
 )
+from ._enrich_heatmap import enrich_heatmap
 
 # Footprint plot re-exported from tl (same object — plot is the
 # natural consumer of the Footprint dataclass that get_footprints
@@ -66,6 +67,7 @@ __all__ = [
     "plot_correlation_heatmap",
     "plot_peak2gene",
     "plot_browser_track", "browser_track_coverage",
+    "enrich_heatmap",
     "plot_footprints",
     "plot_multi_scale_footprint",
     "plot_multi_scale_footprint_region",
