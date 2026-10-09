@@ -105,6 +105,7 @@ from ._trajectory import (
     trajectory_heatmap_matrix,
     correlate_trajectories,
 )
+from ._impute import add_impute_weights, impute_matrix
 
 from ._differential import (
     differential_peaks,
@@ -147,6 +148,8 @@ __all__ = [
     "query_motif_database",
     "add_background_peaks",
     "compute_deviations",
+    "add_impute_weights",
+    "impute_matrix",
     "umap",
     "clusters",
     "differential_peaks",
