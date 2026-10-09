@@ -101,6 +101,9 @@ linked above.
 | Marker features per cluster | {func}`epione.tl.find_marker_features` |
 | MAGIC imputation (ArchR `addImputeWeights` / `imputeMatrix`) | {func}`epione.tl.add_impute_weights`, {func}`epione.tl.impute_matrix` |
 | Embedding scatter plot | {func}`epione.pl.embedding`, {func}`epione.pl.plot_embedding` |
+| Gene-set module scores (ArchR `addModuleScore`) | {func}`epione.tl.add_module_score` |
+| Label cross-tabulation (ArchR `confusionMatrix`) | {func}`epione.tl.confusion_matrix`, {func}`epione.pl.plot_confusion_matrix` |
+| Per-group ridge / violin plots (ArchR `plotGroups`) | {func}`epione.pl.plot_groups` |
 
 ### Multi-sample integration
 
@@ -226,6 +229,7 @@ linked above.
 | Peak-to-gene arc plot | {func}`epione.pl.plot_peak2gene` |
 | Grouped genome browser track (ArchR `plotBrowserTrack`) | {func}`epione.pl.plot_browser_track`, {func}`epione.pl.browser_track_coverage` |
 | HOMER motif table | {func}`epione.pl.homer_motif_table` |
+| Group distributions / confusion heatmap | {func}`epione.pl.plot_groups`, {func}`epione.pl.plot_confusion_matrix` |
 | Style / font setup | {func}`epione.pl.plot_set` |
 
 ## Deprecated paths (removed in v0.5)
