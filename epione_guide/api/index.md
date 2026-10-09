@@ -99,6 +99,7 @@ linked above.
 | UMAP / t-SNE / PCA | {func}`epione.tl.umap`, {func}`epione.pl.umap`, {func}`epione.pl.tsne`, {func}`epione.pl.pca`, {func}`epione.pl.diffmap`, {func}`epione.pl.draw_graph` |
 | Clustering (leiden / louvain / kmeans / RPH-kmeans / hierarchical) | {func}`epione.tl.clusters` |
 | Marker features per cluster | {func}`epione.tl.find_marker_features` |
+| MAGIC imputation (ArchR `addImputeWeights` / `imputeMatrix`) | {func}`epione.tl.add_impute_weights`, {func}`epione.tl.impute_matrix` |
 | Embedding scatter plot | {func}`epione.pl.embedding`, {func}`epione.pl.plot_embedding` |
 
 ### Multi-sample integration
