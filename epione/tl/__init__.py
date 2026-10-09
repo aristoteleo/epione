@@ -105,6 +105,8 @@ from ._differential import (
     peak_signal_matrix,
 )
 
+from ._harmony import harmony, run_harmony
+
 
 __all__ = [
     "bindetect",
@@ -143,4 +145,6 @@ __all__ = [
     "differential_peaks",
     "count_reads_in_peaks",
     "peak_signal_matrix",
+    "harmony",
+    "run_harmony",
 ]

@@ -2,8 +2,10 @@
 
 ``epi.tl.integrate(atac, rna, method='cca', ...)`` — wraps ``cca_py``
 (ArchR-style CCA for scRNA ↔ scATAC label transfer) and exposes a
-single signature usable from tutorials. Future methods ('harmony',
-'mnn', 'scanorama') plug in under the same dispatcher.
+single signature usable from tutorials. Future methods ('mnn',
+'scanorama') plug in under the same dispatcher. For within-modality
+batch correction of one embedding (ArchR ``addHarmony``) use
+:func:`epione.tl.harmony`.
 """
 from __future__ import annotations
 

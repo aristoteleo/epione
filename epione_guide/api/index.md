@@ -107,6 +107,7 @@ linked above.
 |---|---|
 | Cross-batch integration | {func}`epione.tl.integrate`, {func}`epione.tl.joint_embedding` |
 | CCA-based label transfer | {func}`epione.tl.transfer_labels` |
+| Harmony batch correction (ArchR `addHarmony`) | {func}`epione.tl.harmony`, {func}`epione.tl.run_harmony` |
 
 ### chromVAR & motif analysis
 
