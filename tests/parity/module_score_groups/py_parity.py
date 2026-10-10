@@ -1,12 +1,17 @@
 """Epione vs ArchR 1.0.3 parity for add_module_score / plot_groups / confusion_matrix.
 
-Usage: python py_parity.py <fixture tables dir> <r_reference.R output dir> [out.json]
-Reads the ArchR reference dumps written by ``r_reference.R`` and evaluates every
+Usage: python py_parity.py [<parity dir>] [out.json]
+
+``<parity dir>`` defaults to ``$EPIONE_ARCHR_PARITY_DIR/module_score_groups`` and
+holds ArchR 1.0.3 reference outputs generated outside this repository:
+``tables/`` (GeneScoreMatrix + cell metadata exported from the ArchR project),
+``ref/`` (ArchR results) and ``arrow_genescore_rowsums.npy``. Evaluates every
 gate pre-registered in MANIFEST.md.
 """
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -167,12 +172,17 @@ def plot_groups_parity(adata, ref: Path) -> list:
     return res
 
 
+def parity_dir() -> Path:
+    return Path(os.environ.get("EPIONE_ARCHR_PARITY_DIR", "")) / "module_score_groups"
+
+
 def main():
-    tables, ref = Path(sys.argv[1]), Path(sys.argv[2])
-    out = Path(sys.argv[3]) if len(sys.argv) > 3 else None
+    root = Path(sys.argv[1]) if len(sys.argv) > 1 else parity_dir()
+    out = Path(sys.argv[2]) if len(sys.argv) > 2 else None
+    tables, ref = root / "tables", root / "ref"
     adata = load_gene_scores(tables)
-    rs = pd.read_csv(ref / "gs_rowsums.tsv", sep="\t")
-    arrows = arrow_rowsums(tables.parent / "ArchR_base" / "ArrowFiles", rs.seqnames.unique())
+    sums = root / "arrow_genescore_rowsums.npy"
+    arrows = np.load(sums) if sums.exists() else None
     report = dict(
         confusion=confusion_parity(adata, ref),
         binning=binning_parity(adata, ref, arrows),

@@ -4,6 +4,13 @@ Reference: ArchR 1.0.3 (R 4.4.3) on the ArchR Hematopoiesis tutorial project
 (10,660 cells, 23,127-gene GeneScoreMatrix). Thresholds were registered before
 the first comparison and are never loosened.
 
+The ArchR reference outputs are generated outside this repository with ArchR 1.0.3;
+the repository contains no R code. `py_parity.py` and `test_parity_with_archr` read
+them from `$EPIONE_ARCHR_PARITY_DIR/module_score_groups/` (`tables/`: GeneScoreMatrix
+and cell metadata exported from the ArchR project; `ref/`: ArchR results;
+`arrow_genescore_rowsums.npy`: per-gene totals read from the Arrow files) and are
+skipped when the variable is not set.
+
 Taxonomy: omicverse-rebuildr `PARITY_TAXONOMY.md`.
 
 | # | Output | Class | Metric | Threshold |
@@ -46,4 +53,4 @@ all cells at once; 20 of 23,127 genes change rank, which changes some background
 Module-score references: "official" = unmodified ArchR, one call per multi-gene module;
 "patched_all" = all modules in one call with ArchR's two module-assignment bugs fixed
 (`length(idx[[z]])` -> `length(features[[z]])`, `drop = FALSE`). Where both run, they are
-identical (asserted in `r_reference.R`).
+identical (asserted when the references were generated).

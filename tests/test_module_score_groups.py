@@ -158,18 +158,17 @@ def test_plot_groups_data_and_figures():
 
 # --------------------------------------------------------------------------- ArchR parity
 
-_FIXTURE = Path(os.environ.get("EPIONE_ARCHR_FIXTURE", "/scratch/users/steorra/analysis/25_epione/epione_dev/fixture"))
-_REF = Path(os.environ.get("EPIONE_ARCHR_MODULE_SCORE_REF",
-                           "/scratch/users/steorra/analysis/25_epione/epione_dev/work/module-score-groups/ref_v2"))
+_PARITY = Path(os.environ.get("EPIONE_ARCHR_PARITY_DIR", "")) / "module_score_groups"
 
 
-@pytest.mark.skipif(not (_FIXTURE / "tables").exists() or not _REF.exists(),
-                    reason="ArchR Heme fixture / R reference dumps not available")
+@pytest.mark.skipif(not os.environ.get("EPIONE_ARCHR_PARITY_DIR") or not (_PARITY / "ref").exists(),
+                    reason="EPIONE_ARCHR_PARITY_DIR with ArchR reference outputs not available")
 def test_parity_with_archr():
     sys.path.insert(0, str(Path(__file__).parent / "parity" / "module_score_groups"))
     import py_parity as pp
 
-    a = pp.load_gene_scores(_FIXTURE / "tables")
+    _REF = _PARITY / "ref"
+    a = pp.load_gene_scores(_PARITY / "tables")
     cm = pp.confusion_parity(a, _REF)
     assert cm["same_order"] and cm["max_abs"] == 0
     tag = "official_B_nbin25_nbgd100_seed1"
