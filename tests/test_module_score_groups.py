@@ -2,8 +2,8 @@
 (ports of ArchR addModuleScore / confusionMatrix / plotGroups)."""
 from __future__ import annotations
 
+import importlib.util
 import os
-import sys
 from pathlib import Path
 
 import numpy as np
@@ -164,8 +164,12 @@ _PARITY = Path(os.environ.get("EPIONE_ARCHR_PARITY_DIR", "")) / "module_score_gr
 @pytest.mark.skipif(not os.environ.get("EPIONE_ARCHR_PARITY_DIR") or not (_PARITY / "ref").exists(),
                     reason="EPIONE_ARCHR_PARITY_DIR with ArchR reference outputs not available")
 def test_parity_with_archr():
-    sys.path.insert(0, str(Path(__file__).parent / "parity" / "module_score_groups"))
-    import py_parity as pp
+    # Load by path under a unique name: several parity folders ship a
+    # ``py_parity.py`` and a plain import would reuse whichever loaded first.
+    spec = importlib.util.spec_from_file_location(
+        "py_parity_module_score_groups", Path(__file__).parent / "parity" / "module_score_groups" / "py_parity.py")
+    pp = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(pp)
 
     _REF = _PARITY / "ref"
     a = pp.load_gene_scores(_PARITY / "tables")

@@ -2,8 +2,8 @@
 positive_tf_regulators (ArchR getVarDeviations / correlateMatrices ports)."""
 from __future__ import annotations
 
+import importlib.util
 import os
-import sys
 from pathlib import Path
 
 import anndata as ad
@@ -163,8 +163,13 @@ REF = Path(os.environ.get("EPIONE_ARCHR_PARITY_DIR", "")) / "var_dev_correlate"
                     or not (REF / "correlateMatrices_GSM_cisbp.tsv").exists(),
                     reason="EPIONE_ARCHR_PARITY_DIR with ArchR reference outputs not available")
 def test_parity_with_archr():
-    sys.path.insert(0, str(Path(__file__).parent / "parity" / "var_dev_correlate"))
-    from py_parity import run
+    # Load by path under a unique name: several parity folders ship a
+    # ``py_parity.py`` and a plain import would reuse whichever loaded first.
+    spec = importlib.util.spec_from_file_location(
+        "py_parity_var_dev_correlate", Path(__file__).parent / "parity" / "var_dev_correlate" / "py_parity.py")
+    _pp = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(_pp)
+    run = _pp.run
 
     m = run(REF)
     for tag in ("MotifMatrix", "cisbpMatrix"):
