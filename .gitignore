@@ -19,6 +19,8 @@ meta.yaml
 data
 !epione/data/
 !epione/data/**
+# ...but the negation above also re-includes bytecode caches.
+epione/data/**/__pycache__/
 genesets
 temp
 result_simba
