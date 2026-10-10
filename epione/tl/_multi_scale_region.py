@@ -24,6 +24,15 @@ Algorithmic correspondence with scPrinter (Hu *et al.* 2024):
   overdispersion correction but has zero dependencies.
 * Smoothing: ``maximum_filter`` + rolling mean along the position axis —
   port of ``scprinter.footprint.regionFootprintScore``.
+
+PRINT mode
+----------
+``bias`` and ``null`` make the two approximations above optional. With
+``bias=epi.tl.tn5_bias(genome)`` (the PRINT CNN) and ``null='auto'`` the
+learned dispersion model replaces the binomial null and the result is
+scPrinter's score exactly (see :mod:`epione.tl._print`). Insertions are
+then read with the cut convention the bias model was trained under, which
+for PRINT differs from the hexamer table's by one base at fragment ends.
 """
 from __future__ import annotations
 
@@ -36,9 +45,11 @@ import pandas as pd
 
 from ..utils import console
 from epione.core.genome import Genome
-from ._footprint import (
-    _seq_to_codes, _codes_to_kmers, compute_tn5_bias_table,
+from ._print import (
+    DispersionModel, _pvalue_to_score, _rz_conv, _window_sums,
+    print_footprint_pvalues,
 )
+from ._tn5_bias import KmerBias, Tn5Bias
 
 
 @dataclass
@@ -52,8 +63,12 @@ class MultiScaleRegion:
     bias: np.ndarray                # (n_positions,) aggregated hexamer bias
     n_sites: int
     flank: int
-    kmer_length: int
+    kmer_length: Optional[int]
     smooth_radius: Union[int, str]
+    #: Bias model that produced :attr:`bias` (``'kmer'``, ``'print'``, ...).
+    bias_model: str = "kmer"
+    #: Null used for the p-values: ``'binomial'`` or ``'dispersion'``.
+    null: str = "binomial"
 
     @property
     def footprint_size(self) -> np.ndarray:
@@ -66,45 +81,18 @@ class MultiScaleRegion:
 # scPrinter port: windowing + scoring
 # ---------------------------------------------------------------------------
 
-def _rz_conv(a: np.ndarray, n: int) -> np.ndarray:
-    """Centred rolling sum of width ``2n``. Pure port of
-    ``scprinter.utils.rz_conv``."""
-    if n == 0:
-        return a
-    pad_shape = a.shape[:-1] + (n,)
-    padded = np.concatenate(
-        [np.zeros(pad_shape, dtype=a.dtype), a,
-         np.zeros(pad_shape, dtype=a.dtype)], axis=-1,
-    )
-    cs = np.cumsum(padded, axis=-1)
-    return cs[..., 2 * n :] - cs[..., : -2 * n]
-
-
-def _window_sums(x: np.ndarray, foot_R: int, flank_R: int):
-    """Per-position (left_flank, centre, right_flank) sums.
-
-    Geometry matches ``scprinter.footprint.footprintWindowSum``:
-    centre has width ``2 · foot_R``; each flank has width
-    ``flank_R // 2``; flanks are adjacent to centre on both sides.
-    """
-    half_flank = flank_R // 2
-    shift = half_flank + foot_R
-    pad_shape = x.shape[:-1] + (shift,)
-    zero = np.zeros(pad_shape, dtype=x.dtype)
-    left_shifted = np.concatenate([zero, x], axis=-1)
-    left_flank = _rz_conv(left_shifted, half_flank)[..., : x.shape[-1]]
-    right_shifted = np.concatenate([x, zero], axis=-1)
-    right_flank = _rz_conv(right_shifted, half_flank)[..., shift:]
-    centre = _rz_conv(x, foot_R)
-    return left_flank, centre, right_flank
+# ``_rz_conv`` and ``_window_sums`` are shared with :mod:`._print` so
+# both nulls see identical (float64, scPrinter-exact) window sums.
 
 
 def _footprint_pvals(insertions: np.ndarray, bias: np.ndarray,
                      foot_R: int, flank_R: int) -> np.ndarray:
-    """Pure-binomial-null version of ``footprintScoring``.
+    """Binomial-null version of ``footprintScoring``.
 
-    Tests *centre depletion* (one-sided) on both sides; returns
-    ``-log10 max(p_left, p_right)``.
+    Tests *centre depletion* (one-sided) on both sides and returns
+    ``max(p_left, p_right)``; positions with no cuts on either side get
+    p = 1. Scoring (-log10, smoothing) happens in
+    :func:`._print._pvalue_to_score`, shared with the dispersion null.
     """
     from scipy.stats import norm
     b_left, b_centre, b_right = _window_sums(bias, foot_R, flank_R)
@@ -126,25 +114,29 @@ def _footprint_pvals(insertions: np.ndarray, bias: np.ndarray,
     p = np.maximum(p_left, p_right)
     # Mask positions with no coverage on either side.
     mask = (total_left < 1) | (total_right < 1)
-    p = np.where(mask, 1.0, p)
-    return -np.log10(np.clip(p, 1e-20, 1.0))
+    return np.where(mask, 1.0, p)
 
 
 def _region_footprint_score(insertions: np.ndarray, bias: np.ndarray,
                              foot_R: int, flank_R: int,
-                             smooth_R: Optional[int] = None) -> np.ndarray:
-    """Port of ``scprinter.footprint.regionFootprintScore`` (return_pval
-    branch): -log10 p + maximum_filter + rolling mean along position."""
-    from scipy.ndimage import maximum_filter
+                             smooth_R: Optional[int] = None,
+                             *, null: str = "binomial",
+                             dispersion: Optional[DispersionModel] = None,
+                             ) -> np.ndarray:
+    """One radius of ``scprinter.footprint.regionFootprintScore``:
+    p-values under the chosen null, then -log10 + max-filter + mean.
+
+    ``smooth_R=None`` means scPrinter's ``int(R / 2)``; 0 disables
+    smoothing.
+    """
     if smooth_R is None:
-        smooth_R = max(foot_R // 2, 1)
-    F = _footprint_pvals(insertions, bias, foot_R, flank_R)
-    F[np.isnan(F)] = 0; F[np.isinf(F)] = 20
-    mf_shape = [0] * F.ndim; mf_shape[-1] = 2 * smooth_R
-    F = maximum_filter(F, tuple(mf_shape), origin=-1)
-    F = _rz_conv(F, smooth_R) / (2 * smooth_R)
-    F[np.isnan(F)] = 0; F[np.isinf(F)] = 20
-    return F
+        smooth_R = int(foot_R / 2)
+    if null == "dispersion":
+        p = print_footprint_pvalues(insertions, bias, foot_R, dispersion,
+                                    flank_radius=flank_R)
+    else:
+        p = _footprint_pvals(insertions, bias, foot_R, flank_R)
+    return _pvalue_to_score(p, int(smooth_R))
 
 
 # ---------------------------------------------------------------------------
@@ -234,22 +226,24 @@ def multi_scale_footprint_region(
     regions,
     *,
     groupby: str,
-    genome: Union[Genome, str, Path],
+    genome: Union[Genome, str, Path, None] = None,
+    bias: Union[str, Tn5Bias, None] = None,
+    null: str = "auto",
     bias_table: Optional[np.ndarray] = None,
     flank: int = 200,
     scales: Optional[Sequence[int]] = None,
     kmer_length: int = 6,
     min_cells_per_group: int = 10,
     smooth_radius: Union[int, str] = "auto",
+    dispersion: Optional[DispersionModel] = None,
     verbose: bool = True,
 ) -> MultiScaleRegion:
-    """scPrinter-style multi-scale footprint for one or many motif sites.
+    """Multi-scale footprint for one or many sites (scPrinter / PRINT).
 
-    For each motif position in ``regions``, extract the per-bp Tn5 cut
-    track and the hexamer bias track in ±``flank`` bp around the motif
-    centre, strand-correct (negative-strand sites are reversed), sum
-    across sites. Then run scPrinter's edge-vs-centre binomial test at
-    each (scale, position).
+    For each site in ``regions``, the per-base Tn5 cut track and the bias
+    track in ±``flank`` bp around its centre are extracted, negative-strand
+    sites reversed, and both summed across sites. Every (scale, position)
+    is then tested for a cut-depleted centre against its flanks.
 
     Parameters
     ----------
@@ -258,151 +252,160 @@ def multi_scale_footprint_region(
         column in ``obs``.
     regions
         DataFrame or iterable of dicts with ``chrom`` / ``center``
-        (or ``start`` + ``end``) / optional ``strand``. Pass ``N=1``
-        for single-site scPrinter-Fig-1h-style heatmap (TF dot +
-        nucleosome triangles); ``N > 100`` for aggregate (clean TF
-        signal, nucleosome washes out).
+        (or ``start`` + ``end``) / optional ``strand``. One site gives
+        scPrinter's single-region heatmap (TF dots at small scales,
+        nucleosome triangles at large ones); hundreds of motif sites give
+        an aggregate in which the TF signal sharpens and nucleosome
+        phasing averages out.
     groupby
-        ``obs`` column — one panel per category.
+        ``obs`` column -- one panel per category.
     genome
-        ``Genome`` or FASTA path for the hexamer bias track.
+        :class:`~epione.core.genome.Genome` or FASTA. Needed unless
+        ``bias`` is a ready :class:`~epione.tl.Tn5Bias`.
+    bias
+        Expected-cut model. ``None`` / ``'kmer'``: Epione's hexamer table
+        (estimated from the fragments unless ``bias_table`` is given) --
+        the original behaviour. ``'print'``: the PRINT CNN, the bias
+        scPrinter uses. Or any :class:`~epione.tl.Tn5Bias`, e.g. from
+        :func:`epi.tl.tn5_bias`.
+    null
+        ``'dispersion'``: PRINT's learned null (requires PRINT bias, which
+        it was fitted to). ``'binomial'``: closed-form normal
+        approximation, no learned parameters. ``'auto'``: dispersion with
+        a PRINT bias, binomial otherwise.
     bias_table
-        Pre-computed hexamer bias (``compute_tn5_bias_table`` output).
-        If ``None`` it's computed on the fly.
+        Precomputed hexamer table for the kmer bias.
     flank
-        Half-width (bp) of the extraction / plot window.
+        Half-width (bp) of the extraction window. Scores are computed
+        inside it, so within about ``2 * R`` of either edge the flanks
+        are truncated and large-scale scores there are unreliable (this
+        matches scPrinter, which computes within the region too). Read
+        ~200 bp more than you want to show and pass ``zoom=`` to the plot.
     scales
-        Footprint radii to scan. Default: ``range(2, 101, 2)`` →
-        centre widths 4..200 bp (small = TF, large = nucleosome).
+        Footprint radii. Default ``range(2, 101, 2)`` (centre widths
+        4..200 bp: small = TF, large = nucleosome).
     min_cells_per_group
         Drop groups with fewer cells than this.
     smooth_radius
-        Rolling-mean radius for the final score. ``'auto'`` means
-        ``max(R // 2, 1)`` per scale (scPrinter default). ``0``
-        disables smoothing.
+        ``'auto'``: ``int(R / 2)`` per radius (scPrinter); an int fixes
+        it; 0 disables smoothing.
+    dispersion
+        A loaded :class:`~epione.tl.DispersionModel`; loaded on demand.
 
     Returns
     -------
     :class:`MultiScaleRegion` with ``.score`` of shape
     ``(n_groups, n_scales, n_positions)``.
+
+    Examples
+    --------
+    PRINT footprint of one peak summit, per cell type::
+
+        bias = epi.tl.tn5_bias(epi.data.mm10)
+        fp = epi.tl.multi_scale_footprint_region(
+            adata, [{"chrom": "chr19", "center": 41_829_870}],
+            groupby="celltype", bias=bias)
+        epi.pl.plot_multi_scale_footprint_region(fp)
     """
-    import pyfaidx
-    import pysam
+    from ._print import _groups_and_reader
 
-    if "files" not in adata.uns or "fragments" not in adata.uns["files"]:
-        raise ValueError(
-            "adata.uns['files']['fragments'] missing — run "
-            "epi.pp.import_fragments first"
+    # -- bias model and null -------------------------------------------------
+    if bias is None or (isinstance(bias, str) and bias.lower() in ("kmer", "hexamer")):
+        if genome is None:
+            raise ValueError("genome is required for the hexamer bias")
+        if bias_table is None:
+            if "files" not in adata.uns or "fragments" not in adata.uns["files"]:
+                raise ValueError(
+                    "adata.uns['files']['fragments'] missing — run "
+                    "epi.pp.import_fragments first"
+                )
+        bias_model = KmerBias(
+            genome, bias_table,
+            fragment_file=adata.uns.get("files", {}).get("fragments"),
+            kmer_length=kmer_length,
         )
-    frag_file = str(adata.uns["files"]["fragments"])
+    elif isinstance(bias, str):
+        from ._tn5_bias import tn5_bias
+        bias_model = tn5_bias(genome, method=bias)
+    elif isinstance(bias, Tn5Bias):
+        bias_model = bias
+    else:
+        raise TypeError("bias must be None, a method name, or a Tn5Bias")
 
+    is_print = bias_model.name.startswith("print")
+    if null == "auto":
+        null = "dispersion" if is_print else "binomial"
+    if null not in ("dispersion", "binomial"):
+        raise ValueError("null must be 'auto', 'dispersion' or 'binomial'")
+    if null == "dispersion":
+        if not is_print:
+            raise ValueError(
+                "the dispersion null was fitted to PRINT bias sums; with a "
+                f"{bias_model.name!r} bias its p-values are uncalibrated. Use "
+                "bias='print' or null='binomial'."
+            )
+        if dispersion is None:
+            dispersion = DispersionModel.load()
+
+    # -- groups, sites --------------------------------------------------------
+    G, keep, reader = _groups_and_reader(
+        adata, groupby, min_cells_per_group, shift=bias_model.shift)
     regions_df = _normalise_regions(regions)
     if len(regions_df) == 0:
         raise ValueError("regions is empty")
 
-    # Hexamer bias
-    if bias_table is None:
-        fasta = genome.fasta if isinstance(genome, Genome) else str(genome)
-        bias_table = compute_tn5_bias_table(
-            frag_file, fasta, kmer_length=kmer_length
-        )
-    fasta = genome.fasta if isinstance(genome, Genome) else str(genome)
-    fa = pyfaidx.Fasta(str(fasta))
-
-    # Groups / barcodes
-    obs_col = adata.obs[groupby].astype(str)
-    counts = obs_col.value_counts()
-    keep = sorted(g for g, n in counts.items() if n >= min_cells_per_group)
-    if not keep:
-        raise ValueError("no groups with >= min_cells_per_group cells")
-    g_idx = {g: i for i, g in enumerate(keep)}
-    bc_to_g = {bc: g for bc, g in zip(adata.obs_names, obs_col)
-                if g in g_idx}
-
-    k = int(kmer_length); half_k = k // 2
     N = 2 * flank + 1
     agg_ins = np.zeros((len(keep), N), dtype=np.float32)
     agg_bias = np.zeros(N, dtype=np.float64)
-    n_ins_sites = 0
-    n_bias_sites = 0
-
-    tbx = pysam.TabixFile(frag_file)
+    n_sites = 0
     for _, row in regions_df.iterrows():
         c, cen, strand = row["chrom"], int(row["center"]), row["strand"]
         lo, hi = cen - flank, cen + flank + 1
-        if c not in tbx.contigs: continue
-
-        # Per-site insertion track
-        ins = np.zeros((len(keep), N), dtype=np.float32)
-        for line in tbx.fetch(c, lo, hi):
-            parts = line.split("\t")
-            if len(parts) < 4: continue
-            bc = parts[3]; g = bc_to_g.get(bc)
-            if g is None: continue
-            try:
-                s = int(parts[1]); e = int(parts[2])
-            except ValueError:
-                continue
-            gi = g_idx[g]
-            for cut in (s, e - 1):
-                if lo <= cut < hi:
-                    ins[gi, cut - lo] += 1
-        if strand == "-":
-            ins = ins[:, ::-1]
-        agg_ins += ins
-        n_ins_sites += 1
-
-        # Per-site bias track
-        seq_start = lo - half_k
-        seq_len = N + k - 1
         try:
-            seq = str(fa[c][seq_start : seq_start + seq_len]).upper()
-        except Exception:
-            continue
-        codes = _seq_to_codes(seq)
-        km = _codes_to_kmers(codes, k)
-        if len(km) != N: continue
-        bp = np.where(km >= 0, bias_table[np.clip(km, 0, None)], 1.0)
+            b = bias_model.track(c, lo, hi)
+        except KeyError:
+            continue                      # contig absent from the genome
+        ins = reader.group_insertions(c, lo, hi, G)
         if strand == "-":
-            bp = bp[::-1]
-        agg_bias += bp
-        n_bias_sites += 1
-
-    tbx.close()
-    if n_bias_sites == 0:
+            ins, b = ins[:, ::-1], b[::-1]
+        agg_ins += ins
+        agg_bias += b
+        n_sites += 1
+    reader.close()
+    if n_sites == 0:
         raise RuntimeError("no valid regions after filtering")
 
     if verbose:
         console.level1(
-            f"multi_scale_footprint_region: aggregated "
-            f"{n_ins_sites:,} sites × {len(keep)} groups"
+            f"multi_scale_footprint_region: {n_sites:,} site(s) × "
+            f"{len(keep)} groups · {bias_model.name} bias · {null} null"
         )
 
-    # Score at each scale
+    # -- score ----------------------------------------------------------------
     if scales is None:
         scales = list(range(2, 101, 2))
     scales_arr = np.asarray(list(scales), dtype=np.int32)
     stack = np.zeros((len(keep), len(scales_arr), N), dtype=np.float32)
     for si, R in enumerate(scales_arr):
-        sR = None if smooth_radius == "auto" else (
-            None if smooth_radius is None else int(smooth_radius)
-        )
+        sR = None if smooth_radius in ("auto", None) else int(smooth_radius)
         stack[:, si, :] = _region_footprint_score(
             agg_ins, agg_bias, int(R), int(R), smooth_R=sR,
+            null=null, dispersion=dispersion,
         )
-    positions = np.arange(-flank, flank + 1)
 
     return MultiScaleRegion(
         groups=list(keep),
         scales=scales_arr,
-        positions=positions,
+        positions=np.arange(-flank, flank + 1),
         score=stack,
         insertions=agg_ins,
         bias=agg_bias.astype(np.float32),
-        n_sites=n_bias_sites,
+        n_sites=n_sites,
         flank=flank,
-        kmer_length=k,
+        kmer_length=getattr(bias_model, "k", None),
         smooth_radius=smooth_radius,
+        bias_model=bias_model.name,
+        null=null,
     )
 
 
@@ -417,40 +420,45 @@ def plot_multi_scale_footprint_region(
     vpercentile: float = 100.0,
     cmap: str = "Blues",
     zoom: Optional[int] = None,
+    tracks: bool = True,
+    smooth: int = 10,
     figsize: Optional[Tuple[float, float]] = None,
     title: Optional[str] = None,
     show: bool = True,
 ):
-    """Render the scPrinter-style 2D heatmap (footprint size × position)
-    per celltype group — one panel each.
+    """scPrinter-style heatmap (footprint size x position) per group.
+
+    With ``tracks=True`` (default) each heatmap sits under that group's
+    cut track -- observed cuts filled, bias-expected cuts dashed -- on the
+    same x-axis, so a footprint can be checked against the dip in cuts
+    that produced it.
 
     Parameters
     ----------
     result
         Output of :func:`multi_scale_footprint_region`.
     groups, order
-        Subset / reorder panel layout.
+        Subset / reorder the panels.
     ncols
-        Number of columns in the subplot grid.
+        Panels per row.
     vmin, vmax
-        Colour range. ``vmax=None`` (default) sets it to the
-        ``vpercentile``-th percentile of the plotted data (default
-        100 = max across all cell types → strongest signal saturates,
-        weaker groups render on the same shared colour bar).
-        Pass an explicit value (e.g. scPrinter's own ``vmax=2.0``) to
-        override, or ``vpercentile=99`` to clip the top 1 %.
-    vpercentile
-        Percentile used when ``vmax`` is not given. Default 100 (=
-        global max). Lowering to e.g. 99 clips out extreme outliers
-        so the bulk of the signal takes more of the colour range.
+        Colour range, shared by all panels so groups are comparable.
+        ``vmax=None`` uses the ``vpercentile``-th percentile of the
+        plotted data (100 = global max; 99 clips outliers).
     zoom
-        Restrict position axis to ``±zoom`` bp.
+        Restrict the position axis to ``±zoom`` bp.
+    tracks
+        Draw the cut track above each heatmap.
+    smooth
+        Running-mean width (bp) for the displayed cut track only.
+
+    Returns
+    -------
+    ``(fig, axes)``: a list of heatmap axes (and, with tracks, a parallel
+    list in ``fig.track_axes``).
     """
     import matplotlib.pyplot as plt
-    disp = result.score
-    scales = result.scales
-    positions = result.positions
-    insertions = result.insertions
+    from ._print_plot import GROUP_COLORS, INK, INK2, MUTED, _style_axis, draw_cut_track
 
     available = list(result.groups)
     usable = [g for g in (groups or available) if g in available]
@@ -458,24 +466,18 @@ def plot_multi_scale_footprint_region(
         usable = [g for g in order if g in usable]
     if not usable:
         raise ValueError(f"no groups to plot; available = {available!r}")
-
     idx = [available.index(g) for g in usable]
-    panels = disp[idx]
-    pos = positions
-    if zoom is not None:
-        mask = np.abs(pos) <= int(zoom)
-        panels = panels[..., mask]
-        pos = pos[mask]
 
-    # Auto-scale vmax from the plotted data (default = global max
-    # across all cell types shown, so the strongest signal saturates
-    # and weaker groups render proportionally on the shared colour bar).
-    # scPrinter's baked-in vmax=2.5 was tuned for their MLP-calibrated
-    # null; raw pvalue_log10 on this pipeline can exceed 10 at strong
-    # binders and would all saturate the same if we kept that ceiling.
+    pos = result.positions
+    panels = result.score[idx]
+    ins = result.insertions[idx]
+    bias = result.bias
+    if zoom is not None:
+        m = np.abs(pos) <= int(zoom)
+        panels, ins, bias, pos = panels[..., m], ins[:, m], bias[m], pos[m]
+
     if vmax is None:
-        vmax = float(np.nanpercentile(panels, vpercentile))
-        vmax = max(vmax, 1e-6)
+        vmax = max(float(np.nanpercentile(panels, vpercentile)), 1e-6)
     if vmin is None:
         vmin = 0.0
 
@@ -483,42 +485,63 @@ def plot_multi_scale_footprint_region(
     ncols = min(ncols, n)
     nrows = int(np.ceil(n / ncols))
     if figsize is None:
-        figsize = (3.3 * ncols, 2.8 * nrows)
-    fig, axes = plt.subplots(nrows, ncols, figsize=figsize,
-                              squeeze=False, sharex=True, sharey=True)
-    axes_flat = axes.ravel().tolist()
+        figsize = (3.3 * ncols + 0.6, (3.4 if tracks else 2.8) * nrows)
+    fig = plt.figure(figsize=figsize)
+    per = 2 if tracks else 1
+    hr = ([0.9, 2.4] if tracks else [1.0]) * nrows
+    gs = fig.add_gridspec(nrows * per, ncols + 1,
+                          width_ratios=[1.0] * ncols + [0.05],
+                          height_ratios=hr, hspace=0.18, wspace=0.18)
 
-    y_lo, y_hi = float(2 * scales[0]), float(2 * scales[-1])
+    sizes = 2 * result.scales
+    heat_axes, track_axes = [], []
+    im = None
     for i, g in enumerate(usable):
-        ax = axes_flat[i]
-        im = ax.imshow(
+        r, c = divmod(i, ncols)
+        hax = fig.add_subplot(gs[r * per + (per - 1), c])
+        im = hax.imshow(
             panels[i], aspect="auto", origin="lower",
-            extent=[pos[0], pos[-1], y_lo, y_hi],
+            extent=[pos[0], pos[-1], float(sizes[0]), float(sizes[-1])],
             cmap=cmap, vmin=vmin, vmax=vmax, interpolation="nearest",
         )
-        n_cuts = int(insertions[available.index(g)].sum())
-        ax.set_title(f"{g}  (n_cuts={n_cuts:,})", fontsize=9)
-        ax.axvline(0, color="black", lw=0.4, ls=":")
-        if i % ncols == 0:
-            ax.set_ylabel("footprint size (bp)")
-        if i // ncols == nrows - 1:
-            ax.set_xlabel("position (bp)")
-    for j in range(n, len(axes_flat)):
-        axes_flat[j].axis("off")
+        hax.axvline(0, color=INK, lw=0.4, ls=":")
+        _style_axis(hax)
+        if c == 0:
+            hax.set_ylabel("footprint size (bp)", color=INK2, fontsize=9)
+        if r == nrows - 1:
+            hax.set_xlabel("position (bp)", color=INK2, fontsize=9)
+        heat_axes.append(hax)
+        label = f"{g}  ·  {int(ins[i].sum()):,} cuts"
+        if tracks:
+            tax = fig.add_subplot(gs[r * per, c], sharex=hax)
+            draw_cut_track(tax, pos, ins[i], bias,
+                           GROUP_COLORS[i % len(GROUP_COLORS)], label,
+                           smooth=smooth)
+            tax.tick_params(labelbottom=False)
+            track_axes.append(tax)
+        else:
+            hax.set_title(label, fontsize=9, color=INK)
 
-    fig.colorbar(im, ax=axes, shrink=0.6, label="-log10 p")
+    cax = fig.add_subplot(gs[(nrows * per) - 1, ncols])
+    cb = fig.colorbar(im, cax=cax)
+    cb.outline.set_visible(False)
+    cb.ax.tick_params(labelsize=7, colors=MUTED)
+    cb.set_label("-log10 p", fontsize=8, color=INK2)
+
     if title is None:
-        title = (f"Multi-scale footprint · {result.n_sites:,} region"
-                  f"{'s' if result.n_sites > 1 else ''}"
-                  f" · scPrinter-style binomial null")
-    fig.suptitle(title, fontsize=11, y=0.99)
+        title = (f"Multi-scale footprint · {result.n_sites:,} site"
+                 f"{'s' if result.n_sites > 1 else ''} · "
+                 f"{result.bias_model} bias · {result.null} null")
+    fig.suptitle(title, fontsize=11, fontweight="bold", color=INK, y=0.995)
+    fig.track_axes = track_axes
     if show:
         try:
             from IPython.display import display
-            display(fig); plt.close(fig)
+            display(fig)
+            plt.close(fig)
         except Exception:
             pass
-    return fig, axes_flat
+    return fig, heat_axes
 
 
 __all__ = [

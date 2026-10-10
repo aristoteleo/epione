@@ -32,6 +32,16 @@ _SCORE_BIGWIG_ATTRS = {
     "calculate_aggregate_scores", "compare_methods",
 }
 _PLOTTING_TOBIAS_ATTRS = {"plot_aggregate", "plot_aggregate_tobias"}
+# PRINT / scPrinter: pluggable Tn5 bias, learned null, TF binding score.
+_TN5_BIAS_ATTRS = {
+    "tn5_bias", "Tn5Bias", "PrintBias", "PrecomputedBias", "KmerBias",
+}
+_PRINT_ATTRS = {
+    "tf_binding_score", "TFBindingResult", "DispersionModel",
+    "print_footprint_score", "print_footprint_pvalues",
+    "fetch_print_model", "PRINT_SCALES",
+}
+_PRINT_PLOT_ATTRS = {"plot_tf_binding_score"}
 
 
 def __getattr__(name):
@@ -52,6 +62,15 @@ def __getattr__(name):
         return getattr(mod, name)
     if name in _MULTI_SCALE_REGION_ATTRS:
         mod = importlib.import_module("._multi_scale_region", __name__)
+        return getattr(mod, name)
+    if name in _TN5_BIAS_ATTRS:
+        mod = importlib.import_module("._tn5_bias", __name__)
+        return getattr(mod, name)
+    if name in _PRINT_ATTRS:
+        mod = importlib.import_module("._print", __name__)
+        return getattr(mod, name)
+    if name in _PRINT_PLOT_ATTRS:
+        mod = importlib.import_module("._print_plot", __name__)
         return getattr(mod, name)
     if name in _SCORE_BIGWIG_ATTRS:
         mod = importlib.import_module("._score_bigwig", __name__)
@@ -137,11 +156,15 @@ __all__ = [
     "filter_fragments", "create_network",
     "FootprintPlotter", "PlotTracks",
     "plot_heatmap", "plot_tracks",
-    "get_footprints", "plot_footprints", "FootprintResult",
+    "get_footprints", "plot_footprints",
     "getFootprints", "plotFootprints",
     "multi_scale_footprint", "MultiScaleFootprint",
     "footprint_score", "plot_multi_scale_footprint",
     "multi_scale_footprint_region", "plot_multi_scale_footprint_region",
+    "tn5_bias", "Tn5Bias", "PrintBias", "PrecomputedBias", "KmerBias",
+    "tf_binding_score", "TFBindingResult", "DispersionModel",
+    "print_footprint_score", "print_footprint_pvalues",
+    "fetch_print_model", "PRINT_SCALES", "plot_tf_binding_score",
     "rank_sites_by_cut_density", "MultiScaleRegion",
     "lsi",
     "iterative_lsi",

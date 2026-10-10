@@ -50,7 +50,13 @@ def plot_multi_scale_footprint_region(*args, **kwargs):
     from ..tl._multi_scale_region import plot_multi_scale_footprint_region as _fp
     return _fp(*args, **kwargs)
 
+
+def plot_tf_binding_score(*args, **kwargs):
+    from ..tl._print_plot import plot_tf_binding_score as _fp
+    return _fp(*args, **kwargs)
+
 __all__ = [
+    "plot_tf_binding_score",
     "frag_size_distr", "tss_enrichment", "fragment_histogram", "plot_joint",
     "cumulative_distance",
     "homer_motif_table",
