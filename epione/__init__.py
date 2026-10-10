@@ -32,38 +32,49 @@ _warnings.filterwarnings(
 )
 _warnings.filterwarnings("ignore", module=r"Bio\..*")
 
-# Canonical v0.4 subpackages.
-from . import (
-    align,        # → migrates into ``upstream`` in PR 2
-    bulk,         # bulk.atac, bulk.hic
-    core,         # populated incrementally
-    data,         # populated incrementally
-    datasets,     # populated incrementally
-    io,           # populated incrementally
-    pp,
-    pl,
-    single,       # single.atac, single.hic
-    tl,
-    upstream,
-    utils,        # → migrates into core/io in PR 4
+# Canonical v0.4 subpackages, resolved on first attribute access.
+#
+# These used to be imported eagerly, which made ``import epione`` fail
+# whenever any one subpackage's optional dependency was absent -- a
+# missing pyranges or MOODS took down the entire namespace, including
+# parts that did not need it. That is also why a torch-only environment
+# could not reach ``epione.models``. Deferring the import keeps
+# ``epione.pp``, ``from epione import tl`` and ``import epione.tl`` all
+# working, while an unrelated missing dependency now surfaces only when
+# the subpackage that needs it is actually touched.
+_SUBPACKAGES = (
+    "align",        # → migrates into ``upstream`` in PR 2
+    "bulk",         # bulk.atac, bulk.hic
+    "core",         # populated incrementally
+    "data",         # populated incrementally
+    "datasets",     # populated incrementally
+    "io",           # populated incrementally
+    "models",       # bridges to external sequence→function models
+    "pp",
+    "pl",
+    "single",       # single.atac, single.hic
+    "tl",
+    "upstream",
+    "utils",        # → migrates into core/io in PR 4
 )
+
+
+def __getattr__(name):
+    if name in _SUBPACKAGES:
+        import importlib
+
+        mod = importlib.import_module(f".{name}", __name__)
+        globals()[name] = mod  # cache, so this runs once per subpackage
+        return mod
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__():
+    return sorted(set(globals()) | set(_SUBPACKAGES))
 
 # Deprecated aliases (kept for v0.4; removed in v0.5).
 # Importing them is what triggers the DeprecationWarning, so we don't
 # eagerly resolve them here; users hit the warning the first time they
 # write ``import epione.hic`` / ``import epione.sc_hic``.
 
-__all__ = [
-    "align",
-    "bulk",
-    "core",
-    "data",
-    "datasets",
-    "io",
-    "pp",
-    "pl",
-    "single",
-    "tl",
-    "upstream",
-    "utils",
-]
+__all__ = list(_SUBPACKAGES)
