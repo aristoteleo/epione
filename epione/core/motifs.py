@@ -30,9 +30,12 @@ from Bio import motifs
 # Heavy optional deps (used only inside specific methods) are imported
 # lazily so ``import epione`` succeeds without them installed; the
 # ``Logo`` / ``logomaker`` viz path imports them at call time.
-import MOODS.scan
-import MOODS.tools
-import MOODS.parsers
+#
+# MOODS follows the same rule: it is a compiled optional backend, used
+# only by ``MotifList.setup_moods_scanner`` and ``OneMotif.get_threshold``,
+# so it is imported inside those methods. Importing it here made
+# ``import epione`` fail outright wherever MOODS was absent -- including
+# the torch environments used by ``epione.models``.
 
 #Internal
 from .regions import OneRegion, RegionList
@@ -439,6 +442,8 @@ class MotifList(list):
 			parameters["thresholds"].append(motif.threshold)
 
 		#Setup scanner
+		import MOODS.scan
+
 		scanner = MOODS.scan.Scanner(7)
 		scanner.set_motifs(parameters["matrices"], motifs.bg, parameters["thresholds"])
 
@@ -962,6 +967,8 @@ class OneMotif:
 
 		if self.pssm is None:
 			self.get_pssm()
+
+		import MOODS.tools
 
 		pssm_tuple = tuple([tuple(row) for row in self.pssm])
 		self.threshold = MOODS.tools.threshold_from_p(pssm_tuple, self.bg, pvalue, 4)

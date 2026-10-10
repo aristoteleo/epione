@@ -3,6 +3,10 @@ build
 .ipynb_checkpoints
 tutorial
 models
+# ...but epione/models is a source package (bridges to external
+# sequence-to-function models), not a downloaded-weights directory, so
+# the blanket rule above must not hide it.
+!epione/models/
 .DS_Store
 omicverse.egg-info
 aliyun_analytics_server/
