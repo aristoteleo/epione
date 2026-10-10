@@ -105,6 +105,10 @@ test = [
     'cooltools>=0.7',
     'pairtools>=1.0',
     'bioframe',
+    # Parquet engine for models.scooby.export_embedding, which writes
+    # the embedding format upstream scooby reads
+    # (tests/test_scooby_targets.py).
+    'pyarrow',
 ]
 full = [
     'epione[diffexp,motif,footprint,upstream]',

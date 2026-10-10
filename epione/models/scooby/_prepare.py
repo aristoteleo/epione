@@ -129,7 +129,16 @@ def export_embedding(
     )
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(out_path)
+    try:
+        df.to_parquet(out_path)
+    except ImportError as exc:
+        # Parquet is upstream scooby's embedding format, but neither
+        # engine is a core Epione dependency.
+        raise ImportError(
+            "writing the embedding needs a parquet engine; "
+            "`pip install pyarrow`. The DataFrame itself is returned "
+            "regardless and can be passed to ScoobyATACDataset directly."
+        ) from exc
     return df
 
 
