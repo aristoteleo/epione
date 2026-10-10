@@ -31,7 +31,25 @@ HF_REPO = "starlitnightly/epione-seq2print"
 
 #: name -> {"revision": Hub commit, "files": {filename: md5}}.
 #: Filled in when a checkpoint is published; see :func:`save_pretrained`.
-PRETRAINED: Dict[str, dict] = {}
+PRETRAINED: Dict[str, dict] = {
+    # GSE308623 P2S1, 10,000 stand-in peaks, scPrinter mm10 fold 0
+    # (t_seq2print tutorial). Bulk backbone, all spots pooled.
+    "p2s1_fold0_bulk": {
+        "revision": "e8a36d4ca434e15d1de8002e796a61b8352529b3",
+        "files": {
+            "model.safetensors": "md5:4b278474646f7e66df0d0f37bb9a0059",
+            "manifest.json": "md5:b05f15a3e1dd89e1ac0753e86c2d4b9a",
+        },
+    },
+    # The bulk backbone + light LoRA (rank 8, hidden 64) for four spatial bands.
+    "p2s1_fold0_lora_bands": {
+        "revision": "e8a36d4ca434e15d1de8002e796a61b8352529b3",
+        "files": {
+            "model.safetensors": "md5:cb4f77aef16b220e2188746982851a70",
+            "manifest.json": "md5:d054d44fddb97ad94e6fa61de1fa94de",
+        },
+    },
+}
 
 
 def _cache_dir():
