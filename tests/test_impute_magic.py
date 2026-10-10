@@ -12,10 +12,8 @@ import epione as epi
 from epione.tl._impute import _RRandom, _bin_size
 
 PARITY_DIR = pathlib.Path(__file__).parent / "parity" / "impute_magic"
-REF_DIR = os.environ.get(
-    "EPIONE_IMPUTE_REF",
-    "/scratch/users/steorra/analysis/25_epione/epione_dev/work/impute-magic/ref",
-)
+_PARITY_ROOT = os.environ.get("EPIONE_ARCHR_PARITY_DIR")
+REF_DIR = os.path.join(_PARITY_ROOT, "impute_magic") if _PARITY_ROOT else None
 
 
 def _toy(n=300, d=8, g=5, seed=0):
@@ -70,8 +68,8 @@ def test_injected_blocks_are_deterministic_and_layer_added():
     assert a.layers["magic"].shape == a.shape
 
 
-@pytest.mark.skipif(not pathlib.Path(REF_DIR, "seed1_imputed.tsv.gz").exists(),
-                    reason="ArchR reference outputs not available")
+@pytest.mark.skipif(REF_DIR is None or not pathlib.Path(REF_DIR, "seed1_imputed.tsv.gz").exists(),
+                    reason="EPIONE_ARCHR_PARITY_DIR not set or ArchR reference outputs missing")
 def test_parity_vs_archr(tmp_path):
     out = tmp_path / "parity.json"
     subprocess.run([sys.executable, str(PARITY_DIR / "parity_check.py"), REF_DIR, str(out)],
