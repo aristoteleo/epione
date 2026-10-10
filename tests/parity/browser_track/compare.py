@@ -1,7 +1,11 @@
 """Compare epione.pl.plot_browser_track against ArchR reference outputs.
 
-Usage: python compare.py <ref_dir> <fixture_dir> <fragments_dir> [out.json]
-``ref_dir`` is the output directory of r_reference.R.
+Usage: python compare.py <parity_dir> [out.json]
+
+``parity_dir`` is ``$EPIONE_ARCHR_PARITY_DIR/browser_track``: the ArchR 1.0.3
+reference outputs (generated outside this repository) plus ``tables/``
+(cells.tsv, genes_hg19.tsv, peaks.tsv) and ``fragments/`` (the Heme fragment
+files).
 """
 from __future__ import annotations
 
@@ -111,9 +115,9 @@ def compare(ref: Path, fixture: Path, frag_dir: Path) -> dict:
 
 
 if __name__ == "__main__":
-    ref, fixture, frag_dir = (Path(p) for p in sys.argv[1:4])
-    res = compare(ref, fixture, frag_dir)
+    d = Path(sys.argv[1])
+    res = compare(d, d, d / "fragments")
     text = json.dumps(res, indent=2, default=lambda o: o.item() if hasattr(o, "item") else str(o))
     print(text)
-    if len(sys.argv) > 4:
-        Path(sys.argv[4]).write_text(text)
+    if len(sys.argv) > 2:
+        Path(sys.argv[2]).write_text(text)
