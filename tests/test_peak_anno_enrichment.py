@@ -137,16 +137,18 @@ def test_enrich_heatmap_matrix_shape():
 
 # --- parity against ArchR on the Heme fixture ---------------------------------
 
-FIXTURE = os.environ.get("EPIONE_ARCHR_FIXTURE",
-                         "/scratch/users/steorra/analysis/25_epione/epione_dev/fixture")
-REF = os.environ.get("EPIONE_PEAK_ANNO_REF",
-                     "/scratch/users/steorra/analysis/25_epione/epione_dev/work/peak-anno-enrichment/ref")
-ANNO = os.environ.get("EPIONE_ARCHR_ANNO",
-                      "/scratch/users/steorra/analysis/25_epione/epione_dev/work/peak-anno-enrichment/anno/ArchR-Hg19-v1.Anno")
+# ArchR 1.0.3 reference outputs are generated outside the repository; point
+# EPIONE_ARCHR_PARITY_DIR at the directory that contains ``peak_anno_enrichment/``
+# (with ``fixture/tables``, ``ref`` and ``anno/ArchR-Hg19-v1.Anno``).
+_PARITY_ROOT = os.environ.get("EPIONE_ARCHR_PARITY_DIR")
+_PD = os.path.join(_PARITY_ROOT, "peak_anno_enrichment") if _PARITY_ROOT else ""
+FIXTURE = os.path.join(_PD, "fixture")
+REF = os.path.join(_PD, "ref")
+ANNO = os.path.join(_PD, "anno", "ArchR-Hg19-v1.Anno")
 
 
-@pytest.mark.skipif(not (os.path.isdir(FIXTURE) and os.path.isdir(REF) and os.path.exists(ANNO)),
-                    reason="ArchR Heme fixture / reference outputs not available")
+@pytest.mark.skipif(not (_PARITY_ROOT and os.path.isdir(FIXTURE) and os.path.isdir(REF) and os.path.exists(ANNO)),
+                    reason="EPIONE_ARCHR_PARITY_DIR not set or ArchR reference outputs missing")
 def test_parity_vs_archr():
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "parity", "peak_anno_enrichment"))
     import compare

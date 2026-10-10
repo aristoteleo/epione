@@ -3,7 +3,7 @@
 Usage:
     python compare.py <fixture_dir> <ref_dir> <ArchR-Hg19-v1.Anno> [--e2e] [--json out.json]
 
-``ref_dir`` is the output directory of ``r_reference.R``.
+``ref_dir`` holds the ArchR 1.0.3 reference outputs (generated outside this repository).
 """
 from __future__ import annotations
 
@@ -104,7 +104,7 @@ def main(argv=None):
         if tag == "motif_bgd":
             e_bgd = e
 
-    # unrounded -log10 p diagnostic (group 1, matches in peakSet order, as in r_reference.R)
+    # unrounded -log10 p diagnostic (group 1, matches in peakSet order, as in the ArchR reference run)
     from epione.tl._peak_anno_enrichment import _phyper_log_upper
     raw = pd.read_csv(os.path.join(a.ref, "raw_mlog10p_group1.tsv"), sep="\t")
     g1 = markers["FDR"].columns[0]
