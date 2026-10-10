@@ -1,7 +1,7 @@
 # Parity manifest — `epi.tl.add_impute_weights` / `epi.tl.impute_matrix`
 
 Reference: ArchR 1.0.3 `addImputeWeights` + `imputeMatrix` (R/Imputation.R),
-run by `r_reference.R` on the ArchR Hematopoiesis tutorial project
+run on the ArchR Hematopoiesis tutorial project
 (10,660 cells, IterativeLSI, GeneScoreMatrix) with
 `sampleCells = 5000, nRep = 2, k = 15, td = 3, ka = 4, epsilon = 1, seed = 1,
 threads = 1, useHdf5 = FALSE`.
@@ -21,10 +21,15 @@ Notes
 - Classes follow `omicverse-rebuildr/PARITY_TAXONOMY.md`. Class-1 "bounded" tier
   (1e-6) is used because the kNN + four sparse products are accumulated in a
   different floating-point order than CHOLMOD.
+- ArchR reference outputs are generated outside this repository with ArchR 1.0.3
+  (the repository contains no R code). `parity_check.py` and
+  `tests/test_impute_magic.py` read them from
+  `$EPIONE_ARCHR_PARITY_DIR/impute_magic/` (plus the exported `lsi.tsv`); the
+  parity test is skipped when the variable is unset.
 - ArchR's `.safelapply` with `threads > 1` draws each replicate's permutation
   inside a `parallel::mclapply` fork, and the forks do not continue the
   parent's `set.seed()` stream (checked: `set.seed(1); mclapply(1:2, ...)`
-  differs from `set.seed(1); lapply(1:2, ...)`). The R reference therefore pins
+  differs from `set.seed(1); lapply(1:2, ...)`). The ArchR reference run therefore pins
   `threads = 1`, the setting the `rng="R"` mode reproduces; for any other run
   the blocks can be passed explicitly through `blocks=`.
 

@@ -1,7 +1,8 @@
 """Compare epione.tl.add_impute_weights / impute_matrix with the ArchR reference.
 
 Usage: python parity_check.py <ref_dir> [out_json]
-<ref_dir> is the output directory of r_reference.R.
+<ref_dir> holds the ArchR 1.0.3 reference outputs, normally
+$EPIONE_ARCHR_PARITY_DIR/impute_magic (generated outside this repository).
 """
 import glob
 import json
@@ -45,7 +46,7 @@ def main(ref, out_json=None):
     adata.obsm["X_lsi"] = mat.to_numpy(dtype=np.float64)
 
     # Fixture LSI export == getReducedDims() inside addImputeWeights.
-    fx = "/scratch/users/steorra/analysis/25_epione/epione_dev/fixture/tables/lsi.tsv"
+    fx = os.path.join(ref, "lsi.tsv")
     res = {}
     if os.path.exists(fx):
         lsi = pd.read_csv(fx, sep="\t", index_col=0).loc[cells]
