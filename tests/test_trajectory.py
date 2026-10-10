@@ -138,13 +138,14 @@ def test_plots_smoke():
 # ---------------------------------------------------------------------------
 # Parity against ArchR 1.0.3 on the Hematopoiesis tutorial project
 # ---------------------------------------------------------------------------
-_DEV = pathlib.Path("/scratch/users/steorra/analysis/25_epione/epione_dev")
-REF = pathlib.Path(os.environ.get("EPIONE_TRAJ_REF", _DEV / "work/trajectory/ref"))
-TABLES = pathlib.Path(os.environ.get("EPIONE_ARCHR_FIXTURE", _DEV / "fixture/tables"))
+_PARITY_ROOT = os.environ.get("EPIONE_ARCHR_PARITY_DIR")
+REF = pathlib.Path(_PARITY_ROOT) / "trajectory" if _PARITY_ROOT else None
+TABLES = REF / "tables" if REF is not None else None
 
 
-@pytest.mark.skipif(not (REF / "trajectory_lsi.tsv").exists() or not (TABLES / "GeneScoreMatrix.mtx").exists(),
-                    reason="ArchR reference outputs / fixture not available")
+@pytest.mark.skipif(REF is None or not (REF / "trajectory_lsi.tsv").exists()
+                    or not (TABLES / "GeneScoreMatrix.mtx").exists(),
+                    reason="set EPIONE_ARCHR_PARITY_DIR to the ArchR reference outputs")
 def test_parity_with_archr():
     path = pathlib.Path(__file__).parent / "parity" / "trajectory" / "parity_trajectory.py"
     spec = importlib.util.spec_from_file_location("parity_trajectory", path)
