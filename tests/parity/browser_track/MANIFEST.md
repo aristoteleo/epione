@@ -33,9 +33,12 @@ reproducibility. Exact equality is reached instead by porting R's RNG
 (`RRandom`: `set.seed` scrambling, Mersenne-Twister / L'Ecuyer-CMRG, R ≥ 3.6
 rejection sampling in `sample()`). That is row 6.
 
-Reproduce:
+Reproduce: the ArchR 1.0.3 reference outputs are generated outside this
+repository (it contains no R code) and placed in
+`$EPIONE_ARCHR_PARITY_DIR/browser_track/` together with `tables/`
+(cells.tsv, genes_hg19.tsv, peaks.tsv) and `fragments/` (the Heme fragment files).
 
 ```bash
-Rscript r_reference.R <fixture>/ArchR_base <ref_dir> 8
-python compare.py <ref_dir> <fixture> <HemeFragments> parity.json
+python compare.py $EPIONE_ARCHR_PARITY_DIR/browser_track parity.json
+pytest tests/test_browser_track.py   # parity test skipped when the variable is unset
 ```

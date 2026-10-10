@@ -163,23 +163,19 @@ def test_plot_returns_figure(toy):
     assert fig is not None and {"bulk", "features", "loops", "genes"} <= set(data)
 
 
-FIXTURE = Path(os.environ.get("EPIONE_ARCHR_FIXTURE",
-                              "/scratch/users/steorra/analysis/25_epione/epione_dev/fixture"))
-REF = Path(os.environ.get("EPIONE_BROWSER_TRACK_REF",
-                          "/scratch/users/steorra/analysis/25_epione/epione_dev/work/browser-track/ref"))
-FRAGS = Path(os.environ.get("EPIONE_HEME_FRAGMENTS",
-                            "/scratch/users/steorra/data/archr_heme/HemeFragments"))
+_PARITY_ROOT = os.environ.get("EPIONE_ARCHR_PARITY_DIR")
+PARITY = Path(_PARITY_ROOT) / "browser_track" if _PARITY_ROOT else None
 
 
-@pytest.mark.skipif(not (FIXTURE.exists() and (REF / "summary.tsv").exists() and FRAGS.exists()),
-                    reason="ArchR Heme fixture / reference outputs not available")
+@pytest.mark.skipif(PARITY is None or not (PARITY / "summary.tsv").exists(),
+                    reason="EPIONE_ARCHR_PARITY_DIR not set or ArchR reference outputs missing")
 def test_parity_with_archr():
     import importlib.util
     spec = importlib.util.spec_from_file_location(
         "bt_compare", Path(__file__).parent / "parity" / "browser_track" / "compare.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    res = mod.compare(REF, FIXTURE, FRAGS)
+    res = mod.compare(PARITY, PARITY, PARITY / "fragments")
     assert res["palette_identical"]
     for g in mod.GENES:
         r = res[g]
