@@ -151,13 +151,14 @@ def test_peak2gene_heatmap_matrices_paths(tmp_path):
 
 
 # --------------------------------------------------------------- ArchR parity
-PARITY_DIR = Path(os.environ.get(
-    "EPIONE_MARKER_HEATMAP_REF",
-    "/scratch/users/steorra/analysis/25_epione/epione_dev/work/marker-heatmap"))
+# ArchR 1.0.3 reference outputs are generated outside the repository; point
+# EPIONE_ARCHR_PARITY_DIR at the directory that contains ``marker_heatmap/``.
+_PARITY_ROOT = os.environ.get("EPIONE_ARCHR_PARITY_DIR")
+PARITY_DIR = Path(_PARITY_ROOT) / "marker_heatmap" if _PARITY_ROOT else None
 
 
-@pytest.mark.skipif(not (PARITY_DIR / "ref" / "p2g_default__kDF.tsv").exists(),
-                    reason="ArchR reference dumps not available")
+@pytest.mark.skipif(PARITY_DIR is None or not (PARITY_DIR / "ref" / "p2g_default__kDF.tsv").exists(),
+                    reason="EPIONE_ARCHR_PARITY_DIR not set or ArchR reference outputs missing")
 def test_archr_parity():
     import importlib.util
     spec = importlib.util.spec_from_file_location(
