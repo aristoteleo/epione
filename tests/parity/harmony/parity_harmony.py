@@ -1,6 +1,8 @@
-"""Compare epi.tl.harmony with the R outputs written by ref_harmony.R.
+"""Compare epi.tl.harmony with ArchR addHarmony reference outputs.
 
-Usage: python parity_harmony.py <ref_dir> [<ref_dir_seed2> <seed2>] [--json out.json]
+The reference outputs are generated outside this repository with ArchR 1.0.3.
+Usage: python parity_harmony.py [<ref_dir> [<ref_dir_seed2> <seed2>]] [--json out.json]
+<ref_dir> defaults to $EPIONE_ARCHR_PARITY_DIR/harmony.
 """
 from __future__ import annotations
 
@@ -123,7 +125,15 @@ def main(argv):
     out_json = None
     if "--json" in argv:
         i = argv.index("--json"); out_json = argv[i + 1]; argv = argv[:i] + argv[i + 2:]
-    ref = Path(argv[0])
+    if argv:
+        ref = Path(argv[0])
+    else:
+        import os
+        root = os.environ.get("EPIONE_ARCHR_PARITY_DIR")
+        if not root:
+            sys.exit("pass <ref_dir> or set EPIONE_ARCHR_PARITY_DIR")
+        ref = Path(root) / "harmony"
+        argv = [str(ref), str(ref / "seed42"), "42"]
     lsi, meta = load_inputs(ref)
     X = lsi.to_numpy()
     report = {"rng": check_rng(ref, 1)}

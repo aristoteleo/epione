@@ -15,14 +15,12 @@ from epione.tl._harmony import r_kmeans, run_harmony
 from epione.tl._rrng import RRandom
 
 HERE = Path(__file__).parent / "parity" / "harmony"
-HEME_REF = Path(os.environ.get(
-    "EPIONE_HARMONY_REF",
-    "/scratch/users/steorra/analysis/25_epione/epione_dev/work/harmony/ref",
-))
+_PARITY_ROOT = os.environ.get("EPIONE_ARCHR_PARITY_DIR")
+HEME_REF = Path(_PARITY_ROOT) / "harmony" if _PARITY_ROOT else None
 
 
 def _small_inputs():
-    # Same deterministic matrix as parity/harmony/ref_small.R (glibc libm via math).
+    # Deterministic matrix the small R harmony 1.2.4 references were computed on.
     i = np.arange(1, 301)
     x = np.array([[math.sin(k / 5) + (k % 3 == 0) * 0.8, math.cos(k / 11),
                    math.sin(k / 17) * math.cos(k / 3), (k % 7) / 7 - (k % 3 == 1) * 0.5] for k in i])
@@ -127,8 +125,8 @@ def test_harmony_input_validation():
 
 # -- full ArchR Hematopoiesis parity (skips without the R reference) -------
 
-@pytest.mark.skipif(not (HEME_REF / "archr_harmony.tsv.gz").exists(),
-                    reason="ArchR Heme harmony reference not available")
+@pytest.mark.skipif(HEME_REF is None or not (HEME_REF / "archr_harmony.tsv.gz").exists(),
+                    reason="set EPIONE_ARCHR_PARITY_DIR to the ArchR reference outputs")
 def test_parity_vs_archr_addharmony():
     import sys
     sys.path.insert(0, str(HERE))
