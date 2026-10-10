@@ -2,10 +2,12 @@
 
 Usage::
 
-    python parity_trajectory.py <ref_dir> <fixture_tables_dir> [out.json]
+    python parity_trajectory.py [<ref_dir> <tables_dir>] [out.json]
 
-``<ref_dir>`` is produced by ``r_reference.R``; ``<fixture_tables_dir>`` holds
-the exported GeneScoreMatrix / MotifMatrix tables of the same ArchR project.
+``<ref_dir>`` holds ArchR 1.0.3 reference outputs, generated outside this
+repository; ``<tables_dir>`` holds the exported GeneScoreMatrix / MotifMatrix
+tables of the same ArchR project. Without arguments they default to
+``$EPIONE_ARCHR_PARITY_DIR/trajectory`` and its ``tables/`` subdirectory.
 """
 from __future__ import annotations
 
@@ -186,11 +188,19 @@ def passed(key, val):
 
 
 if __name__ == "__main__":
-    ref, tables = sys.argv[1], sys.argv[2]
+    args = sys.argv[1:]
+    if len(args) >= 2:
+        ref, tables, args = args[0], args[1], args[2:]
+    else:
+        root = os.environ.get("EPIONE_ARCHR_PARITY_DIR")
+        if not root:
+            sys.exit("pass <ref_dir> <tables_dir> or set EPIONE_ARCHR_PARITY_DIR")
+        ref = os.path.join(root, "trajectory")
+        tables = os.path.join(ref, "tables")
     res = run(ref, tables)
     width = max(len(k) for k in res)
     for k, v in res.items():
         print(f"{k:<{width}}  {v:.3e}  {'PASS' if passed(k, v) else 'FAIL'}")
     print("ALL PASS" if all(passed(k, v) for k, v in res.items()) else "SOME FAIL")
-    if len(sys.argv) > 3:
-        json.dump(res, open(sys.argv[3], "w"), indent=1)
+    if args:
+        json.dump(res, open(args[0], "w"), indent=1)

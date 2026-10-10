@@ -5,6 +5,12 @@ Reference: ArchR 1.0.3 (`addTrajectory`, `getTrajectory`, `plotTrajectoryHeatmap
 project (10,660 cells; IterativeLSI 30 dims; UMAP), trajectory `C11 → C10 → C5`
 (CD34⁺ progenitor → MPO⁺ GMP → CD14⁺ monocyte), `groupBy = "Clusters"`.
 
+The ArchR reference outputs are generated outside this repository with ArchR
+1.0.3 and read from `$EPIONE_ARCHR_PARITY_DIR/trajectory/` (the exported
+GeneScoreMatrix / MotifMatrix tables in its `tables/` subdirectory).
+`parity_trajectory.py` and `tests/test_trajectory.py` compare against them and
+skip when the variable is not set.
+
 All ported functions are deterministic (ArchR sets a seed but none of these
 code paths draws random numbers), so every output is gated as class 1
 (`deterministic-standard`, `atol = 1e-8`) unless stated otherwise. Discrete
@@ -34,3 +40,25 @@ Not gated (visual only): the `geom_smooth` (mgcv GAM) line of panel 2 of
 `plotTrajectory` and ComplexHeatmap/ggplot rendering. MAGIC imputation inside
 `plotTrajectory` is accepted as an input (`impute_weights=`) but gated by the
 imputation port, not here.
+
+## Results (appended after the run; thresholds above unchanged)
+
+All 57 checks pass. Worst value per gate (LSI, UMAP and `useAll = TRUE` runs):
+
+| # | Value | Pass |
+|---|---|---|
+| 1 | 0 (names identical) | ✅ |
+| 2 | LSI 8.4e-11 / UMAP 1.7e-10 | ✅ |
+| 3 | identical (kNN distances 1.8e-10) | ✅ |
+| 4 | identical | ✅ |
+| 5 | `Distance` 1.8e-10 / `DistanceIdx` 9.1e-13 | ✅ |
+| 6 | 2.8e-14 | ✅ |
+| 7 | as 5–6 | ✅ |
+| 8 | GeneScore 8.9e-16, `groupEvery = 2` 1.8e-15, Motif 1.7e-13 | ✅ |
+| 9 | GeneScore 8.9e-16, `groupEvery = 2` 1.8e-15, Motif 5.7e-14 | ✅ |
+| 10 | identical | ✅ |
+| 11 | rows identical; values ≤ 6.9e-15 (3 configurations) | ✅ |
+| 12 | ≤ 2.7e-14 | ✅ |
+| 13 | `Pval` 3.8e-15 / `FDR` 3.9e-15 | ✅ |
+| 14 | identical (33 pairs) | ✅ |
+| 15 | ≤ 2.8e-14 | ✅ |
