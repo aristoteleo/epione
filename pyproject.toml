@@ -75,6 +75,10 @@ footprint = [
     'deeptoolsintervals',
     'pynndescent',
 ]
+seq2print = [
+    'torch',
+    'safetensors',   # epione.models.seq2print.load_pretrained (Hugging Face weights)
+]
 upstream = [
     # Heavy single-cell preprocessing; pulls Rust deps.
     'snapatac2',

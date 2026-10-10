@@ -8,6 +8,10 @@ imported by ``import epione``.
 
 Currently:
 
+``seq2print``
+    scPrinter's sequence -> multi-scale footprint model, with cell-state
+    LoRA. Model blocks and training targets match scPrinter exactly.
+
 ``scooby``
     Single-cell sequence→profile prediction (Borzoi backbone, LoRA,
     cell-state-conditioned decoder). The target and fold-preparation
@@ -19,7 +23,7 @@ from __future__ import annotations
 import importlib
 from typing import TYPE_CHECKING
 
-_SUBPACKAGES = ("scooby",)
+_SUBPACKAGES = ("scooby", "seq2print")
 
 __all__ = list(_SUBPACKAGES)
 
