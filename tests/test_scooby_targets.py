@@ -269,6 +269,9 @@ def adata():
 
 
 def test_export_embedding_drops_depth_component(adata, tmp_path):
+    # Parquet is upstream scooby's embedding format but no engine is a
+    # core Epione dependency.
+    pytest.importorskip("pyarrow")
     out = tmp_path / "emb.pq"
     df = sb.export_embedding(adata, "X_lsi", out, drop_first=True, n_dims=5)
     arr = np.vstack(list(df["embedding"].values))
@@ -279,6 +282,7 @@ def test_export_embedding_drops_depth_component(adata, tmp_path):
 
 
 def test_export_embedding_scale(adata, tmp_path):
+    pytest.importorskip("pyarrow")
     df = sb.export_embedding(adata, "X_lsi", tmp_path / "e.pq",
                              drop_first=True, n_dims=5, scale=True)
     a = np.vstack(list(df["embedding"].values))
