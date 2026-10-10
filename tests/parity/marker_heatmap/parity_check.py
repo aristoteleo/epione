@@ -1,10 +1,12 @@
 """Compare Epione marker / peak-to-gene heatmaps with ArchR reference dumps.
 
-Usage: python parity_check.py <work dir containing ref/> [out.json]
+Usage: python parity_check.py [<dir containing ref/>] [out.json]
+(default dir: $EPIONE_ARCHR_PARITY_DIR/marker_heatmap)
 """
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -192,7 +194,10 @@ def e2e_metrics(work: Path):
 
 
 def main():
-    work = Path(sys.argv[1])
+    if len(sys.argv) > 1:
+        work = Path(sys.argv[1])
+    else:
+        work = Path(os.environ["EPIONE_ARCHR_PARITY_DIR"]) / "marker_heatmap"
     ref = work / "ref"
     res = {"marker_heatmap": marker_parity(ref), "peak2gene_heatmap": p2g_parity(ref)}
     if (work / "cache" / "epi_p2g.parquet").exists():

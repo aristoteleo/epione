@@ -1,8 +1,10 @@
 # Parity manifest — `epi.pl.marker_heatmap` / `epi.pl.peak2gene_heatmap`
 
-Reference: ArchR 1.0.3 (`plotMarkerHeatmap`, `plotPeak2GeneHeatmap`), R 4.4.3,
-ComplexHeatmap 2.22.0, run by `ref_archr.R` on the ArchR Hematopoiesis tutorial
-project (10,660 cells, 11 clusters, hg19). Gates were registered **before** the
+Reference: ArchR 1.0.3 (`plotMarkerHeatmap`, `plotPeak2GeneHeatmap`; ComplexHeatmap
+2.22.0) on the ArchR Hematopoiesis tutorial project (10,660 cells, 11 clusters,
+hg19). The ArchR reference outputs are generated outside this repository (the
+repository contains no R code); `parity_check.py` and `tests/test_marker_heatmap.py`
+read them from `$EPIONE_ARCHR_PARITY_DIR/marker_heatmap/` and skip when it is unset. Gates were registered **before** the
 first comparison and are never loosened (omicverse-rebuildr protocol).
 
 ## Deterministic port (same inputs fed to both implementations)
