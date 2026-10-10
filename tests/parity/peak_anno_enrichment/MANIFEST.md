@@ -4,7 +4,9 @@ Pre-registered before the first comparison; thresholds are read-only.
 
 Fixture: ArchR Hematopoiesis tutorial project (10,660 cells, 141,369 peaks,
 11 clusters, JASPAR2020 CORE vertebrate motif matches), hg19.
-Reference: `r_reference.R` (R 4.4.3, ArchR 1.0.3). Comparison: `compare.py`.
+Reference: ArchR 1.0.3, outputs generated outside this repository (the repository
+contains no R code). Comparison: `compare.py`, which reads them from
+`$EPIONE_ARCHR_PARITY_DIR/peak_anno_enrichment/` (`fixture/tables`, `ref`, `anno`).
 
 The marker test (`getMarkerFeatures`, random bias-matched background) is an
 *input* here: ArchR's marker assays are exported and fed to Epione so the
@@ -32,8 +34,8 @@ Notes:
 
 ## Results (2026-10-09; thresholds above unchanged)
 
-Run: `Rscript r_reference.R <fixture> <ref> ArchR-Hg19-v1.Anno` then
-`python compare.py <fixture> <ref> ArchR-Hg19-v1.Anno --e2e`.
+Run: `python compare.py $D/fixture $D/ref $D/anno/ArchR-Hg19-v1.Anno --e2e`
+with `D=$EPIONE_ARCHR_PARITY_DIR/peak_anno_enrichment`.
 
 | Output | Value | Gate |
 |---|---|---|
