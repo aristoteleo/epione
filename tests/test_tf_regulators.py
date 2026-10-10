@@ -156,13 +156,12 @@ def test_plots_smoke():
 
 
 # ---- parity against ArchR 1.0.3 (gates in tests/parity/var_dev_correlate) ---
-REF = Path(os.environ.get(
-    "EPIONE_PARITY_VDC",
-    "/scratch/users/steorra/analysis/25_epione/epione_dev/work/var-dev-correlate/ref"))
+REF = Path(os.environ.get("EPIONE_ARCHR_PARITY_DIR", "")) / "var_dev_correlate"
 
 
-@pytest.mark.skipif(not (REF / "correlateMatrices_GSM_cisbp.tsv").exists(),
-                    reason="ArchR reference outputs not available")
+@pytest.mark.skipif(not os.environ.get("EPIONE_ARCHR_PARITY_DIR")
+                    or not (REF / "correlateMatrices_GSM_cisbp.tsv").exists(),
+                    reason="EPIONE_ARCHR_PARITY_DIR with ArchR reference outputs not available")
 def test_parity_with_archr():
     sys.path.insert(0, str(Path(__file__).parent / "parity" / "var_dev_correlate"))
     from py_parity import run

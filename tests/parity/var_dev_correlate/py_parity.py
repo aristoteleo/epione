@@ -1,7 +1,11 @@
 """Python side of the ArchR parity check for var_deviations /
 correlate_matrices / positive_tf_regulators.
 
-Usage: python py_parity.py <ref dir written by r_reference.R> [out.json]
+Usage: python py_parity.py [<ref dir>] [out.json]
+
+``<ref dir>`` defaults to ``$EPIONE_ARCHR_PARITY_DIR/var_dev_correlate`` and holds
+ArchR 1.0.3 reference outputs generated outside this repository (plus the inputs
+exported from the same ArchR project, e.g. ``MotifMatrix_z.tsv.gz``).
 Gates are pre-registered in MANIFEST.md.
 """
 from __future__ import annotations
@@ -41,14 +45,17 @@ def load(ref: Path):
     return adata, gsf
 
 
+def parity_dir() -> Path:
+    return Path(os.environ.get("EPIONE_ARCHR_PARITY_DIR", "")) / "var_dev_correlate"
+
+
 def run(ref: Path) -> dict:
     ref = Path(ref)
     adata, gsf = load(ref)
     m = {}
 
     # 1-4 getVarDeviations
-    fx = Path(os.environ.get("EPIONE_ARCHR_FIXTURE",
-              "/scratch/users/steorra/analysis/25_epione/epione_dev/fixture/tables"))
+    fx = ref
     for tag, (key, names) in {
         "MotifMatrix": ("jaspar", None),
         "cisbpMatrix": ("cisbp", None),
@@ -138,7 +145,8 @@ def run(ref: Path) -> dict:
 
 
 if __name__ == "__main__":
-    res = run(Path(sys.argv[1]))
+    ref = Path(sys.argv[1]) if len(sys.argv) > 1 else parity_dir()
+    res = run(ref)
     out = json.dumps(res, indent=1, default=lambda o: o if not isinstance(o, np.generic) else o.item())
     print(out)
     if len(sys.argv) > 2:
