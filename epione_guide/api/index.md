@@ -222,6 +222,7 @@ linked above.
 | Task | Functions |
 |---|---|
 | Pre-built `Genome` instances | {data}`epione.data.GRCh37`, {data}`epione.data.GRCh38`, {data}`epione.data.GRCm38`, {data}`epione.data.GRCm39`, {data}`epione.data.hg19`, {data}`epione.data.hg38`, {data}`epione.data.mm10`, {data}`epione.data.mm39` |
+| Example datasets | {func}`epione.datasets.archr_hematopoiesis` (ArchR Hematopoiesis tutorial fragments) |
 
 ## Plotting helpers (overview)
 

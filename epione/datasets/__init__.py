@@ -20,4 +20,6 @@ data anchored to specific tutorials.
 """
 from __future__ import annotations
 
-__all__: list[str] = []
+from ._archr import archr_hematopoiesis
+
+__all__: list[str] = ["archr_hematopoiesis"]
