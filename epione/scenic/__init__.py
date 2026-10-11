@@ -31,6 +31,10 @@ from ._motif_db import motif_score_db, scores_to_rankings
 from ._data import fetch_cistarget_database, fetch_motif_annotation, jaspar_annotation
 from ._search_space import get_search_space, gene_annotation_from_gtf
 from ._links import tf_to_gene, region_to_gene
+from ._egrn import build_egrn
+from ._egrn_triplet import triplet_rank, tf_region_max_rank
+from ._aucell import CellRanking, rank_cells, aucell, eregulon_signatures, score_eregulons
+from ._rss import regulon_specificity_scores
 
 __all__ = [
     "ImputedFeatures",
@@ -58,4 +62,14 @@ __all__ = [
     "gene_annotation_from_gtf",
     "tf_to_gene",
     "region_to_gene",
+    # eGRN / AUCell / RSS
+    "build_egrn",
+    "triplet_rank",
+    "tf_region_max_rank",
+    "CellRanking",
+    "rank_cells",
+    "aucell",
+    "eregulon_signatures",
+    "score_eregulons",
+    "regulon_specificity_scores",
 ]

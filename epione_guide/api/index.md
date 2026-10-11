@@ -163,6 +163,10 @@ linked above.
 | Topic binarization (pycisTopic `binarize_topics`) | {func}`epione.scenic.binarize_topics` |
 | Imputed accessibility, highly variable regions, DARs (pycisTopic `diff_features`) | {func}`epione.scenic.impute_accessibility`, {func}`epione.scenic.normalize_scores`, {func}`epione.scenic.find_highly_variable_features`, {func}`epione.scenic.find_diff_features`, {class}`epione.scenic.ImputedFeatures` |
 | Region sets → BED for cisTarget / DEM | {func}`epione.scenic.write_region_sets` |
+| eRegulon inference, GSEA approach (SCENIC+ `infer_grn`) | {func}`epione.scenic.build_egrn` |
+| TF-region-gene triplet ranking / cisTarget motif ranks | {func}`epione.scenic.triplet_rank`, {func}`epione.scenic.tf_region_max_rank` |
+| AUCell eRegulon scores (rank once, score many) | {func}`epione.scenic.rank_cells`, {func}`epione.scenic.aucell`, {func}`epione.scenic.score_eregulons`, {func}`epione.scenic.eregulon_signatures` |
+| Regulon specificity scores (RSS) | {func}`epione.scenic.regulon_specificity_scores` |
 
 ### Per-barcode peak calling & pseudobulk
 
