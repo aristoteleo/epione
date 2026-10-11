@@ -93,3 +93,29 @@ The node was shared with other jobs (load average ≈ 170 on 256 cores), so wall
 vary by ±30 %. The 4-model LDA wall time was measured with an earlier build of the
 sampler; the single-core sweep timings use the final build and show a further ~25 %
 gain at K = 20–40.
+
+## Fast samplers vs the exact sampler (pre-registered before the first fast run)
+
+`run_topic_models(method="exact")` is the bit-exact pycisTopic sampler validated above.
+`method="parallel"` (AD-LDA: cells split over threads, thread-local count deltas merged
+after every sweep, SparseLDA s/r/q bucket sampling) and `method="gpu"` (torch,
+synchronous blocked Gibbs over all tokens per sweep) are different Markov chains, so they
+are validated statistically: they must agree with the exact sampler as well as the exact
+sampler agrees with itself across seeds.
+
+Design: run A data, K = 20, 500 sweeps, pycisTopic priors (alpha = 50/K, eta = 0.1).
+Exact sampler with `random_state` ∈ {555, 556, 557}; each fast mode with seeds
+{1, 2, 3}. For every pair of runs the metrics below are computed; "exact spread" is the
+set of the 3 exact-vs-exact pair values, "fast agreement" the 9 fast-vs-exact pair values.
+
+| # | Output | Metric | Pass if |
+|---|---|---|---|
+| F1 | topic-region distributions | mean Pearson r of Hungarian-matched topics | median fast agreement ≥ min exact spread |
+| F2 | cell-topic distributions | ARI of per-cell argmax topic | median fast agreement ≥ min exact spread |
+| F3 | complete log-likelihood (lda's formula), Arun 2010, Cao Juan 2009, Mimno 2011 | value per run | every fast value in [min − R, max + R] of the exact values, R = max − min |
+| F4 | binarized topics (otsu) | mean Jaccard of Hungarian-matched topic region sets | median fast agreement ≥ min exact spread |
+| F5 | DARs per cell type (impute → normalize → HVF → Wilcoxon, as in gates 10–14) | mean Jaccard over the 16 cell types | median fast agreement ≥ min exact spread |
+| F6 | wall time, 4 models (K = 10, 20, 30, 40) × 500 sweeps | seconds, with cores / GPU used | reported; targets: parallel < 300 s on 16 threads, gpu < 120 s |
+
+Gates F1–F5 are evaluated separately for `parallel` and `gpu`. F6 is a target, not a
+correctness gate.
