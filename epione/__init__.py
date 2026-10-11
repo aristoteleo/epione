@@ -5,6 +5,7 @@ Subpackage map (call-chain shown alongside):
     epione.bulk.{atac, hic}      bulk analyses, modality-specific
     epione.single.{atac, hic}    single-cell analyses, modality-specific
     epione.pp / .tl / .pl        cross-modality preprocessing / analysis / plotting
+    epione.scenic                SCENIC+ enhancer-driven GRNs (topics → motifs → eGRNs)
     epione.io                    pure format read/write (BED, cool, pairs, h5ad, ...)
     epione.upstream              FASTQ → BAM → bigwig / pairs → cool pipelines
     epione.core                  pure-Python infrastructure (Genome, motifs, regions, console)
@@ -52,6 +53,7 @@ _SUBPACKAGES = (
     "models",       # bridges to external sequence→function models
     "pp",
     "pl",
+    "scenic",       # SCENIC+ eGRN inference (pycisTopic / pycistarget / scenicplus ports)
     "single",       # single.atac, single.hic
     "tl",
     "upstream",
