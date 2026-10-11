@@ -29,6 +29,8 @@ from ._dem import run_dem, dem_test, foreground_background_regions, p_adjust_bh
 from ._menr import merge_cistromes, write_hdf5, read_hdf5
 from ._motif_db import motif_score_db, scores_to_rankings
 from ._data import fetch_cistarget_database, fetch_motif_annotation, jaspar_annotation
+from ._search_space import get_search_space, gene_annotation_from_gtf
+from ._links import tf_to_gene, region_to_gene
 
 __all__ = [
     "ImputedFeatures",
@@ -51,4 +53,9 @@ __all__ = [
     "merge_cistromes", "write_hdf5", "read_hdf5",
     "motif_score_db", "scores_to_rankings",
     "fetch_cistarget_database", "fetch_motif_annotation", "jaspar_annotation",
+    # region-to-gene / TF-to-gene links
+    "get_search_space",
+    "gene_annotation_from_gtf",
+    "tf_to_gene",
+    "region_to_gene",
 ]
