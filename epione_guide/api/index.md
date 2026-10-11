@@ -143,6 +143,16 @@ linked above.
 | Gene-activity score matrix | {func}`epione.tl.add_gene_score_matrix` |
 | ArchR-style pseudo-time trajectory | {func}`epione.tl.add_trajectory`, {func}`epione.tl.get_trajectory`, {func}`epione.tl.trajectory_heatmap_matrix`, {func}`epione.tl.correlate_trajectories`, {func}`epione.pl.plot_trajectory`, {func}`epione.pl.plot_trajectory_heatmap` |
 
+### SCENIC+ enhancer-driven GRNs
+
+| Task | Functions |
+|---|---|
+| Fragment counts in regions (pycisTopic `create_cistopic_object_from_fragments`) | {func}`epione.scenic.cistopic_matrix` |
+| cisTopic LDA topic models + model selection (pycisTopic `run_cgs_models`, `evaluate_models`) | {func}`epione.scenic.run_topic_models`, {func}`epione.scenic.evaluate_topic_models`, {func}`epione.scenic.add_topic_model`, {class}`epione.scenic.TopicModel` |
+| Topic binarization (pycisTopic `binarize_topics`) | {func}`epione.scenic.binarize_topics` |
+| Imputed accessibility, highly variable regions, DARs (pycisTopic `diff_features`) | {func}`epione.scenic.impute_accessibility`, {func}`epione.scenic.normalize_scores`, {func}`epione.scenic.find_highly_variable_features`, {func}`epione.scenic.find_diff_features`, {class}`epione.scenic.ImputedFeatures` |
+| Region sets → BED for cisTarget / DEM | {func}`epione.scenic.write_region_sets` |
+
 ### Per-barcode peak calling & pseudobulk
 
 | Task | Functions |
