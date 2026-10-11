@@ -51,3 +51,51 @@ Notes
   `tests/test_scenic_links.py` read them from `$EPIONE_SCENIC_PARITY_DIR`
   (`A/scplus_inputs`, `A/tf2g`, `A/r2g`, `A/inputs`); the parity test is skipped when the
   variable is unset.
+
+## Results (full reference run: 2,313 cells, 36,601 genes, 434,673 regions)
+
+| # | Output | Value | Gate |
+|---|--------|-------|------|
+| 1 | Search space | 1,573,743 rows, byte-identical, same order | PASS |
+| 2 | TF2G `importance` | 2,597,463 links, identical link set, 100 % bit-identical (max rel err 0) | PASS |
+| 3 | TF2G `rho` | max abs err 5.5e-14 | PASS |
+| 4 | TF2G `regulation` | 0 mismatches | PASS |
+| 5 | TF2G row order | identical | PASS |
+| 6 | R2G GBM `importance` | 1,573,743 links, 100 % bit-identical | PASS |
+| 7 | R2G RF `importance` | 1,573,743 links, 100 % bit-identical | PASS |
+| 8 | R2G `rho` | max abs err 4.4e-16, NaN positions identical | PASS |
+| 9 | R2G `importance_x_rho`, `importance_x_abs_rho` | max rel err 7.5e-16 | PASS |
+| 10 | R2G `Distance`, row order | identical (GBM and RF) | PASS |
+| 11 | `n_jobs=1` vs `n_jobs=6` | identical (TF2G 40 genes, R2G GBM 40 genes, R2G RF 12 genes) | PASS |
+
+Two order details had to be reproduced to pass rows 1 and 5:
+
+- **Negative extended starts (row 1).** pyranges' join (NCLS, `ALL_POSITIVE_ORIENTATION`)
+  stores an interval with a negative start as the reverse-orientation interval
+  `[-end, -start)`. Genes within 150 kb of a chromosome start therefore only catch regions
+  starting before `-ExtStart`; `get_search_space` applies the same rule (36 genes affected).
+- **Tied importances (row 5).** scenicplus sorts TF2G links with
+  `np.argsort(kind="quicksort")`; 4.7 % of the importances are tied, and their order
+  depends on numpy's SIMD sort (numpy 1.26 AVX-512 x86-simd-sort for the reference; numpy
+  2.x orders ties differently). Float keys are sorted with an emulation of the numpy 1.26
+  AVX-512 argsort (`_links_argsort.py`, shared with the eGRN block). The TF → TF rows are
+  emitted in `PYTHONHASHSEED=0` set order with `self_link_order="upstream"`.
+
+### Timing
+
+Full runs were made as `srun --overlap` steps inside a shared allocation with other jobs
+competing for the same cores (8 threads measured at ~2× a single thread), so wall-clock
+times are not comparable to the reference's 24 dedicated workers. Single-core times on the
+same machine are the fair comparison.
+
+| Stage | scenicplus reference | Epione full run (8 threads, shared) | Single core, same inputs: scenicplus / Epione |
+|---|---|---|---|
+| Search space | 224 s | 18 s | 224 s / 17 s (13×) |
+| TF2G (GRNBoost2) | 1,166 s × 24 workers | 2,286 s | 16 expressed genes 7.65 s / 7.21 s (1.06×); an all-zero gene 1.7 s / 0 s (6,586 such genes, ~40 % of the reference CPU time) |
+| R2G GBM | 488 s × 24 workers | 2,490 s | 12 genes 5.19 s / 3.93 s (1.3×) |
+| R2G RF | 3,186 s × 24 workers | 6,099 s | 6 genes 12.8 s / 8.3 s (1.55×) |
+
+The tree models do the same work as scikit-learn's Cython code; reproducing its exact sample
+order (introsort ties, Fisher-Yates feature draws) rules out algorithmic shortcuts such as
+presorting. The per-tree speedup comes from removing the Python, joblib and dask overhead
+around each tree.
