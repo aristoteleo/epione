@@ -114,8 +114,13 @@ test = [
     # (tests/test_scooby_targets.py).
     'pyarrow',
 ]
+scenic = [
+    # cisTarget feather databases (Arrow IPC) and pycistarget-format hdf5 I/O.
+    'pyarrow',
+    'tables',
+]
 full = [
-    'epione[diffexp,motif,footprint,upstream]',
+    'epione[diffexp,motif,footprint,upstream,scenic]',
 ]
 
 
