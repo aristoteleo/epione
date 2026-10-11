@@ -219,6 +219,15 @@ linked above.
 | Fragment filtering | {class}`epione.tl.FragmentFilter`, {func}`epione.tl.filter_fragments` |
 | Network construction | {class}`epione.tl.NetworkBuilder`, {func}`epione.tl.create_network` |
 
+### SCENIC+ (enhancer-driven GRNs)
+
+| Task | Functions |
+|---|---|
+| Gene annotation for the search space (Ensembl GTF) | {func}`epione.scenic.gene_annotation_from_gtf` |
+| Region-to-gene search space | {func}`epione.scenic.get_search_space` |
+| Region-to-gene links (GBM / RF importance + correlation) | {func}`epione.scenic.region_to_gene` |
+| TF-to-gene links (GRNBoost2 + correlation) | {func}`epione.scenic.tf_to_gene` |
+
 ### I/O — pure format readers / writers
 
 | Task | Functions |
