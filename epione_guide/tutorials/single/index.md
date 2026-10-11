@@ -29,6 +29,7 @@ t_module_score_groups
 t_archr_heme_data
 t_scenic_topics
 t_scenic_cistarget
+t_scenic_links
 ```
 
 

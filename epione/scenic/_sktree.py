@@ -19,6 +19,26 @@ reproduce the reference SCENIC+ output.  This module reimplements the 1.3.2 path
 
 Every floating-point operation follows the order of the Cython source, so the
 importances are bit-identical to scikit-learn 1.3.2 whatever version is installed.
+
+The tree-growing logic is derived from scikit-learn 1.3.2 (``sklearn/tree/_splitter.pyx``,
+``_criterion.pyx``, ``_tree.pyx``, ``_utils.pyx``, ``sklearn/utils/_random.pxd``,
+``sklearn/ensemble/_gb.py``, ``_gb_losses.py``, ``_gradient_boosting.pyx``, ``_forest.py``);
+the MT19937 stream and the pairwise summation follow numpy.  Both are BSD-3-Clause:
+
+    scikit-learn: Copyright (c) 2007-2023 The scikit-learn developers. All rights reserved.
+    numpy: Copyright (c) 2005-2023, NumPy Developers. All rights reserved.
+
+    Redistribution and use in source and binary forms, with or without modification, are
+    permitted provided that the following conditions are met: (a) redistributions of source
+    code must retain the above copyright notice, this list of conditions and the following
+    disclaimer; (b) redistributions in binary form must reproduce the above copyright notice,
+    this list of conditions and the following disclaimer in the documentation and/or other
+    materials provided with the distribution; (c) neither the name of the copyright holder nor
+    the names of its contributors may be used to endorse or promote products derived from this
+    software without specific prior written permission.  THIS SOFTWARE IS PROVIDED BY THE
+    COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES ARE
+    DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY
+    DAMAGES ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE.
 """
 from __future__ import annotations
 

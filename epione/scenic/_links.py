@@ -21,6 +21,7 @@ import pandas as pd
 import scipy.sparse as sp
 from scipy.stats import rankdata
 
+from ._links_argsort import argsort_np126
 from ._sktree import gbm_importances, rf_importances
 
 __all__ = ["tf_to_gene", "region_to_gene", "hashseed0_set_order"]
@@ -57,13 +58,15 @@ def _matrix(data, var_names=None, obs_names=None, dtype=np.float32):
 
 
 def _nargsort(values, ascending=True):
-    """``pandas.core.sorting.nargsort`` (``DataFrame.sort_values`` on one column, no NaN)."""
+    """Row order of ``DataFrame.sort_values`` on one NaN-free column (pandas ``nargsort``)."""
     items = np.asarray(values)
     idx = np.arange(len(items))
     if not ascending:
         items = items[::-1]
         idx = idx[::-1]
-    indexer = idx[items.argsort(kind="quicksort")]
+    # float keys: numpy 1.26 AVX-512 quicksort order (ties!), object keys: numpy introsort
+    order = argsort_np126(items) if items.dtype.kind == "f" else items.argsort(kind="quicksort")
+    indexer = idx[order]
     if not ascending:
         indexer = indexer[::-1]
     return indexer
