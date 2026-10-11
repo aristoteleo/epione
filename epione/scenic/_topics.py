@@ -1,4 +1,4 @@
-"""cisTopic topic modelling — a port of pycisTopic's ``run_cgs_models`` (SCENIC+ 1.0).
+"""cisTopic topic modelling — a reproduces pycisTopic's ``run_cgs_models`` (SCENIC+ 1.0).
 
 ``run_topic_models`` reproduces ``pycisTopic.lda_models.run_cgs_models``:
 latent Dirichlet allocation fitted with the collapsed Gibbs sampler of the
@@ -7,7 +7,11 @@ by the tmtoolkit model-quality metrics (Arun 2010, Cao Juan 2009, Mimno 2011)
 and pycisTopic's log-likelihood. ``evaluate_topic_models`` reproduces
 ``evaluate_models`` (automatic model selection).
 
-The sampler is a numba re-implementation of ``lda/_lda.pyx`` that consumes
+Three samplers are available (``method=``): ``"parallel"`` (default,
+region-partitioned AD-LDA on CPU threads, :mod:`._topics_fast`), ``"gpu"``
+(synchronous blocked Gibbs in PyTorch, :mod:`._topics_gpu`) and ``"exact"``.
+
+The exact sampler is a numba re-implementation of ``lda/_lda.pyx`` that consumes
 the same random stream (``numpy.random.RandomState(seed).rand(131072)``,
 re-shuffled with a fresh ``RandomState(seed)`` before every iteration) and
 evaluates the per-topic weights with the same floating-point operations, so
@@ -21,6 +25,14 @@ workers.
 The metrics reproduce numpy 1.26 bit for bit on any CPU (see :mod:`._np126`
 and the ``compat`` argument): tie order of ``np.argsort``, SVML ``np.log`` and
 the buffered pairwise ``np.sum``.
+
+Provenance and licenses: the exact sampler follows the algorithm of
+``lda/_lda.pyx`` and ``lda/lda.py`` from the ``lda`` package (Allen B. Riddell
+and contributors, Mozilla Public License 2.0, https://github.com/lda-project/lda);
+the model metrics follow tmtoolkit 0.12 (Markus Konrad, Apache License 2.0).
+pycisTopic is distributed under a non-commercial academic license and no code
+was taken from it: its behaviour (including the log-likelihood it reports) was
+reimplemented and checked against its outputs.
 """
 from __future__ import annotations
 
@@ -375,7 +387,8 @@ def _fit_one(binary: sp.csr_matrix, n_topics: int, cell_names, region_names, n_i
 
 
 def _build_model(binary, nzw, ndz, nz, cell_names, region_names, n_iter, random_state, alpha,
-                 alpha_by_topic, eta, eta_by_topic, top_topics_coh, compat, elapsed) -> TopicModel:
+                 alpha_by_topic, eta, eta_by_topic, top_topics_coh, compat, elapsed,
+                 package="lda") -> TopicModel:
     """Distributions, metrics and tables of a fitted model (``run_cgs_model`` after ``fit``)."""
     n_topics = nz.shape[0]
     a = alpha / n_topics if alpha_by_topic else alpha
@@ -413,7 +426,7 @@ def _build_model(binary, nzw, ndz, nz, cell_names, region_names, n_iter, random_
     cell_topic = pd.DataFrame(doc_topic, index=cell_names, columns=names).transpose()
     topic_region = pd.DataFrame(topic_word, index=names, columns=region_names).transpose()
     parameters = pd.DataFrame(
-        ["lda", n_topics, n_iter, random_state, alpha, alpha_by_topic, eta, eta_by_topic,
+        [package, n_topics, n_iter, random_state, alpha, alpha_by_topic, eta, eta_by_topic,
          top_topics_coh, elapsed],
         index=["package", "n_topics", "n_iter", "random_state", "alpha", "alpha_by_topic",
                "eta", "eta_by_topic", "top_topics_coh", "time"],
@@ -434,17 +447,32 @@ def run_topic_models(
     eta: float = 0.1,
     eta_by_topic: bool = False,
     top_topics_coh: int = 5,
+    method: str = "parallel",
     layer: Optional[str] = None,
     n_jobs: Optional[int] = None,
+    device: Optional[str] = None,
     compat: str = "numpy126",
     verbose: bool = True,
 ) -> list:
     """Fit cisTopic LDA models with collapsed Gibbs sampling.
 
-    Port of ``pycisTopic.lda_models.run_cgs_models``. Every model is fitted on
+    Reproduces ``pycisTopic.lda_models.run_cgs_models``. Every model is fitted on
     the binarized cell × region matrix (``adata.X`` or ``adata.layers[layer]``,
-    any value > 0 counts as accessible); with the same ``random_state`` the
-    result is identical to pycisTopic's.
+    any value > 0 counts as accessible).
+
+    Three samplers are available:
+
+    * ``"parallel"`` (default) — region-partitioned AD-LDA over ``n_jobs``
+      threads (:mod:`._topics_fast`); reproducible for a given
+      ``random_state`` and ``n_jobs``.
+    * ``"gpu"`` — synchronous blocked Gibbs over all tokens per sweep in
+      PyTorch (:mod:`._topics_gpu`); needs torch, uses CUDA when available.
+    * ``"exact"`` — the sequential sampler of the ``lda`` package, bit-identical
+      to pycisTopic for the same ``random_state`` (used for the parity tests).
+
+    The fast samplers are different Markov chains: their topics agree with the
+    exact sampler's as closely as two exact runs with different seeds do
+    (validated in ``tests/parity/scenic_topics/MANIFEST.md``).
 
     Parameters
     ----------
@@ -465,8 +493,14 @@ def run_topic_models(
         Number of most coherent topics averaged into the model coherence.
     layer
         Layer to use instead of ``adata.X``.
+    method
+        ``"parallel"``, ``"gpu"`` or ``"exact"`` (see above).
     n_jobs
-        Models fitted concurrently (threads); defaults to one per model.
+        Threads. ``"parallel"``: worker threads shared by all models (default:
+        the CPUs available to the process). ``"exact"``: models fitted
+        concurrently (default: one per model).
+    device
+        torch device for ``method="gpu"`` (default ``"cuda"`` if available).
     compat
         pycisTopic's metrics call ``np.argsort`` (which ranks tied region
         probabilities in a build-dependent order) and ``np.log`` (whose last
@@ -484,15 +518,65 @@ def run_topic_models(
     binary = _binary_cells_by_regions(adata, layer)
     cell_names = list(map(str, adata.obs_names))
     region_names = list(map(str, adata.var_names))
-    args = dict(cell_names=cell_names, region_names=region_names, n_iter=n_iter,
-                random_state=random_state, alpha=alpha, alpha_by_topic=alpha_by_topic,
-                eta=eta, eta_by_topic=eta_by_topic, top_topics_coh=top_topics_coh,
-                compat=compat, verbose=verbose)
-    n_jobs = len(n_topics) if n_jobs is None else max(1, int(n_jobs))
-    if n_jobs == 1 or len(n_topics) == 1:
-        return [_fit_one(binary, k, **args) for k in n_topics]
-    with ThreadPoolExecutor(max_workers=n_jobs) as ex:
-        futures = [ex.submit(_fit_one, binary, k, **args) for k in n_topics]
+    if method == "exact":
+        args = dict(cell_names=cell_names, region_names=region_names, n_iter=n_iter,
+                    random_state=random_state, alpha=alpha, alpha_by_topic=alpha_by_topic,
+                    eta=eta, eta_by_topic=eta_by_topic, top_topics_coh=top_topics_coh,
+                    compat=compat, verbose=verbose)
+        n_jobs = len(n_topics) if n_jobs is None else max(1, int(n_jobs))
+        if n_jobs == 1 or len(n_topics) == 1:
+            return [_fit_one(binary, k, **args) for k in n_topics]
+        with ThreadPoolExecutor(max_workers=n_jobs) as ex:
+            futures = [ex.submit(_fit_one, binary, k, **args) for k in n_topics]
+            return [f.result() for f in futures]
+    if method not in ("parallel", "gpu"):
+        raise ValueError("method must be 'parallel', 'gpu' or 'exact'")
+
+    D, W = binary.shape
+
+    def build(k, nzw, ndz, nz, elapsed):
+        return _build_model(binary, nzw, ndz, nz, cell_names, region_names, n_iter,
+                            random_state, alpha, alpha_by_topic, eta, eta_by_topic,
+                            top_topics_coh, compat, elapsed, package=f"epione-{method}")
+
+    def priors(k):
+        return (alpha / k if alpha_by_topic else alpha), (eta / k if eta_by_topic else eta)
+
+    if method == "gpu":
+        from ._topics_gpu import fit_gpu
+
+        WS, DS = _matrix_to_lists(binary)
+        models = []
+        for k in n_topics:
+            _console(f"running model with {k} topics (gpu)", verbose)
+            a, e = priors(k)
+            t0 = time.time()
+            nzw, ndz, nz = fit_gpu(WS, DS, D, W, k, n_iter, a, e, random_state, device=device)
+            elapsed = time.time() - t0
+            _console(f"model with {k} topics done ({elapsed:.1f} s)", verbose)
+            models.append(build(k, nzw, ndz, nz, elapsed))
+        return models
+
+    from ._topics_fast import default_threads, fit_parallel, region_major_tokens
+
+    n_threads = default_threads() if n_jobs is None else max(1, int(n_jobs))
+    TW, TD, word_ptr = region_major_tokens(binary)
+
+    def fit(k, pool):
+        _console(f"running model with {k} topics ({n_threads} threads)", verbose)
+        a, e = priors(k)
+        t0 = time.time()
+        nzw, ndz, nz = fit_parallel(TW, TD, word_ptr, D, k, n_iter, a, e, random_state, pool,
+                                    n_blocks=n_threads)
+        elapsed = time.time() - t0
+        _console(f"model with {k} topics done ({elapsed:.1f} s)", verbose)
+        return build(k, nzw, ndz, nz, elapsed)
+
+    # all models share one pool of n_threads workers: each sweep of each model is
+    # split into n_threads region-block tasks, so concurrent models interleave
+    with ThreadPoolExecutor(max_workers=n_threads) as pool, \
+            ThreadPoolExecutor(max_workers=len(n_topics)) as drivers:
+        futures = [drivers.submit(fit, k, pool) for k in n_topics]
         return [f.result() for f in futures]
 
 
@@ -503,7 +587,7 @@ def evaluate_topic_models(
     min_topics_coh: int = 5,
     return_metrics: bool = False,
 ):
-    """Select a topic model; port of ``pycisTopic.lda_models.evaluate_models``.
+    """Select a topic model; reproduces ``pycisTopic.lda_models.evaluate_models``.
 
     Each metric is rescaled to [0, 1] across models (``Arun_2010`` and
     ``Cao_Juan_2009`` inverted) and the model with the highest sum wins. The

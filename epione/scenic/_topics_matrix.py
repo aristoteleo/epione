@@ -1,4 +1,4 @@
-"""Fragment counts in regions — port of pycisTopic's ``create_cistopic_object_from_fragments``.
+"""Fragment counts in regions — reproduces pycisTopic's ``create_cistopic_object_from_fragments``.
 
 :func:`cistopic_matrix` counts, for every cell barcode and region, the
 fragments that overlap the region by at least one base (0-based half-open
@@ -7,6 +7,9 @@ without counts, and returns a cells × regions AnnData with pycisTopic's
 per-cell and per-region statistics. The fragment file is streamed with
 pyarrow, so memory scales with the number of non-zero counts rather than with
 the number of fragments.
+
+pycisTopic is distributed under a non-commercial academic license; this module
+reimplements its behaviour (checked against its outputs) without using its code.
 """
 from __future__ import annotations
 
@@ -167,7 +170,7 @@ def cistopic_matrix(
     block_size: int = 1 << 26,
     verbose: bool = True,
 ):
-    """Cells × regions fragment-count AnnData; port of ``create_cistopic_object_from_fragments``.
+    """Cells × regions fragment-count AnnData; reproduces ``create_cistopic_object_from_fragments``.
 
     Parameters
     ----------

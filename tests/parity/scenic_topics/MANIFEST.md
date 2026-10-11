@@ -119,3 +119,44 @@ set of the 3 exact-vs-exact pair values, "fast agreement" the 9 fast-vs-exact pa
 
 Gates F1–F5 are evaluated separately for `parallel` and `gpu`. F6 is a target, not a
 correctness gate.
+
+### Results of the fast-sampler validation (thresholds above unchanged)
+
+Script: `fast_vs_exact.py`. Exact runs: seeds 555 (run A), 556, 557. Exact-vs-exact pair values
+(the spread): F1 0.471 / 0.484 / 0.490, F2 0.597 / 0.371 / 0.183, F4 0.286 / 0.280 / 0.293,
+F5 0.638 / 0.639 / 0.644. The K = 20 posterior is multimodal: two exact chains match only about
+half of their topics closely, so the spread is wide for F1/F2 and narrow for F4/F5.
+
+| gate | `parallel` (16 threads) | pass | `gpu` (blocked, 16 blocks) | pass |
+|---|---|---|---|---|
+| F1 median topic r (≥ 0.471) | 0.468 | ❌ (by 0.003) | 0.486 | ✅ |
+| F2 median ARI (≥ 0.183) | 0.303 | ✅ | 0.390 | ✅ |
+| F3 log-likelihood (exact −4.2830 … −4.3053 × 10⁸, R = 2.2 × 10⁶) | −4.3024 / −4.3051 / −4.3192 × 10⁸ | ✅ | −4.2975 / −4.2974 / −4.3149 × 10⁸ | ✅ |
+| F3 Arun 2010 (exact 0.220 … 0.532) | 0.237 / 0.213 / 0.238 | ✅ | 0.345 / 0.337 / 0.245 | ✅ |
+| F3 Cao Juan 2009 (exact 0.1058 … 0.1074, allowed 0.1042 … 0.1090) | 0.1034 / 0.1041 / 0.1102 | ❌ | 0.1114 / 0.1098 / 0.1159 | ❌ |
+| F3 Mimno 2011 (exact −0.882 … −0.772) | −0.813 / −0.804 / −0.734 | ✅ | −0.843 / −0.824 / −0.788 | ✅ |
+| F4 median topic Jaccard (≥ 0.280) | 0.280 | ✅ | 0.286 | ✅ |
+| F5 median DAR Jaccard (≥ 0.638) | 0.639 | ✅ | 0.639 | ✅ |
+
+Failures, reported as is:
+- `parallel` misses F1 by 0.003 and Cao Juan 2009 with one seed on each side of the allowed range.
+  The exact runs' Cao Juan values span only 0.0016, so F3's "range" rule is very tight for this
+  metric with 3 seeds.
+- `gpu` produces topics that are slightly more similar to each other (Cao Juan 0.110–0.116,
+  allowed up to 0.109); everything else passes.
+- A first GPU version updated all tokens synchronously in one block per sweep. It failed F3
+  (log-likelihood −4.34 × 10⁸, below the allowed range; Cao Juan 0.16–0.17) and F5 (0.633). The
+  shipped version updates 16 blocks in sequence instead; the gates were not changed.
+
+F6 — wall time for 4 models (K = 10, 20, 30, 40) × 500 sweeps on run A data, including setup and
+metrics:
+
+| method | hardware | sampling | wall | target |
+|---|---|---|---|---|
+| pycisTopic (`lda`, Ray) | 4 cores | — | 10,061 s | — |
+| `exact` | 4 cores, earlier build | — | 3,086 s | — |
+| `parallel` | 16 threads, shared node (load 90–170) | 480 s | 513 s | < 300 s ❌ |
+| `gpu` (blocked) | 1 × H100 + 4 cores | 103 s | 150 s | < 120 s ❌ (sampling alone ✅) |
+
+About 45 s of the GPU wall time is the CPU-side metrics (coherence etc.), which are computed with
+the same bit-exact code as in `exact` mode.

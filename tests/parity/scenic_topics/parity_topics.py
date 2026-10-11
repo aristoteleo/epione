@@ -109,7 +109,8 @@ def check_lda(parity: Path, run: str = "S", n_topics=(10, 20), n_iter: int = 5, 
     if models is None:
         a = load_binary_adata(parity, run)
         t = time.time()
-        models = run_topic_models(a, list(n_topics), n_iter=n_iter, n_jobs=n_jobs, verbose=False)
+        models = run_topic_models(a, list(n_topics), n_iter=n_iter, n_jobs=n_jobs,
+                                  method="exact", verbose=False)
         out["wall_s"] = time.time() - t
     for m in models:
         d = parity / run / "topics" / f"model_{m.n_topic}"

@@ -1,10 +1,16 @@
-"""Topic binarization, imputed accessibility and DARs — pycisTopic ports (SCENIC+ 1.0).
+"""Topic binarization, imputed accessibility and DARs (SCENIC+ 1.0, pycisTopic behaviour).
 
-* :func:`binarize_topics` — ``pycisTopic.topic_binarization.binarize_topics``
+* :func:`binarize_topics` — same results as ``pycisTopic.binarize_topics``
   (``otsu``, ``yen``, ``li``, ``ntop``; optional ``smooth_topics``).
 * :func:`impute_accessibility`, :func:`normalize_scores`,
-  :func:`find_highly_variable_features`, :func:`find_diff_features` —
-  ``pycisTopic.diff_features``.
+  :func:`find_highly_variable_features`, :func:`find_diff_features` — same
+  results as the functions of ``pycisTopic.diff_features``.
+
+pycisTopic is distributed under a non-commercial academic license; nothing here
+is copied from it. The behaviour was reimplemented from the published methods
+(Otsu and Yen thresholds in the histogram form of scikit-image, BSD-3; Li & Lee
+cross-entropy; Seurat dispersion selection as in scanpy, BSD-3) and checked
+against pycisTopic's outputs.
 
 The Wilcoxon rank-sum tests of :func:`find_diff_features` are vectorised: each
 region is ranked once over all cells and every one-vs-rest contrast reads its
@@ -48,44 +54,51 @@ def _smooth_topics_distributions(dist: pd.DataFrame, compat: str = "numpy126") -
     return pd.DataFrame(out, index=dist.index, columns=dist.columns)
 
 
-def _histogram_and_bin_centers(array: np.ndarray, nbins: int = 100):
-    hist, bin_edges = np.histogram(array.ravel(), bins=nbins, range=None)
-    return hist, (bin_edges[:-1] + bin_edges[1:]) / 2.0
+def _hist_centres(values: np.ndarray, nbins: int):
+    """Counts and bin midpoints of an ``nbins`` histogram over the data range."""
+    counts, edges = np.histogram(values.ravel(), bins=nbins, range=None)
+    return counts, (edges[:-1] + edges[1:]) / 2.0
 
 
-def _threshold_otsu(array: np.ndarray, nbins: int = 100) -> float:
-    hist, bin_centers = _histogram_and_bin_centers(array, nbins)
-    hist = hist.astype(float)
-    weight1 = np.cumsum(hist)
-    weight2 = np.cumsum(hist[::-1])[::-1]
-    mean1 = np.cumsum(hist * bin_centers) / weight1
-    mean2 = (np.cumsum((hist * bin_centers)[::-1]) / weight2[::-1])[::-1]
-    variance12 = weight1[:-1] * weight2[1:] * (mean1[:-1] - mean2[1:]) ** 2
-    return bin_centers[:-1][np.argmax(variance12)]
+def _threshold_otsu(values: np.ndarray, nbins: int = 100) -> float:
+    """Otsu's threshold on a histogram (the histogram form of scikit-image, BSD-3)."""
+    counts, centres = _hist_centres(values, nbins)
+    counts = counts.astype(float)
+    mass = counts * centres
+    below_n = np.cumsum(counts)
+    above_n = np.cumsum(counts[::-1])[::-1]
+    below_mu = np.cumsum(mass) / below_n
+    above_mu = (np.cumsum(mass[::-1]) / above_n[::-1])[::-1]
+    between = below_n[:-1] * above_n[1:] * (below_mu[:-1] - above_mu[1:]) ** 2
+    return centres[:-1][np.argmax(between)]
 
 
-def _threshold_yen(array: np.ndarray, nbins: int = 100) -> float:
-    hist, bin_centers = _histogram_and_bin_centers(array, nbins)
-    pmf = hist.astype(np.float32) / hist.sum()
-    P1 = np.cumsum(pmf)
-    P1_sq = np.cumsum(pmf ** 2)
-    P2_sq = np.cumsum(pmf[::-1] ** 2)[::-1]
-    crit = np.log(((P1_sq[:-1] * P2_sq[1:]) ** -1) * (P1[:-1] * (1.0 - P1[:-1])) ** 2)
-    return bin_centers[crit.argmax()]
+def _threshold_yen(values: np.ndarray, nbins: int = 100) -> float:
+    """Yen's threshold (histogram form of scikit-image, BSD-3; float32 pmf)."""
+    counts, centres = _hist_centres(values, nbins)
+    pmf = counts.astype(np.float32) / counts.sum()
+    cum = np.cumsum(pmf)
+    cum_sq = np.cumsum(pmf ** 2)
+    rev_cum_sq = np.cumsum(pmf[::-1] ** 2)[::-1]
+    score = np.log(((cum_sq[:-1] * rev_cum_sq[1:]) ** -1) * (cum[:-1] * (1.0 - cum[:-1])) ** 2)
+    return centres[score.argmax()]
 
 
-def _cross_entropy(array: np.ndarray, threshold: float, nbins: int = 100,
-                   compat: str = "numpy126") -> float:
-    hist, bin_centers = _histogram_and_bin_centers(array, nbins=nbins)
-    t = np.flatnonzero(bin_centers > threshold)[0]
-    m0a = np.sum(hist[:t])
-    m0b = np.sum(hist[t:])
-    m1a = np.sum(hist[:t] * bin_centers[:t])
-    m1b = np.sum(hist[t:] * bin_centers[t:])
-    mua = m1a / m0a
-    mub = m1b / m0b
-    lg = log_compat(np.array([mua, mub]), compat)
-    return -m1a * lg[0] - m1b * lg[1]
+def _li_cross_entropy(values: np.ndarray, threshold: float, nbins: int = 100,
+                      compat: str = "numpy126") -> float:
+    """Li & Lee (1993) minimum cross-entropy criterion for one candidate threshold.
+
+    The histogram is split at the first bin whose midpoint exceeds
+    ``threshold``; with first moments ``m_b``, ``m_f`` and means ``mu_b``,
+    ``mu_f`` of the two parts the criterion is ``-m_b log mu_b - m_f log mu_f``.
+    """
+    counts, centres = _hist_centres(values, nbins)
+    cut = np.flatnonzero(centres > threshold)[0]
+    n_b, n_f = np.sum(counts[:cut]), np.sum(counts[cut:])
+    m_b = np.sum(counts[:cut] * centres[:cut])
+    m_f = np.sum(counts[cut:] * centres[cut:])
+    log_mu = log_compat(np.array([m_b / n_b, m_f / n_f]), compat)
+    return -m_b * log_mu[0] - m_f * log_mu[1]
 
 
 def _sort_desc_index(values: np.ndarray, compat: str) -> np.ndarray:
@@ -104,7 +117,7 @@ def binarize_topics(
     nbins: int = 100,
     compat: str = "numpy126",
 ) -> dict:
-    """Binarize topic distributions; port of ``pycisTopic.binarize_topics``.
+    """Binarize topic distributions; reproduces ``pycisTopic.binarize_topics``.
 
     Parameters
     ----------
@@ -145,29 +158,29 @@ def binarize_topics(
     values = dist.to_numpy()
     out = {}
     for i in range(values.shape[1]):
-        name = "Topic" + str(i + 1)
-        col = dist.columns[i]
-        l = np.asarray(values[:, i])
-        l_norm = (l - np.min(l)) / np.ptp(l)
-        if isinstance(predefined_thr, dict) and name in predefined_thr:
-            thr = predefined_thr[name]
+        topic = f"Topic{i + 1}"
+        score = np.asarray(values[:, i])
+        scaled = (score - np.min(score)) / np.ptp(score)   # min-max to [0, 1]
+        if isinstance(predefined_thr, dict) and topic in predefined_thr:
+            cutoff = predefined_thr[topic]
         elif method == "otsu":
-            thr = _threshold_otsu(l_norm, nbins=nbins)
+            cutoff = _threshold_otsu(scaled, nbins=nbins)
         elif method == "yen":
-            thr = _threshold_yen(l_norm, nbins=nbins)
+            cutoff = _threshold_yen(scaled, nbins=nbins)
         elif method == "li":
-            thresholds = np.arange(np.min(l_norm) + 0.01, np.max(l_norm) - 0.01, 0.01)
-            entropies = [_cross_entropy(l_norm, t, nbins=nbins, compat=compat) for t in thresholds]
-            thr = thresholds[np.argmin(entropies)]
+            # candidate cut-offs every 0.01 strictly inside the range
+            grid = np.arange(np.min(scaled) + 0.01, np.max(scaled) - 0.01, 0.01)
+            crit = [_li_cross_entropy(scaled, g, nbins=nbins, compat=compat) for g in grid]
+            cutoff = grid[np.argmin(crit)]
         elif method == "ntop":
-            # value at position ``ntop`` of the descending order (ties irrelevant)
-            thr = float(-np.partition(-l_norm, ntop)[ntop])
+            # the (ntop+1)-th largest value; features strictly above it are kept
+            cutoff = float(-np.partition(-scaled, ntop)[ntop])
         else:
             raise ValueError("method must be 'otsu', 'yen', 'li' or 'ntop'")
-        sel = np.flatnonzero(l_norm > thr)
-        sub = values[sel, i]
-        order = _sort_desc_index(sub, compat)
-        out[name] = pd.DataFrame({col: sub[order]}, index=dist.index[sel[order]])
+        keep = np.flatnonzero(scaled > cutoff)
+        kept = values[keep, i]
+        order = _sort_desc_index(kept, compat)
+        out[topic] = pd.DataFrame({dist.columns[i]: kept[order]}, index=dist.index[keep[order]])
     return out
 
 
@@ -226,7 +239,7 @@ def impute_accessibility(
 ) -> ImputedFeatures:
     """Region accessibility imputed from the topic model.
 
-    Port of ``pycisTopic.diff_features.impute_accessibility``: the float32
+    Reproduces ``pycisTopic.diff_features.impute_accessibility``: the float32
     product ``topic_region @ cell_topic`` per chunk of regions, scaled by
     ``scale_factor`` and truncated to int32 when ``scale_factor`` is an
     integer other than 1; all-zero regions are dropped. The float32 product is
@@ -261,7 +274,7 @@ def impute_accessibility(
 
 def normalize_scores(imputed: ImputedFeatures, scale_factor: Union[int, float] = 10 ** 4,
                      compat: str = "numpy126") -> ImputedFeatures:
-    """``log1p(x / (column sum / scale_factor))``; port of ``normalize_scores``.
+    """``log1p(x / (column sum / scale_factor))``; reproduces ``normalize_scores``.
 
     ``compat="numpy126"`` evaluates ``log1p`` as numpy 1.26 does on AVX-512
     CPUs (SVML), the SCENIC+ reference stack; ``"native"`` uses the installed
@@ -283,7 +296,7 @@ def find_highly_variable_features(
     n_top_features: Optional[int] = None,
     return_table: bool = False,
 ):
-    """Seurat-style highly variable regions; port of ``find_highly_variable_features``.
+    """Seurat-style highly variable regions; reproduces ``find_highly_variable_features``.
 
     Returns the list of variable feature names (and the per-feature table of
     means / dispersions when ``return_table``).
@@ -299,40 +312,42 @@ def find_highly_variable_features(
 
         mean, var = mean_variance_axis(mat, axis=1)
     else:
+        # float32 accumulation, as the reference
         mean = np.mean(mat, axis=1, dtype=np.float32)
         var = np.var(mat, axis=1, dtype=np.float32)
+    # Seurat "mean.var.plot" selection (as in scanpy's ``flavor="seurat"``,
+    # BSD-3): log dispersion z-scored within 20 equal-width bins of the mean
     mean[mean == 0] = 1e-12
-    dispersion = var / mean
-    dispersion[dispersion == 0] = np.nan
-    dispersion = np.log(dispersion)
-    df = pd.DataFrame()
-    df["means"] = mean
-    df["dispersions"] = dispersion
-    df["mean_bin"] = pd.cut(df["means"], bins=n_bins)
-    disp_grouped = df.groupby("mean_bin", observed=False)["dispersions"]
-    disp_mean_bin = disp_grouped.mean()
-    disp_std_bin = disp_grouped.std(ddof=1)
-    one_feature_per_bin = disp_std_bin.isnull()
-    disp_std_bin[one_feature_per_bin.values] = disp_mean_bin[one_feature_per_bin.values].values
-    disp_mean_bin[one_feature_per_bin.values] = 0
-    df["dispersions_norm"] = (
-        df["dispersions"].values - disp_mean_bin[df["mean_bin"].values].values
-    ) / disp_std_bin[df["mean_bin"].values].values
-    dispersion_norm = df["dispersions_norm"].values.astype("float32")
+    disp = var / mean
+    disp[disp == 0] = np.nan
+    disp = np.log(disp)
+    table = pd.DataFrame({"means": mean, "dispersions": disp})
+    table["mean_bin"] = pd.cut(table["means"], bins=n_bins)
+    by_bin = table.groupby("mean_bin", observed=False)["dispersions"]
+    bin_mean = by_bin.mean()
+    bin_sd = by_bin.std(ddof=1)
+    # a bin holding a single feature has no spread: give it a normalised dispersion of 1
+    lonely = bin_sd.isnull().values
+    bin_sd[lonely] = bin_mean[lonely].values
+    bin_mean[lonely] = 0
+    bins = table["mean_bin"].values
+    table["dispersions_norm"] = ((table["dispersions"].values - bin_mean[bins].values)
+                                 / bin_sd[bins].values)
+    norm32 = table["dispersions_norm"].values.astype("float32")
     if n_top_features is not None:
-        dispersion_norm = dispersion_norm[~np.isnan(dispersion_norm)]
-        dispersion_norm[::-1].sort()
-        disp_cut_off = dispersion_norm[n_top_features - 1]
-        subset = np.nan_to_num(df["dispersions_norm"].values) >= disp_cut_off
+        ranked = norm32[~np.isnan(norm32)]
+        ranked[::-1].sort()
+        floor = ranked[n_top_features - 1]
+        selected = np.nan_to_num(table["dispersions_norm"].values) >= floor
     else:
-        dispersion_norm[np.isnan(dispersion_norm)] = 0
-        subset = np.logical_and.reduce((mean > min_mean, mean < max_mean,
-                                        dispersion_norm > min_disp, dispersion_norm < max_disp))
-    df["highly_variable"] = subset
-    var_features = [features[i] for i in np.flatnonzero(subset)]
+        norm32[np.isnan(norm32)] = 0
+        selected = ((mean > min_mean) & (mean < max_mean) & (norm32 > min_disp)
+                    & (norm32 < max_disp))
+    table["highly_variable"] = selected
+    var_features = [features[i] for i in np.flatnonzero(selected)]
     if return_table:
-        df.index = features
-        return var_features, df
+        table.index = features
+        return var_features, table
     return var_features
 
 
@@ -370,13 +385,16 @@ def _log2_fc(fg_mean, bg_mean):
     return out
 
 
-def _p_adjust_bh(p) -> np.ndarray:
-    p = np.asarray(p, dtype=float)
-    by_descend = p.argsort()[::-1]
-    by_orig = by_descend.argsort()
-    steps = float(len(p)) / np.arange(len(p), 0, -1)
-    q = np.minimum(1, np.minimum.accumulate(steps * p[by_descend]))
-    return q[by_orig]
+def _p_adjust_bh(pvals) -> np.ndarray:
+    """Benjamini-Hochberg q-values (step-up, capped at 1)."""
+    pvals = np.asarray(pvals, dtype=float)
+    n = len(pvals)
+    desc = pvals.argsort()[::-1]                     # largest p first
+    scale = float(n) / np.arange(n, 0, -1)           # n / rank
+    q_desc = np.minimum(1, np.minimum.accumulate(scale * pvals[desc]))
+    q = np.empty(n)
+    q[desc] = q_desc
+    return q
 
 
 def find_diff_features(
@@ -388,7 +406,7 @@ def find_diff_features(
     log2fc_thr: float = np.log2(1.5),
     chunk_size: int = 20000,
 ) -> dict:
-    """Differentially accessible regions; port of ``pycisTopic.find_diff_features``.
+    """Differentially accessible regions; reproduces ``pycisTopic.find_diff_features``.
 
     Parameters
     ----------
