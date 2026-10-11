@@ -30,6 +30,7 @@ t_archr_heme_data
 t_scenic_topics
 t_scenic_cistarget
 t_scenic_links
+t_scenic_egrn
 ```
 
 
