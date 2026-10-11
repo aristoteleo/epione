@@ -131,6 +131,17 @@ linked above.
 | HOMER motif results table plot | {func}`epione.pl.homer_motif_table` |
 | scATAC motif sequence annotation | {func}`epione.single.atac.add_dna_sequence`, {func}`epione.single.atac.match_motif` |
 
+### SCENIC+ enhancer GRNs (`epione.scenic`)
+
+| Task | Functions |
+|---|---|
+| cisTarget motif enrichment of region sets (pycistarget `cisTarget`) | {func}`epione.scenic.run_cistarget`, {func}`epione.scenic.recovery_aucs`, {class}`epione.scenic.MotifEnrichmentResult` |
+| Differentially enriched motifs (pycistarget `DEM`) | {func}`epione.scenic.run_dem`, {func}`epione.scenic.dem_test`, {func}`epione.scenic.foreground_background_regions`, {func}`epione.scenic.p_adjust_bh` |
+| cisTarget rankings / scores databases | {class}`epione.scenic.CisTargetDB`, {func}`epione.scenic.fetch_cistarget_database`, {func}`epione.scenic.target_to_query`, {class}`epione.scenic.RegionIndex`, {func}`epione.scenic.read_bed_regions` |
+| Motif → TF annotation and cistromes | {func}`epione.scenic.load_motif_annotations`, {func}`epione.scenic.fetch_motif_annotation`, {func}`epione.scenic.cistromes_per_region_set`, {func}`epione.scenic.jaspar_annotation` |
+| Cistromes for the eGRN step (scenicplus `prepare_menr`) and pycistarget hdf5 I/O | {func}`epione.scenic.merge_cistromes`, {func}`epione.scenic.write_hdf5`, {func}`epione.scenic.read_hdf5` |
+| Database from Epione's MOODS + JASPAR scan | {func}`epione.scenic.motif_score_db`, {func}`epione.scenic.scores_to_rankings` |
+
 ### Differential & peak-to-gene linkage
 
 | Task | Functions |
