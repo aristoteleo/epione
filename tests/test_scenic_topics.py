@@ -113,7 +113,10 @@ def test_log_np126_special_values():
 # ---------------------------------------------------------------------------
 
 def _reference_lda(X, n_topics, n_iter, alpha, eta, seed):
-    """Line-by-line transcription of ``lda`` 3.0.0 (``lda.py`` + ``_lda.pyx``)."""
+    """Transcription of the sampler of ``lda`` 3.0.0 (``lda.py`` + ``_lda.pyx``).
+
+    ``lda`` is (c) Allen B. Riddell and contributors, Mozilla Public License 2.0.
+    """
     D, W = X.shape
     rands = np.random.RandomState(seed).rand(1024 ** 2 // 8)
     rng = np.random.RandomState(seed)
@@ -181,7 +184,7 @@ def test_run_topic_models_outputs():
     a = ad.AnnData(X)
     a.obs_names = [f"c{i}" for i in range(X.shape[0])]
     a.var_names = [f"chr1:{i * 1000}-{i * 1000 + 500}" for i in range(X.shape[1])]
-    models = scenic.run_topic_models(a, [3, 5, 8], n_iter=20, verbose=False)
+    models = scenic.run_topic_models(a, [3, 5, 8], n_iter=20, method="exact", verbose=False)
     assert [m.n_topic for m in models] == [3, 5, 8]
     m = models[0]
     assert m.cell_topic.shape == (3, 60) and m.topic_region.shape == (150, 3)
@@ -189,7 +192,8 @@ def test_run_topic_models_outputs():
     assert np.allclose(m.topic_region.sum(axis=0), 1)
     assert int(m.topic_ass["Assignments"].sum()) == X.sum()
     # threads give the same result as sequential fitting
-    seq = scenic.run_topic_models(a, [3, 5, 8], n_iter=20, n_jobs=1, verbose=False)
+    seq = scenic.run_topic_models(a, [3, 5, 8], n_iter=20, n_jobs=1, method="exact",
+                                  verbose=False)
     assert np.array_equal(seq[1].topic_region.values, models[1].topic_region.values)
     best, table = scenic.evaluate_topic_models(models, return_metrics=True)
     # topics with fewer than min_topics_coh (5) topics are not candidates
@@ -197,6 +201,51 @@ def test_run_topic_models_outputs():
     scenic.add_topic_model(a, best)
     assert a.obsm["X_topic"].shape == (60, best.n_topic)
     assert a.varm["topic"].shape == (150, best.n_topic)
+
+
+def _toy_adata():
+    X = _toy_binary(n_cells=90, n_regions=150, seed=1)
+    a = ad.AnnData(X)
+    a.obs_names = [f"c{i}" for i in range(X.shape[0])]
+    a.var_names = [f"chr1:{i * 1000}-{i * 1000 + 500}" for i in range(X.shape[1])]
+    return a
+
+
+def test_parallel_sampler_counts_and_reproducibility():
+    a = _toy_adata()
+    m1 = scenic.run_topic_models(a, [3, 4], n_iter=40, n_jobs=3, random_state=7, verbose=False)
+    m2 = scenic.run_topic_models(a, [3, 4], n_iter=40, n_jobs=3, random_state=7, verbose=False)
+    for x, y in zip(m1, m2):
+        assert np.array_equal(x.topic_region.values, y.topic_region.values)
+        nzw, ndz = x.extra["nzw"], x.extra["ndz"]
+        assert (nzw >= 0).all() and (ndz >= 0).all()
+        assert nzw.sum() == ndz.sum() == a.X.sum()
+        assert np.array_equal(ndz.sum(axis=1), np.asarray(a.X.sum(axis=1)).ravel())
+        assert np.array_equal(nzw.sum(axis=0), np.asarray(a.X.sum(axis=0)).ravel())
+        assert x.parameters.loc["package", "Parameter"] == "epione-parallel"
+
+
+def test_parallel_sampler_recovers_programs():
+    from sklearn.metrics import adjusted_rand_score
+
+    a = _toy_adata()
+    truth = np.random.RandomState(1).randint(0, 3, 90)  # programs used by _toy_binary(seed=1)
+    exact = scenic.run_topic_models(a, [3], n_iter=100, method="exact", verbose=False)[0]
+    fast = scenic.run_topic_models(a, [3], n_iter=100, n_jobs=4, verbose=False)[0]
+    for m in (exact, fast):
+        assert adjusted_rand_score(truth, m.cell_topic.values.argmax(0)) > 0.9
+
+
+def test_gpu_sampler_on_cpu_device():
+    torch = pytest.importorskip("torch")
+    a = _toy_adata()
+    m = scenic.run_topic_models(a, [3], n_iter=60, method="gpu", device="cpu", verbose=False)[0]
+    nzw, ndz = m.extra["nzw"], m.extra["ndz"]
+    assert nzw.sum() == ndz.sum() == a.X.sum()
+    from sklearn.metrics import adjusted_rand_score
+
+    truth = np.random.RandomState(1).randint(0, 3, 90)
+    assert adjusted_rand_score(truth, m.cell_topic.values.argmax(0)) > 0.9
 
 
 def test_loglikelihood_reproduces_pycistopic_quirk():
