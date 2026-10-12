@@ -48,6 +48,7 @@ dependencies = [
     'pysam',
     'pyranges',
     'pyfaidx',
+    'biopython',     # epione.core.motifs: `from Bio import motifs`
     # Misc imported at load time.
     'colormaps',
     # Legacy single-cell paths.
