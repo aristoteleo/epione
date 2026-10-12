@@ -131,16 +131,31 @@ linked above.
 | HOMER motif results table plot | {func}`epione.pl.homer_motif_table` |
 | scATAC motif sequence annotation | {func}`epione.single.atac.add_dna_sequence`, {func}`epione.single.atac.match_motif` |
 
-### SCENIC+ enhancer GRNs (`epione.scenic`)
+### SCENIC+ enhancer-driven GRNs (`epione.scenic`)
+
+In pipeline order: topics → cisTarget / DEM → region-to-gene and TF-to-gene links → eRegulons, AUCell and RSS.
 
 | Task | Functions |
 |---|---|
+| Fragment counts in regions (pycisTopic `create_cistopic_object_from_fragments`) | {func}`epione.scenic.cistopic_matrix` |
+| cisTopic LDA topic models + model selection (pycisTopic `run_cgs_models`, `evaluate_models`) | {func}`epione.scenic.run_topic_models`, {func}`epione.scenic.evaluate_topic_models`, {func}`epione.scenic.add_topic_model`, {class}`epione.scenic.TopicModel` |
+| Topic binarization (pycisTopic `binarize_topics`) | {func}`epione.scenic.binarize_topics` |
+| Imputed accessibility, highly variable regions, DARs (pycisTopic `diff_features`) | {func}`epione.scenic.impute_accessibility`, {func}`epione.scenic.normalize_scores`, {func}`epione.scenic.find_highly_variable_features`, {func}`epione.scenic.find_diff_features`, {class}`epione.scenic.ImputedFeatures` |
+| Region sets → BED for cisTarget / DEM | {func}`epione.scenic.write_region_sets` |
 | cisTarget motif enrichment of region sets (pycistarget `cisTarget`) | {func}`epione.scenic.run_cistarget`, {func}`epione.scenic.recovery_aucs`, {class}`epione.scenic.MotifEnrichmentResult` |
 | Differentially enriched motifs (pycistarget `DEM`) | {func}`epione.scenic.run_dem`, {func}`epione.scenic.dem_test`, {func}`epione.scenic.foreground_background_regions`, {func}`epione.scenic.p_adjust_bh` |
 | cisTarget rankings / scores databases | {class}`epione.scenic.CisTargetDB`, {func}`epione.scenic.fetch_cistarget_database`, {func}`epione.scenic.target_to_query`, {class}`epione.scenic.RegionIndex`, {func}`epione.scenic.read_bed_regions` |
 | Motif → TF annotation and cistromes | {func}`epione.scenic.load_motif_annotations`, {func}`epione.scenic.fetch_motif_annotation`, {func}`epione.scenic.cistromes_per_region_set`, {func}`epione.scenic.jaspar_annotation` |
 | Cistromes for the eGRN step (scenicplus `prepare_menr`) and pycistarget hdf5 I/O | {func}`epione.scenic.merge_cistromes`, {func}`epione.scenic.write_hdf5`, {func}`epione.scenic.read_hdf5` |
 | Database from Epione's MOODS + JASPAR scan | {func}`epione.scenic.motif_score_db`, {func}`epione.scenic.scores_to_rankings` |
+| Gene annotation for the search space (Ensembl GTF) | {func}`epione.scenic.gene_annotation_from_gtf` |
+| Region-to-gene search space | {func}`epione.scenic.get_search_space` |
+| Region-to-gene links (GBM / RF importance + correlation; `method="fast"` histogram trees, `"exact"` scenicplus-identical, `"corr"`) | {func}`epione.scenic.region_to_gene` |
+| TF-to-gene links (GRNBoost2 + correlation; `method="fast"` histogram trees, `"exact"` scenicplus-identical) | {func}`epione.scenic.tf_to_gene` |
+| eRegulon inference, GSEA approach (SCENIC+ `infer_grn`) | {func}`epione.scenic.build_egrn` |
+| TF-region-gene triplet ranking / cisTarget motif ranks | {func}`epione.scenic.triplet_rank`, {func}`epione.scenic.tf_region_max_rank` |
+| AUCell eRegulon scores (rank once, score many) | {func}`epione.scenic.rank_cells`, {func}`epione.scenic.aucell`, {func}`epione.scenic.score_eregulons`, {func}`epione.scenic.eregulon_signatures` |
+| Regulon specificity scores (RSS) | {func}`epione.scenic.regulon_specificity_scores` |
 
 ### Differential & peak-to-gene linkage
 
@@ -153,20 +168,6 @@ linked above.
 | Peak co-accessibility | {func}`epione.tl.coaccessibility` |
 | Gene-activity score matrix | {func}`epione.tl.add_gene_score_matrix` |
 | ArchR-style pseudo-time trajectory | {func}`epione.tl.add_trajectory`, {func}`epione.tl.get_trajectory`, {func}`epione.tl.trajectory_heatmap_matrix`, {func}`epione.tl.correlate_trajectories`, {func}`epione.pl.plot_trajectory`, {func}`epione.pl.plot_trajectory_heatmap` |
-
-### SCENIC+ enhancer-driven GRNs
-
-| Task | Functions |
-|---|---|
-| Fragment counts in regions (pycisTopic `create_cistopic_object_from_fragments`) | {func}`epione.scenic.cistopic_matrix` |
-| cisTopic LDA topic models + model selection (pycisTopic `run_cgs_models`, `evaluate_models`) | {func}`epione.scenic.run_topic_models`, {func}`epione.scenic.evaluate_topic_models`, {func}`epione.scenic.add_topic_model`, {class}`epione.scenic.TopicModel` |
-| Topic binarization (pycisTopic `binarize_topics`) | {func}`epione.scenic.binarize_topics` |
-| Imputed accessibility, highly variable regions, DARs (pycisTopic `diff_features`) | {func}`epione.scenic.impute_accessibility`, {func}`epione.scenic.normalize_scores`, {func}`epione.scenic.find_highly_variable_features`, {func}`epione.scenic.find_diff_features`, {class}`epione.scenic.ImputedFeatures` |
-| Region sets → BED for cisTarget / DEM | {func}`epione.scenic.write_region_sets` |
-| eRegulon inference, GSEA approach (SCENIC+ `infer_grn`) | {func}`epione.scenic.build_egrn` |
-| TF-region-gene triplet ranking / cisTarget motif ranks | {func}`epione.scenic.triplet_rank`, {func}`epione.scenic.tf_region_max_rank` |
-| AUCell eRegulon scores (rank once, score many) | {func}`epione.scenic.rank_cells`, {func}`epione.scenic.aucell`, {func}`epione.scenic.score_eregulons`, {func}`epione.scenic.eregulon_signatures` |
-| Regulon specificity scores (RSS) | {func}`epione.scenic.regulon_specificity_scores` |
 
 ### Per-barcode peak calling & pseudobulk
 
@@ -222,15 +223,6 @@ linked above.
 |---|---|
 | Fragment filtering | {class}`epione.tl.FragmentFilter`, {func}`epione.tl.filter_fragments` |
 | Network construction | {class}`epione.tl.NetworkBuilder`, {func}`epione.tl.create_network` |
-
-### SCENIC+ (enhancer-driven GRNs)
-
-| Task | Functions |
-|---|---|
-| Gene annotation for the search space (Ensembl GTF) | {func}`epione.scenic.gene_annotation_from_gtf` |
-| Region-to-gene search space | {func}`epione.scenic.get_search_space` |
-| Region-to-gene links (GBM / RF importance + correlation) | {func}`epione.scenic.region_to_gene` |
-| TF-to-gene links (GRNBoost2 + correlation) | {func}`epione.scenic.tf_to_gene` |
 
 ### I/O — pure format readers / writers
 
