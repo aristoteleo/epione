@@ -1,20 +1,33 @@
-# Bulk ATAC-seq Analysis
+---
+orphan: true
+---
 
-Tutorials for analyzing bulk ATAC-seq data using EpiOne.
+# Bulk tutorials
 
-## Available Tutorials
+The bulk tutorials are now grouped by analysis step:
 
-```{toctree}
-:maxdepth: 2
-:titlesonly: true
+::::{grid} 1 2 3 3
+:gutter: 2
 
-t_bulk_visualize
-t_footprint
-t_case_otx2_vis
-t_differential_peaks
-t_hic_basics
-t_upstream_atac
-t_upstream_chipseq
-t_upstream_cutrun
-```
+:::{grid-item-card} Upstream processing
+:link: upstream
+:link-type: doc
 
+From raw FASTQ files to aligned reads, peaks and signal tracks.
+:::
+
+:::{grid-item-card} Bulk ATAC-seq analysis
+:link: atac
+:link-type: doc
+
+Visualization, differential accessibility and TF footprinting on bulk data.
+:::
+
+:::{grid-item-card} Bulk Hi-C
+:link: hic
+:link-type: doc
+
+Contact matrices, normalization and a published case study.
+:::
+
+::::
