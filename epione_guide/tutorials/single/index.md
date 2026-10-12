@@ -1,36 +1,54 @@
-# Single-cell ATAC-seq Analysis
+---
+orphan: true
+---
 
-Tutorials for preprocessing and analyzing single-cell ATAC-seq data using EpiOne.
+# Single-cell tutorials
 
-## Available Tutorials
+The single-cell tutorials are now grouped by analysis step:
 
-```{toctree}
-:maxdepth: 2
-:titlesonly: true
+::::{grid} 1 2 3 3
+:gutter: 2
 
-t_preprocess
-t_integrate
-t_iterative_lsi
-t_peak_to_gene
-t_browser_track
-t_marker_heatmap
-t_chromvar
-t_tf_regulators
-t_peak_anno_enrichment
-t_label_transfer
-t_harmony
-t_footprint
-t_print_footprint
-t_seq2print
-t_scooby_bridge
-t_trajectory
-t_impute_magic
-t_module_score_groups
-t_archr_heme_data
-t_scenic_topics
-t_scenic_cistarget
-t_scenic_links
-t_scenic_egrn
-```
+:::{grid-item-card} Data and preprocessing
+:link: basics
+:link-type: doc
 
+Example data, QC, dimensionality reduction, batch correction and label transfer.
+:::
 
+:::{grid-item-card} Clusters and markers
+:link: clusters
+:link-type: doc
+
+Marker features, browser tracks, enrichment, module scores and imputation.
+:::
+
+:::{grid-item-card} Gene regulation
+:link: regulation
+:link-type: doc
+
+Peak-to-gene links, TF motif activity, TF regulators and trajectories.
+:::
+
+:::{grid-item-card} Footprints and sequence models
+:link: footprints
+:link-type: doc
+
+TF footprinting, PRINT and sequence-to-profile deep learning models.
+:::
+
+:::{grid-item-card} SCENIC+
+:link: scenic
+:link-type: doc
+
+The full SCENIC+ pipeline, from topics to eRegulons, with bit-exact parity to the reference implementation.
+:::
+
+:::{grid-item-card} Single-cell Hi-C
+:link: hic
+:link-type: doc
+
+Imputation and embedding of single-cell contact maps, and a Droplet Hi-C case study.
+:::
+
+::::

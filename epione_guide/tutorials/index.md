@@ -1,35 +1,80 @@
 # Tutorials
 
+Hands-on notebooks on public data, grouped by data type and analysis step.
 
-## Quick Navigation
+## Bulk
 
-```{toctree}
-:maxdepth: 3
-:titlesonly: true
-
-
-bulk/index
-single/index
-```
-
-## Tutorial Categories
-
-You can also browse tutorials by analysis type:
-
-::::{grid} 1 2 2 2
+::::{grid} 1 2 3 3
 :gutter: 2
 
-:::{grid-item-card} Bulk ATAC-seq Analysis
-:link: bulk/index
+:::{grid-item-card} Upstream processing
+:link: bulk/upstream
 :link-type: doc
 
-Tutorials for analyzing bulk ATAC-seq data, including visualization and footprint analysis.
+From raw FASTQ files to aligned reads, peaks and signal tracks.
 :::
 
-:::{grid-item-card} Single-cell ATAC-seq Analysis
-:link: single/index
+:::{grid-item-card} Bulk ATAC-seq analysis
+:link: bulk/atac
 :link-type: doc
 
-Tutorials for single-cell ATAC-seq preprocessing and analysis workflows.
+Visualization, differential accessibility and TF footprinting on bulk data.
 :::
+
+:::{grid-item-card} Bulk Hi-C
+:link: bulk/hic
+:link-type: doc
+
+Contact matrices, normalization and a published case study.
+:::
+
+::::
+
+## Single-cell
+
+::::{grid} 1 2 3 3
+:gutter: 2
+
+:::{grid-item-card} Data and preprocessing
+:link: single/basics
+:link-type: doc
+
+Example data, QC, dimensionality reduction, batch correction and label transfer.
+:::
+
+:::{grid-item-card} Clusters and markers
+:link: single/clusters
+:link-type: doc
+
+Marker features, browser tracks, enrichment, module scores and imputation.
+:::
+
+:::{grid-item-card} Gene regulation
+:link: single/regulation
+:link-type: doc
+
+Peak-to-gene links, TF motif activity, TF regulators and trajectories.
+:::
+
+:::{grid-item-card} Footprints and sequence models
+:link: single/footprints
+:link-type: doc
+
+TF footprinting, PRINT and sequence-to-profile deep learning models.
+:::
+
+:::{grid-item-card} SCENIC+
+:link: single/scenic
+:link-type: doc
+
+The full SCENIC+ pipeline, from topics to eRegulons, with bit-exact parity to the reference implementation.
+:::
+
+:::{grid-item-card} Single-cell Hi-C
+:link: single/hic
+:link-type: doc
+
+Imputation and embedding of single-cell contact maps, and a Droplet Hi-C case study.
+:::
+
 ::::

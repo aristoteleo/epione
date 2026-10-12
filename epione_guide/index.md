@@ -50,18 +50,56 @@ Report issues or contribute on GitHub.
 
 ```{toctree}
 :hidden: true
-:maxdepth: 3
-:titlesonly: true
+:caption: Getting started
+:maxdepth: 1
 
 installation
 user_guide/index
 tutorials/index
-faq
+```
+
+```{toctree}
+:hidden: true
+:caption: Bulk tutorials
+:maxdepth: 2
+:titlesonly: true
+
+tutorials/bulk/upstream
+tutorials/bulk/atac
+tutorials/bulk/hic
+```
+
+```{toctree}
+:hidden: true
+:caption: Single-cell tutorials
+:maxdepth: 2
+:titlesonly: true
+
+tutorials/single/basics
+tutorials/single/clusters
+tutorials/single/regulation
+tutorials/single/footprints
+tutorials/single/scenic
+tutorials/single/hic
+```
+
+```{toctree}
+:hidden: true
+:caption: Reference
+:maxdepth: 1
+
 api/index
-developer
+faq
 changelog
 references
+developer
+```
+
+```{toctree}
+:hidden: true
+:caption: Community
+:maxdepth: 1
+
 Discussion <https://github.com/aristoteleo/epione/discussions>
 GitHub <https://github.com/aristoteleo/epione>
 ```
-
