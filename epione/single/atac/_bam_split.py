@@ -451,7 +451,7 @@ def split_bam_clusters(
     if sort_bams:
         logger.info("Sorting output bams...")
         output_files = [
-            f"{output_prefix}{re.sub(r'[\\/*?:\"<>| ]', '_', str(cluster))}.bam" for cluster in clusters
+            str(output_prefix) + re.sub(r'[\\/*?:"<>| ]', "_", str(cluster)) + ".bam" for cluster in clusters
         ]
         for file in tqdm(output_files, desc="Sorting reads", unit="files"):
             temp_file = file + ".tmp"
@@ -461,7 +461,7 @@ def split_bam_clusters(
     if index_bams:
         logger.info("Indexing output bams...")
         output_files = [
-            f"{output_prefix}{re.sub(r'[\\/*?:\"<>| ]', '_', str(cluster))}.bam" for cluster in clusters
+            str(output_prefix) + re.sub(r'[\\/*?:"<>| ]', "_", str(cluster)) + ".bam" for cluster in clusters
         ]
         for file in tqdm(output_files, desc="Indexing", unit="files"):
             pysam.index(file, "-@", str(pysam_threads or 4))

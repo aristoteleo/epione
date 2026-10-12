@@ -1,6 +1,6 @@
 # Installation
 
-EpiOne requires Python 3.9+.
+EpiOne requires Python 3.10+.
 
 - From PyPI (recommended once published): `pip install epione`
 - From source (this repository):

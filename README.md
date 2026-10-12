@@ -19,7 +19,7 @@
 [![][github-stars-shield]][github-stars-link]
 [![][github-issues-shield]][github-issues-link]<br>
 
-[![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![Status: Early Development](https://img.shields.io/badge/Status-Early%20Development-orange.svg)]()
 [![Single-Cell](https://img.shields.io/badge/Single--Cell-Epigenomics-purple.svg)]()
 
@@ -53,7 +53,7 @@ import epione as epi
 
 ## Requirements
 
-- Python 3.9+
+- Python 3.10+
 - Core dependencies:
   - `numpy`, `pandas`, `scipy`
   - `anndata`
@@ -107,6 +107,6 @@ This project is [GPL 3.0](./LICENSE) licensed.
 [github-stars-shield]: https://img.shields.io/github/stars/aristoteleo/epione?color=ffcb47&labelColor=black&style=flat-square
 
 [python-link]: https://www.python.org/
-[python-shield]: https://img.shields.io/badge/Python-3.9%2B-blue?logo=python&logoColor=white&style=flat-square
+[python-shield]: https://img.shields.io/badge/Python-3.10%2B-blue?logo=python&logoColor=white&style=flat-square
 [license-link]: https://github.com/aristoteleo/epione/blob/main/LICENSE
 [license-shield]: https://img.shields.io/badge/license-GPL%203.0-white?labelColor=black&style=flat-square
