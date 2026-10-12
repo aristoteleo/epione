@@ -54,7 +54,8 @@ def check_search_space(root, regions, genes):
 def check_tf2g(root, expr, n_jobs, targets):
     tfs = _lines(root / "A" / "tf2g" / "tf_names_allTF.txt")
     t = time.time()
-    adj = sc.tf_to_gene(expr, tfs, targets=targets, n_jobs=n_jobs, self_link_order="upstream")
+    adj = sc.tf_to_gene(expr, tfs, method="exact", targets=targets, n_jobs=n_jobs,
+                        self_link_order="upstream")
     dt = time.time() - t
     ref = pd.read_table(root / "A" / "tf2g" / "tf_to_gene_adj_GBM.tsv", float_precision="round_trip")
     res = {"seconds": round(dt, 1), "rows": len(adj), "ref_rows": len(ref)}
@@ -84,7 +85,7 @@ def check_tf2g(root, expr, n_jobs, targets):
 def check_r2g(root, expr, acc, regions, kind, n_jobs, targets):
     ss = pd.read_table(root / "A" / "scplus_inputs" / "search_space.tsv")
     t = time.time()
-    out = sc.region_to_gene(expr, acc, ss, importance=kind, n_jobs=n_jobs,
+    out = sc.region_to_gene(expr, acc, ss, method="exact", importance=kind, n_jobs=n_jobs,
                             accessibility_var_names=regions, targets=targets)
     dt = time.time() - t
     ref = pd.read_table(root / "A" / "r2g" / f"region_to_gene_adj_{kind}.tsv", float_precision="round_trip")

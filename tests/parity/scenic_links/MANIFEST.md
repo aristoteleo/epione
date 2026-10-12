@@ -164,3 +164,15 @@ Timing is reported, not gated: full TF2G and R2G wall time per mode with the thr
 count, against `method="exact"` at the same thread count (target ≥ 10×).
 `method="corr"` (R2G) is reported on F3, F4 and the downstream metrics without a pass/fail.
 For downstream comparisons it is paired with the `fast` TF2G links.
+
+**Amendment, made before the registered run (no gate changed).** The description above
+says the fast R2G GBM uses 500 trees. During development (600- and 2,000-target subsets,
+never the full data) the fast path with exact GBM settings was only about 1.9× faster than
+`method="exact"` on R2G: accessibility has at most 33 distinct values per region, which
+the exact splitter already sorts cheaply. So the fast R2G GBM takes the same shrinkage
+budget in half the steps (`learning_rate=0.02`, 250 trees), about 3×; `learning_rate=0.1`
+× 50 trees was tried and dropped (subset Spearman 0.75). The fast R2G random forest uses
+100 trees instead of 1000. TF2G keeps the GRNBoost2 settings. TF2G bins are lossless: one
+bin per distinct value, up to 65,535. With 255 quantile bins, the subset top-50 Jaccard
+fell below the exact seed spread (0.235 vs 0.266). The registered gates F1–F7 are as
+written above.
