@@ -30,7 +30,7 @@ from scipy import sparse
 
 from ._egrn_basc import basc_thresholds_grouped
 from ._egrn_gsea import gene_set_seed, gsea_batch, permutations, significance
-from ._egrn_argsort import argsort_np126
+from ._np126 import argsort_np126
 
 __all__ = ["build_egrn", "p_adjust_bh"]
 

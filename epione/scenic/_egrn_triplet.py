@@ -15,7 +15,7 @@ import numba
 import numpy as np
 import pandas as pd
 
-from ._egrn_argsort import argsort_np126
+from ._np126 import argsort_np126
 
 __all__ = ["triplet_rank", "tf_region_max_rank", "read_ranking_db"]
 

@@ -18,7 +18,11 @@ between numpy releases and differs between CPUs:
 :func:`argsort_np126` re-implements the sort lane by lane (8-lane key/index
 bitonic networks for blocks of at most 64 elements, median-of-8 pivot,
 4x-unrolled vector-compress partition, ``std::sort`` introsort fallback) and
-returns the same permutation, ties included. :func:`log_np126` re-implements
+returns the same permutation, ties included. It handles the dtypes numpy 1.26 sends
+through x86-simd-sort (32- and 64-bit floats and integers; NaN-aware) and numpy's
+introsort for small integer types, and is shared by every SCENIC+ block whose reference
+output depends on ``argsort`` tie order: topics (Mimno coherence, DARs), TF-to-gene row
+order, eGRN thresholds and triplet ranks, and AUCell rankings. :func:`log_np126` re-implements
 ``__svml_log8`` with the same fused multiply-adds and constants; the one
 hardware approximation it relies on (``vrcp14pd``, rounded to 5 fractional
 bits) is replaced by the 16 exact switching points of that rounding, measured
@@ -28,6 +32,7 @@ from __future__ import annotations
 
 import math
 
+import numba
 import numpy as np
 
 try:
@@ -59,283 +64,237 @@ except ImportError:  # pragma: no cover - numba ships with scanpy
             return args[0]
         return lambda f: f
 
-# ``_mm512_set_epi64(v1, ..., v8)`` puts v8 in lane 0, so each network
-# constant is the reversed macro list.
-_IDX1 = np.array([3, 2, 1, 0, 7, 6, 5, 4], dtype=np.int64)   # NETWORK_64BIT_1
-_REV = np.array([7, 6, 5, 4, 3, 2, 1, 0], dtype=np.int64)    # NETWORK_64BIT_2
-_IDX3 = np.array([2, 3, 0, 1, 6, 7, 4, 5], dtype=np.int64)   # NETWORK_64BIT_3
-_IDX4 = np.array([4, 5, 6, 7, 0, 1, 2, 3], dtype=np.int64)   # NETWORK_64BIT_4
-_INF = np.inf
+# ---------------------------------------------------------------------------
+# np.argsort (numpy 1.26, AVX-512: x86-simd-sort, Copyright (C) 2022 Intel
+# Corporation, BSD-3-Clause; libstdc++ std::sort fallback)
+# ---------------------------------------------------------------------------
+
+_REV = np.array([7, 6, 5, 4, 3, 2, 1, 0], dtype=np.int64)
+_N1 = np.array([3, 2, 1, 0, 7, 6, 5, 4], dtype=np.int64)
+_N3 = np.array([2, 3, 0, 1, 6, 7, 4, 5], dtype=np.int64)
+_N4 = np.array([4, 5, 6, 7, 0, 1, 2, 3], dtype=np.int64)
+_SH = np.array([1, 0, 3, 2, 5, 4, 7, 6], dtype=np.int64)
 
 
-@njit(cache=True, inline="always")
-def _shuf(a):
-    # _mm512_shuffle_pd(a, a, SHUFFLE_MASK(1, 1, 1, 1)): swap within pairs
-    out = np.empty_like(a)
-    for j in range(4):
-        out[2 * j] = a[2 * j + 1]
-        out[2 * j + 1] = a[2 * j]
-    return out
-
-
-@njit(cache=True, inline="always")
-def _perm(a, idx):
-    out = np.empty_like(a)
+# ----------------------------------------------------------------------------- lane ops
+@numba.njit(cache=True)
+def _cmp_merge(k, a, p, mask):
+    # cmp_merge<vtype1, vtype2>(in1=k, in2=perm(k), idx1=a, idx2=perm(a), mask)
+    k2 = k[p]
+    a2 = a[p]
+    nk = np.empty_like(k)
+    na = np.empty_like(a)
     for i in range(8):
-        out[i] = a[idx[i]]
-    return out
+        x = k[i]
+        y = k2[i]
+        mn = y if y < x else x
+        mx = y if y > x else x
+        t = mx if (mask >> i) & 1 else mn
+        nk[i] = t
+        na[i] = a[i] if t == x else a2[i]
+    return nk, na
 
 
-@njit(cache=True, inline="always")
-def _vmin(a, b):
-    # _mm512_min_pd(a, b) = a < b ? a : b
-    out = np.empty_like(a)
+@numba.njit(cache=True)
+def _sort_zmm(k, a):
+    k, a = _cmp_merge(k, a, _SH, 0xAA)
+    k, a = _cmp_merge(k, a, _N1, 0xCC)
+    k, a = _cmp_merge(k, a, _SH, 0xAA)
+    k, a = _cmp_merge(k, a, _REV, 0xF0)
+    k, a = _cmp_merge(k, a, _N3, 0xCC)
+    k, a = _cmp_merge(k, a, _SH, 0xAA)
+    return k, a
+
+
+@numba.njit(cache=True)
+def _bitonic_merge(k, a):
+    k, a = _cmp_merge(k, a, _N4, 0xF0)
+    k, a = _cmp_merge(k, a, _N3, 0xCC)
+    k, a = _cmp_merge(k, a, _SH, 0xAA)
+    return k, a
+
+
+@numba.njit(cache=True)
+def _coex(k1, k2, a1, a2):
+    # min/max with index move (ties keep a1 with the min lane)
+    nk1 = np.empty_like(k1)
+    nk2 = np.empty_like(k1)
+    na1 = np.empty_like(a1)
+    na2 = np.empty_like(a1)
     for i in range(8):
-        out[i] = a[i] if a[i] < b[i] else b[i]
-    return out
-
-
-@njit(cache=True, inline="always")
-def _vmax(a, b):
-    # _mm512_max_pd(a, b) = a > b ? a : b
-    out = np.empty_like(a)
-    for i in range(8):
-        out[i] = a[i] if a[i] > b[i] else b[i]
-    return out
-
-
-@njit(cache=True, inline="always")
-def _cmp_merge(k1, k2, i1, i2, mask):
-    mn = _vmin(k2, k1)
-    mx = _vmax(k2, k1)
-    k = np.empty(8)
-    ix = np.empty(8, dtype=np.int64)
-    for i in range(8):
-        k[i] = mx[i] if (mask >> i) & 1 else mn[i]
-        ix[i] = i1[i] if k[i] == k1[i] else i2[i]
-    return k, ix
-
-
-@njit(cache=True, inline="always")
-def _coex(k1, k2, i1, i2):
-    t1 = _vmin(k1, k2)
-    t2 = _vmax(k1, k2)
-    j1 = np.empty(8, dtype=np.int64)
-    j2 = np.empty(8, dtype=np.int64)
-    for i in range(8):
-        if t1[i] == k1[i]:
-            j1[i] = i1[i]
-            j2[i] = i2[i]
+        x = k1[i]
+        y = k2[i]
+        mn = y if y < x else x
+        mx = y if y > x else x
+        nk1[i] = mn
+        nk2[i] = mx
+        if mn == x:
+            na1[i] = a1[i]
+            na2[i] = a2[i]
         else:
-            j1[i] = i2[i]
-            j2[i] = i1[i]
-    return t1, t2, j1, j2
+            na1[i] = a2[i]
+            na2[i] = a1[i]
+    return nk1, nk2, na1, na2
 
 
-@njit(cache=True)
-def _sort_zmm(k, ix):
-    k, ix = _cmp_merge(k, _shuf(k), ix, _shuf(ix), 0xAA)
-    k, ix = _cmp_merge(k, _perm(k, _IDX1), ix, _perm(ix, _IDX1), 0xCC)
-    k, ix = _cmp_merge(k, _shuf(k), ix, _shuf(ix), 0xAA)
-    k, ix = _cmp_merge(k, _perm(k, _REV), ix, _perm(ix, _REV), 0xF0)
-    k, ix = _cmp_merge(k, _perm(k, _IDX3), ix, _perm(ix, _IDX3), 0xCC)
-    k, ix = _cmp_merge(k, _shuf(k), ix, _shuf(ix), 0xAA)
-    return k, ix
+@numba.njit(cache=True)
+def _merge_two(K, A, i, j):
+    k1 = K[i]
+    a1 = A[i]
+    k2 = K[j][_REV]
+    a2 = A[j][_REV]
+    k3, k4, a3, a4 = _coex(k1, k2, a1, a2)
+    k4 = k4[_REV]
+    a4 = a4[_REV]
+    k3, a3 = _bitonic_merge(k3, a3)
+    k4, a4 = _bitonic_merge(k4, a4)
+    K[i] = k3
+    A[i] = a3
+    K[j] = k4
+    A[j] = a4
 
 
-@njit(cache=True)
-def _bitonic_merge_zmm(k, ix):
-    k, ix = _cmp_merge(k, _perm(k, _IDX4), ix, _perm(ix, _IDX4), 0xF0)
-    k, ix = _cmp_merge(k, _perm(k, _IDX3), ix, _perm(ix, _IDX3), 0xCC)
-    k, ix = _cmp_merge(k, _shuf(k), ix, _shuf(ix), 0xAA)
-    return k, ix
+@numba.njit(cache=True)
+def _merge_four(K, A, o):
+    k2r = K[o + 2][_REV]
+    k3r = K[o + 3][_REV]
+    a2r = A[o + 2][_REV]
+    a3r = A[o + 3][_REV]
+    t1, m1, at1, am1 = _coex(K[o], k3r, A[o], a3r)
+    t2, m2, at2, am2 = _coex(K[o + 1], k2r, A[o + 1], a2r)
+    t3 = m2[_REV]
+    t4 = m1[_REV]
+    at3 = am2[_REV]
+    at4 = am1[_REV]
+    k0, k1, a0, a1 = _coex(t1, t2, at1, at2)
+    k2, k3, a2, a3 = _coex(t3, t4, at3, at4)
+    k0, a0 = _bitonic_merge(k0, a0)
+    k1, a1 = _bitonic_merge(k1, a1)
+    k2, a2 = _bitonic_merge(k2, a2)
+    k3, a3 = _bitonic_merge(k3, a3)
+    K[o], K[o + 1], K[o + 2], K[o + 3] = k0, k1, k2, k3
+    A[o], A[o + 1], A[o + 2], A[o + 3] = a0, a1, a2, a3
 
 
-@njit(cache=True)
-def _merge_two(K, I, a, b):
-    k1 = K[a]
-    i1 = I[a]
-    k2 = _perm(K[b], _REV)
-    i2 = _perm(I[b], _REV)
-    k3 = _vmin(k1, k2)
-    k4 = _vmax(k1, k2)
-    i3 = np.empty(8, dtype=np.int64)
-    i4 = np.empty(8, dtype=np.int64)
-    for i in range(8):
-        if k3[i] == k1[i]:
-            i3[i] = i1[i]
-            i4[i] = i2[i]
-        else:
-            i3[i] = i2[i]
-            i4[i] = i1[i]
-    k4 = _perm(k4, _REV)
-    i4 = _perm(i4, _REV)
-    K[a], I[a] = _bitonic_merge_zmm(k3, i3)
-    K[b], I[b] = _bitonic_merge_zmm(k4, i4)
+@numba.njit(cache=True)
+def _merge_eight(K, A):
+    k4r = K[4][_REV]
+    k5r = K[5][_REV]
+    k6r = K[6][_REV]
+    k7r = K[7][_REV]
+    a4r = A[4][_REV]
+    a5r = A[5][_REV]
+    a6r = A[6][_REV]
+    a7r = A[7][_REV]
+    t1, m1, at1, am1 = _coex(K[0], k7r, A[0], a7r)
+    t2, m2, at2, am2 = _coex(K[1], k6r, A[1], a6r)
+    t3, m3, at3, am3 = _coex(K[2], k5r, A[2], a5r)
+    t4, m4, at4, am4 = _coex(K[3], k4r, A[3], a4r)
+    t5 = m4[_REV]
+    t6 = m3[_REV]
+    t7 = m2[_REV]
+    t8 = m1[_REV]
+    at5 = am4[_REV]
+    at6 = am3[_REV]
+    at7 = am2[_REV]
+    at8 = am1[_REV]
+    t1, t3, at1, at3 = _coex(t1, t3, at1, at3)
+    t2, t4, at2, at4 = _coex(t2, t4, at2, at4)
+    t5, t7, at5, at7 = _coex(t5, t7, at5, at7)
+    t6, t8, at6, at8 = _coex(t6, t8, at6, at8)
+    t1, t2, at1, at2 = _coex(t1, t2, at1, at2)
+    t3, t4, at3, at4 = _coex(t3, t4, at3, at4)
+    t5, t6, at5, at6 = _coex(t5, t6, at5, at6)
+    t7, t8, at7, at8 = _coex(t7, t8, at7, at8)
+    t1, at1 = _bitonic_merge(t1, at1)
+    t2, at2 = _bitonic_merge(t2, at2)
+    t3, at3 = _bitonic_merge(t3, at3)
+    t4, at4 = _bitonic_merge(t4, at4)
+    t5, at5 = _bitonic_merge(t5, at5)
+    t6, at6 = _bitonic_merge(t6, at6)
+    t7, at7 = _bitonic_merge(t7, at7)
+    t8, at8 = _bitonic_merge(t8, at8)
+    K[0], K[1], K[2], K[3], K[4], K[5], K[6], K[7] = t1, t2, t3, t4, t5, t6, t7, t8
+    A[0], A[1], A[2], A[3], A[4], A[5], A[6], A[7] = at1, at2, at3, at4, at5, at6, at7, at8
 
 
-@njit(cache=True)
-def _merge_four(K, I, o):
-    k2r = _perm(K[o + 2], _REV)
-    k3r = _perm(K[o + 3], _REV)
-    i2r = _perm(I[o + 2], _REV)
-    i3r = _perm(I[o + 3], _REV)
-    kt1 = _vmin(K[o], k3r)
-    kt2 = _vmin(K[o + 1], k2r)
-    km1 = _vmax(K[o], k3r)
-    km2 = _vmax(K[o + 1], k2r)
-    it1 = np.empty(8, dtype=np.int64)
-    im1 = np.empty(8, dtype=np.int64)
-    it2 = np.empty(8, dtype=np.int64)
-    im2 = np.empty(8, dtype=np.int64)
-    for i in range(8):
-        if kt1[i] == K[o][i]:
-            it1[i] = I[o][i]
-            im1[i] = i3r[i]
-        else:
-            it1[i] = i3r[i]
-            im1[i] = I[o][i]
-        if kt2[i] == K[o + 1][i]:
-            it2[i] = I[o + 1][i]
-            im2[i] = i2r[i]
-        else:
-            it2[i] = i2r[i]
-            im2[i] = I[o + 1][i]
-    kt3 = _perm(km2, _REV)
-    kt4 = _perm(km1, _REV)
-    it3 = _perm(im2, _REV)
-    it4 = _perm(im1, _REV)
-    k0 = _vmin(kt1, kt2)
-    k1 = _vmax(kt1, kt2)
-    k2 = _vmin(kt3, kt4)
-    k3 = _vmax(kt3, kt4)
-    i0 = np.empty(8, dtype=np.int64)
-    i1 = np.empty(8, dtype=np.int64)
-    i2 = np.empty(8, dtype=np.int64)
-    i3 = np.empty(8, dtype=np.int64)
-    for i in range(8):
-        if k0[i] == kt1[i]:
-            i0[i] = it1[i]
-            i1[i] = it2[i]
-        else:
-            i0[i] = it2[i]
-            i1[i] = it1[i]
-        if k2[i] == kt3[i]:
-            i2[i] = it3[i]
-            i3[i] = it4[i]
-        else:
-            i2[i] = it4[i]
-            i3[i] = it3[i]
-    K[o], I[o] = _bitonic_merge_zmm(k0, i0)
-    K[o + 1], I[o + 1] = _bitonic_merge_zmm(k1, i1)
-    K[o + 2], I[o + 2] = _bitonic_merge_zmm(k2, i2)
-    K[o + 3], I[o + 3] = _bitonic_merge_zmm(k3, i3)
-
-
-@njit(cache=True)
-def _merge_eight(K, I):
-    kr = [_perm(K[4 + j], _REV) for j in range(4)]   # 4r, 5r, 6r, 7r
-    ir = [_perm(I[4 + j], _REV) for j in range(4)]
-    kt = [np.empty(8) for _ in range(8)]
-    it = [np.empty(8, dtype=np.int64) for _ in range(8)]
-    km = [np.empty(8) for _ in range(4)]
-    im = [np.empty(8, dtype=np.int64) for _ in range(4)]
-    for j in range(4):
-        # t_{j+1} = min(K[j], K[7-j] reversed)
-        partner_k = kr[3 - j]
-        partner_i = ir[3 - j]
-        kt[j] = _vmin(K[j], partner_k)
-        km[j] = _vmax(K[j], partner_k)
-        for i in range(8):
-            if kt[j][i] == K[j][i]:
-                it[j][i] = I[j][i]
-                im[j][i] = partner_i[i]
-            else:
-                it[j][i] = partner_i[i]
-                im[j][i] = I[j][i]
-    # t5..t8 = reversed m4, m3, m2, m1
-    for j in range(4):
-        kt[4 + j] = _perm(km[3 - j], _REV)
-        it[4 + j] = _perm(im[3 - j], _REV)
-    for a, b in ((0, 2), (1, 3), (4, 6), (5, 7), (0, 1), (2, 3), (4, 5), (6, 7)):
-        kt[a], kt[b], it[a], it[b] = _coex(kt[a], kt[b], it[a], it[b])
-    for j in range(8):
-        K[j], I[j] = _bitonic_merge_zmm(kt[j], it[j])
-
-
-@njit(cache=True)
-def _small_sort(arr, arg, start, N):
-    """``argsort_{8,16,32,64}_64bit`` on ``arg[start:start+N]`` (N <= 64)."""
-    if N <= 8:
+# ----------------------------------------------------------------------------- base case
+@numba.njit(cache=True)
+def _argsort_small(arr, arg, lo, n, padval):
+    """argsort_{8,16,32,64}_64bit on arg[lo:lo+n] (n <= 64)."""
+    if n <= 0:
+        return
+    if n <= 8:
         nreg = 1
-    elif N <= 16:
+    elif n <= 16:
         nreg = 2
-    elif N <= 32:
+    elif n <= 32:
         nreg = 4
     else:
         nreg = 8
-    half = nreg // 2 if nreg > 1 else 0
-    # registers [0, half) are full loads, [half, nreg) masked (or reg 0 for N <= 8)
-    K = [np.empty(8) for _ in range(nreg)]
-    I = [np.empty(8, dtype=np.int64) for _ in range(nreg)]
+    K = np.empty((nreg, 8), dtype=arr.dtype)
+    A = np.zeros((nreg, 8), dtype=np.int64)
     for r in range(nreg):
-        for lane in range(8):
-            p = 8 * r + lane
-            if p < N:
-                I[r][lane] = arg[start + p]
-                K[r][lane] = arr[arg[start + p]]
+        for i in range(8):
+            p = r * 8 + i
+            if p < n:
+                A[r, i] = arg[lo + p]
+                K[r, i] = arr[A[r, i]]
             else:
-                I[r][lane] = 0
-                K[r][lane] = _INF
-        K[r], I[r] = _sort_zmm(K[r], I[r])
+                A[r, i] = 0
+                K[r, i] = padval
+        k, a = _sort_zmm(K[r].copy(), A[r].copy())
+        K[r] = k
+        A[r] = a
     if nreg >= 2:
         for r in range(0, nreg, 2):
-            _merge_two(K, I, r, r + 1)
+            _merge_two(K, A, r, r + 1)
     if nreg >= 4:
-        for o in range(0, nreg, 4):
-            _merge_four(K, I, o)
+        for r in range(0, nreg, 4):
+            _merge_four(K, A, r)
     if nreg == 8:
-        _merge_eight(K, I)
+        _merge_eight(K, A)
     for r in range(nreg):
-        for lane in range(8):
-            p = 8 * r + lane
-            if p < N:
-                arg[start + p] = I[r][lane]
+        for i in range(8):
+            p = r * 8 + i
+            if p < n:
+                arg[lo + p] = A[r, i]
 
 
-@njit(cache=True, inline="always")
-def _partition_vec(arg, l_store, right, argvec, vec, pivot):
-    """Compress lanes < pivot to ``arg[l_store:]`` and >= pivot to ``arg[right-n_ge:right]``."""
+# ----------------------------------------------------------------------------- partition
+@numba.njit(cache=True)
+def _partition_vec(arg, left, right, av, kv, pivot):
+    # compress-store lanes < pivot at arg[left:], lanes >= pivot at arg[right - n_ge:right]
     n_ge = 0
-    for lane in range(8):
-        if vec[lane] >= pivot:
+    for i in range(8):
+        if kv[i] >= pivot:
             n_ge += 1
-    p = l_store
-    q = right - n_ge
-    for lane in range(8):
-        if vec[lane] >= pivot:
-            arg[q] = argvec[lane]
-            q += 1
+    l = left
+    r = right - n_ge
+    for i in range(8):
+        if kv[i] >= pivot:
+            arg[r] = av[i]
+            r += 1
         else:
-            arg[p] = argvec[lane]
-            p += 1
+            arg[l] = av[i]
+            l += 1
     return n_ge
 
 
-@njit(cache=True)
+@numba.njit(cache=True)
 def _load(arr, arg, pos):
     av = arg[pos:pos + 8].copy()
-    v = np.empty(8)
-    for lane in range(8):
-        v[lane] = arr[av[lane]]
-    return av, v
+    kv = np.empty(8, dtype=arr.dtype)
+    for i in range(8):
+        kv[i] = arr[av[i]]
+    return av, kv
 
 
-@njit(cache=True)
+@numba.njit(cache=True)
 def _partition(arr, arg, left, right, pivot, unroll):
-    """``partition_avx512`` (unroll = 1) / ``partition_avx512_unrolled<4>``."""
-    block = 8 * unroll
-    for _ in range((right - left) % block):
+    """partition_avx512 (unroll=1) / partition_avx512_unrolled<4>; right is exclusive."""
+    step = 8 * unroll
+    for _ in range((right - left) % step):
         if not (arr[arg[left]] < pivot):
             right -= 1
             t = arg[left]
@@ -346,251 +305,356 @@ def _partition(arr, arg, left, right, pivot, unroll):
     if left == right:
         return left
     if unroll == 1 and right - left == 8:
-        av, v = _load(arr, arg, left)
-        n_ge = _partition_vec(arg, left, left + 8, av, v, pivot)
+        av, kv = _load(arr, arg, left)
+        n_ge = _partition_vec(arg, left, left + 8, av, kv, pivot)
         return left + (8 - n_ge)
-
-    lav = []
-    lv = []
-    rav = []
-    rv = []
+    VLa = np.empty((unroll, 8), dtype=np.int64)
+    VLk = np.empty((unroll, 8), dtype=arr.dtype)
+    VRa = np.empty((unroll, 8), dtype=np.int64)
+    VRk = np.empty((unroll, 8), dtype=arr.dtype)
     for ii in range(unroll):
-        a, v = _load(arr, arg, left + 8 * ii)
-        lav.append(a)
-        lv.append(v)
-        a, v = _load(arr, arg, right - 8 * (unroll - ii))
-        rav.append(a)
-        rv.append(v)
+        av, kv = _load(arr, arg, left + 8 * ii)
+        VLa[ii] = av
+        VLk[ii] = kv
+        av, kv = _load(arr, arg, right - 8 * (unroll - ii))
+        VRa[ii] = av
+        VRk[ii] = kv
     r_store = right - 8
     l_store = left
-    left += block
-    right -= block
+    left += step
+    right -= step
+    CA = np.empty((unroll, 8), dtype=np.int64)
+    CK = np.empty((unroll, 8), dtype=arr.dtype)
     while right - left != 0:
-        cav = []
-        cv = []
         if (r_store + 8) - right < left - l_store:
-            right -= block
+            right -= step
             for ii in range(unroll):
-                a, v = _load(arr, arg, right + 8 * ii)
-                cav.append(a)
-                cv.append(v)
+                av, kv = _load(arr, arg, right + 8 * ii)
+                CA[ii] = av
+                CK[ii] = kv
         else:
             for ii in range(unroll):
-                a, v = _load(arr, arg, left + 8 * ii)
-                cav.append(a)
-                cv.append(v)
-            left += block
+                av, kv = _load(arr, arg, left + 8 * ii)
+                CA[ii] = av
+                CK[ii] = kv
+            left += step
         for ii in range(unroll):
-            n_ge = _partition_vec(arg, l_store, r_store + 8, cav[ii], cv[ii], pivot)
+            n_ge = _partition_vec(arg, l_store, r_store + 8, CA[ii], CK[ii], pivot)
             l_store += 8 - n_ge
             r_store -= n_ge
+    if unroll == 1:
+        n_ge = _partition_vec(arg, l_store, r_store + 8, VLa[0], VLk[0], pivot)
+        l_store += 8 - n_ge
+        n_ge = _partition_vec(arg, l_store, l_store + 8, VRa[0], VRk[0], pivot)
+        l_store += 8 - n_ge
+        return l_store
     for ii in range(unroll):
-        n_ge = _partition_vec(arg, l_store, r_store + 8, lav[ii], lv[ii], pivot)
+        n_ge = _partition_vec(arg, l_store, r_store + 8, VLa[ii], VLk[ii], pivot)
         l_store += 8 - n_ge
         r_store -= n_ge
     for ii in range(unroll):
-        n_ge = _partition_vec(arg, l_store, r_store + 8, rav[ii], rv[ii], pivot)
+        n_ge = _partition_vec(arg, l_store, r_store + 8, VRa[ii], VRk[ii], pivot)
         l_store += 8 - n_ge
         r_store -= n_ge
     return l_store
 
 
-# ---------------------------------------------------------------------------
-# libstdc++ std::sort (introsort) — x86-simd-sort's fallback when quicksort
-# stops making progress (heavily tied segments reach the depth limit).
-# ---------------------------------------------------------------------------
-
-@njit(cache=True, inline="always")
-def _lt(arr, i, j):
-    return arr[i] < arr[j]
-
-
-@njit(cache=True)
-def _unguarded_linear_insert(arr, arg, last):
-    val = arg[last]
-    nxt = last - 1
-    while arr[val] < arr[arg[nxt]]:
-        arg[last] = arg[nxt]
-        last = nxt
-        nxt -= 1
-    arg[last] = val
+# ----------------------------------------------------------------------------- std::sort
+@numba.njit(cache=True)
+def _lt(arr, i, j, nan_aware):
+    x = arr[i]
+    y = arr[j]
+    if nan_aware:
+        xn = x != x
+        yn = y != y
+        if not xn and not yn:
+            return x < y
+        if xn:
+            return False
+        return True
+    return x < y
 
 
-@njit(cache=True)
-def _insertion_sort(arr, arg, first, last):
-    if first == last:
-        return
-    for i in range(first + 1, last):
-        if _lt(arr, arg[i], arg[first]):
-            val = arg[i]
-            for p in range(i, first, -1):
-                arg[p] = arg[p - 1]
-            arg[first] = val
-        else:
-            _unguarded_linear_insert(arr, arg, i)
+@numba.njit(cache=True)
+def _lg(n):
+    d = 0
+    while n > 1:
+        n >>= 1
+        d += 1
+    return d
 
 
-@njit(cache=True)
-def _push_heap(arr, arg, first, hole, top, value):
+@numba.njit(cache=True)
+def _adjust_heap(arr, a, first, hole, length, value, nan_aware):
+    top = hole
+    child = hole
+    while child < (length - 1) // 2:
+        child = 2 * (child + 1)
+        if _lt(arr, a[first + child], a[first + child - 1], nan_aware):
+            child -= 1
+        a[first + hole] = a[first + child]
+        hole = child
+    if (length & 1) == 0 and child == (length - 2) // 2:
+        child = 2 * (child + 1)
+        a[first + hole] = a[first + child - 1]
+        hole = child - 1
     parent = (hole - 1) // 2
-    while hole > top and arr[arg[first + parent]] < arr[value]:
-        arg[first + hole] = arg[first + parent]
+    while hole > top and _lt(arr, a[first + parent], value, nan_aware):
+        a[first + hole] = a[first + parent]
         hole = parent
         parent = (hole - 1) // 2
-    arg[first + hole] = value
+    a[first + hole] = value
 
 
-@njit(cache=True)
-def _adjust_heap(arr, arg, first, hole, length, value):
-    top = hole
-    second = hole
-    while second < (length - 1) // 2:
-        second = 2 * (second + 1)
-        if _lt(arr, arg[first + second], arg[first + second - 1]):
-            second -= 1
-        arg[first + hole] = arg[first + second]
-        hole = second
-    if (length & 1) == 0 and second == (length - 2) // 2:
-        second = 2 * (second + 1)
-        arg[first + hole] = arg[first + second - 1]
-        hole = second - 1
-    _push_heap(arr, arg, first, hole, top, value)
-
-
-@njit(cache=True)
-def _heap_sort(arr, arg, first, last):
-    """``std::__partial_sort(first, last, last)``: make_heap + sort_heap."""
-    length = last - first
-    if length >= 2:
-        parent = (length - 2) // 2
-        while True:
-            _adjust_heap(arr, arg, first, parent, length, arg[first + parent])
-            if parent == 0:
-                break
-            parent -= 1
-    while last - first > 1:
-        last -= 1
-        value = arg[last]
-        arg[last] = arg[first]
-        _adjust_heap(arr, arg, first, 0, last - first, value)
-
-
-@njit(cache=True)
-def _move_median_to_first(arr, arg, result, a, b, c):
-    if _lt(arr, arg[a], arg[b]):
-        if _lt(arr, arg[b], arg[c]):
-            m = b
-        elif _lt(arr, arg[a], arg[c]):
-            m = c
-        else:
-            m = a
-    elif _lt(arr, arg[a], arg[c]):
-        m = a
-    elif _lt(arr, arg[b], arg[c]):
-        m = c
-    else:
-        m = b
-    t = arg[result]
-    arg[result] = arg[m]
-    arg[m] = t
-
-
-@njit(cache=True)
-def _unguarded_partition(arr, arg, first, last, pivot):
-    while True:
-        while _lt(arr, arg[first], arg[pivot]):
-            first += 1
-        last -= 1
-        while _lt(arr, arg[pivot], arg[last]):
-            last -= 1
-        if not (first < last):
-            return first
-        t = arg[first]
-        arg[first] = arg[last]
-        arg[last] = t
-        first += 1
-
-
-@njit(cache=True)
-def _std_sort(arr, arg, first, last):
-    if first == last:
-        return
+@numba.njit(cache=True)
+def _heap_sort(arr, a, first, last, nan_aware):
     n = last - first
-    lg = 0
-    while (n >> (lg + 1)) > 0:
-        lg += 1
-    # __introsort_loop, recursion on the right part made explicit
-    stack = [(first, last, 2 * lg)]
-    while len(stack) > 0:
-        f, l, depth = stack.pop()
+    if n < 2:
+        return
+    parent = (n - 2) // 2
+    while True:
+        _adjust_heap(arr, a, first, parent, n, a[first + parent], nan_aware)
+        if parent == 0:
+            break
+        parent -= 1
+    end = last
+    while end - first > 1:
+        end -= 1
+        v = a[end]
+        a[end] = a[first]
+        _adjust_heap(arr, a, first, 0, end - first, v, nan_aware)
+
+
+@numba.njit(cache=True)
+def _std_sort(arr, a, first, last, nan_aware):
+    """libstdc++ std::sort on index range a[first:last] with comparator arr[i] < arr[j]."""
+    if last - first < 2:
+        return
+    stack = np.empty((128, 3), dtype=np.int64)
+    sp = 0
+    stack[0, 0] = first
+    stack[0, 1] = last
+    stack[0, 2] = 2 * _lg(last - first)
+    sp = 1
+    while sp > 0:
+        sp -= 1
+        f = stack[sp, 0]
+        l = stack[sp, 1]
+        depth = stack[sp, 2]
         while l - f > 16:
             if depth == 0:
-                _heap_sort(arr, arg, f, l)
+                _heap_sort(arr, a, f, l, nan_aware)
                 break
             depth -= 1
             mid = f + (l - f) // 2
-            _move_median_to_first(arr, arg, f, f + 1, mid, l - 1)
-            cut = _unguarded_partition(arr, arg, f + 1, l, f)
-            stack.append((cut, l, depth))
-            l = cut
-    # __final_insertion_sort
-    if last - first > 16:
-        _insertion_sort(arr, arg, first, first + 16)
+            x, y, z = f + 1, mid, l - 1
+            if _lt(arr, a[x], a[y], nan_aware):
+                if _lt(arr, a[y], a[z], nan_aware):
+                    m = y
+                elif _lt(arr, a[x], a[z], nan_aware):
+                    m = z
+                else:
+                    m = x
+            elif _lt(arr, a[x], a[z], nan_aware):
+                m = x
+            elif _lt(arr, a[y], a[z], nan_aware):
+                m = z
+            else:
+                m = y
+            t = a[f]
+            a[f] = a[m]
+            a[m] = t
+            lo = f + 1
+            hi = l
+            while True:
+                while _lt(arr, a[lo], a[f], nan_aware):
+                    lo += 1
+                hi -= 1
+                while _lt(arr, a[f], a[hi], nan_aware):
+                    hi -= 1
+                if not (lo < hi):
+                    break
+                t = a[lo]
+                a[lo] = a[hi]
+                a[hi] = t
+                lo += 1
+            stack[sp, 0] = lo
+            stack[sp, 1] = l
+            stack[sp, 2] = depth
+            sp += 1
+            l = lo
+    # final insertion sort
+    n = last - first
+    lim = first + 16 if n > 16 else last
+    for i in range(first + 1, lim):
+        v = a[i]
+        if _lt(arr, v, a[first], nan_aware):
+            for k in range(i, first, -1):
+                a[k] = a[k - 1]
+            a[first] = v
+        else:
+            j = i
+            while _lt(arr, v, a[j - 1], nan_aware):
+                a[j] = a[j - 1]
+                j -= 1
+            a[j] = v
+    if n > 16:
         for i in range(first + 16, last):
-            _unguarded_linear_insert(arr, arg, i)
-    else:
-        _insertion_sort(arr, arg, first, last)
+            v = a[i]
+            j = i
+            while _lt(arr, v, a[j - 1], nan_aware):
+                a[j] = a[j - 1]
+                j -= 1
+            a[j] = v
 
 
-@njit(cache=True)
-def _argsort_np126(arr):
+# ----------------------------------------------------------------------------- driver
+@numba.njit(cache=True, nogil=True)
+def _argsort_simd(arr, padval, is_float):
     n = arr.shape[0]
-    arg = np.arange(n, dtype=np.int64)
+    arg = np.arange(n).astype(np.int64)
     if n <= 1:
         return arg
-    max_iters = 2 * int(np.log2(n))
-    stack = [(0, n - 1, max_iters)]
-    while len(stack) > 0:
-        left, right, iters = stack.pop()
+    if is_float:
+        for i in range(n):
+            if arr[i] != arr[i]:
+                _std_sort(arr, arg, 0, n, True)
+                return arg
+    stack = np.empty((256, 3), dtype=np.int64)
+    stack[0, 0] = 0
+    stack[0, 1] = n - 1
+    stack[0, 2] = 2 * np.int64(np.log2(n))
+    sp = 1
+    samp = np.empty(8, dtype=arr.dtype)
+    while sp > 0:
+        sp -= 1
+        left = stack[sp, 0]
+        right = stack[sp, 1]
+        iters = stack[sp, 2]
         if iters <= 0:
-            _std_sort(arr, arg, left, right + 1)
+            _std_sort(arr, arg, left, right + 1, False)
             continue
         if right + 1 - left <= 64:
-            _small_sort(arr, arg, left, right + 1 - left)
+            _argsort_small(arr, arg, left, right + 1 - left, padval)
             continue
         if right - left >= 8:
             size = (right - left) // 8
-            s = np.empty(8)
-            for j in range(8):
-                s[j] = arr[arg[left + (8 - j) * size]]
-            pivot = np.sort(s)[4]
+            for i in range(8):
+                samp[i] = arr[arg[left + (i + 1) * size]]
+            pivot = np.sort(samp)[4]
         else:
             pivot = arr[arg[right]]
-        smallest = _INF
-        biggest = -_INF
-        for p in range(left, right + 1):
-            x = arr[arg[p]]
-            if x < smallest:
-                smallest = x
-            if x > biggest:
-                biggest = x
-        unroll = 1 if (right + 1 - left) <= 8 * 4 * 8 else 4
-        pivot_index = _partition(arr, arg, left, right + 1, pivot, unroll)
+        smallest = arr[arg[left]]
+        biggest = arr[arg[left]]
+        for i in range(left, right + 1):
+            v = arr[arg[i]]
+            if v < smallest:
+                smallest = v
+            if v > biggest:
+                biggest = v
+        unroll = 1 if (right + 1 - left) <= 256 else 4
+        pidx = _partition(arr, arg, left, right + 1, pivot, unroll)
         if pivot != biggest:
-            stack.append((pivot_index, right, iters - 1))
+            stack[sp, 0] = pidx
+            stack[sp, 1] = right
+            stack[sp, 2] = iters - 1
+            sp += 1
         if pivot != smallest:
-            stack.append((left, pivot_index - 1, iters - 1))
+            stack[sp, 0] = left
+            stack[sp, 1] = pidx - 1
+            stack[sp, 2] = iters - 1
+            sp += 1
     return arg
 
 
-def argsort_np126(a) -> np.ndarray:
-    """Permutation that numpy 1.26 ``np.argsort(a)`` returns on an AVX-512 CPU."""
-    a = np.ascontiguousarray(a, dtype=np.float64)
-    if a.ndim != 1:
-        raise ValueError("argsort_np126 expects a 1-D array")
-    if np.isnan(a).any():
-        raise ValueError("argsort_np126 does not support NaN")
-    return _argsort_np126(a)
+@numba.njit(cache=True, nogil=True)
+def _argsort_introsort(v):
+    # numpy's npy_aquicksort (used for dtypes x86-simd-sort does not cover)
+    num = v.shape[0]
+    tosort = np.arange(num).astype(np.int64)
+    if num < 2:
+        return tosort
+    pl = 0
+    pr = num - 1
+    stack = np.empty(256, np.int64)
+    sp = 0
+    depth = np.empty(128, np.int64)
+    dp = 0
+    cdepth = _lg(num) * 2
+    while True:
+        if cdepth < 0:
+            _std_sort(v, tosort, pl, pr + 1, False)  # pragma: no cover (heapsort fallback differs)
+        else:
+            while (pr - pl) > 15:
+                pm = pl + ((pr - pl) >> 1)
+                if v[tosort[pm]] < v[tosort[pl]]:
+                    tosort[pm], tosort[pl] = tosort[pl], tosort[pm]
+                if v[tosort[pr]] < v[tosort[pm]]:
+                    tosort[pr], tosort[pm] = tosort[pm], tosort[pr]
+                if v[tosort[pm]] < v[tosort[pl]]:
+                    tosort[pm], tosort[pl] = tosort[pl], tosort[pm]
+                vp = v[tosort[pm]]
+                pi = pl
+                pj = pr - 1
+                tosort[pm], tosort[pj] = tosort[pj], tosort[pm]
+                while True:
+                    pi += 1
+                    while v[tosort[pi]] < vp:
+                        pi += 1
+                    pj -= 1
+                    while vp < v[tosort[pj]]:
+                        pj -= 1
+                    if pi >= pj:
+                        break
+                    tosort[pi], tosort[pj] = tosort[pj], tosort[pi]
+                pk = pr - 1
+                tosort[pi], tosort[pk] = tosort[pk], tosort[pi]
+                if pi - pl < pr - pi:
+                    stack[sp] = pi + 1
+                    stack[sp + 1] = pr
+                    sp += 2
+                    pr = pi - 1
+                else:
+                    stack[sp] = pl
+                    stack[sp + 1] = pi - 1
+                    sp += 2
+                    pl = pi + 1
+                cdepth -= 1
+                depth[dp] = cdepth
+                dp += 1
+            for pi in range(pl + 1, pr + 1):
+                vi = tosort[pi]
+                vpp = v[vi]
+                pj = pi
+                pk = pi - 1
+                while pj > pl and vpp < v[tosort[pk]]:
+                    tosort[pj] = tosort[pk]
+                    pj -= 1
+                    pk -= 1
+                tosort[pj] = vi
+        if sp == 0:
+            break
+        sp -= 2
+        pl = stack[sp]
+        pr = stack[sp + 1]
+        dp -= 1
+        cdepth = depth[dp]
+    return tosort
+
+
+def argsort_np126(x: np.ndarray) -> np.ndarray:
+    """``np.argsort(x)`` exactly as numpy 1.26 computes it on an AVX-512 CPU."""
+    x = np.ascontiguousarray(x)
+    if x.ndim != 1:
+        raise ValueError("1-D input expected")
+    dt = x.dtype
+    if dt in (np.float32, np.float64):
+        return _argsort_simd(x, dt.type(np.inf), True)
+    if dt in (np.int32, np.uint32, np.int64, np.uint64):
+        return _argsort_simd(x, np.iinfo(dt).max, False)
+    if dt.kind in "iub" and dt.itemsize <= 2:
+        return _argsort_introsort(x)
+    return np.argsort(x, kind="quicksort")
 
 
 # ---------------------------------------------------------------------------
@@ -789,9 +853,10 @@ def log_np126(x) -> np.ndarray:
 
 
 def argsort_compat(x, compat: str = "numpy126") -> np.ndarray:
-    """``np.argsort(x)``: numpy 1.26 / AVX-512 order (``"numpy126"``) or installed numpy."""
+    """``np.argsort(x)`` of a float64 array: numpy 1.26 / AVX-512 order (``"numpy126"``)
+    or installed numpy."""
     if compat == "numpy126":
-        return argsort_np126(x)
+        return argsort_np126(np.asarray(x, dtype=np.float64))
     if compat == "native":
         return np.argsort(x)
     raise ValueError("compat must be 'numpy126' or 'native'")

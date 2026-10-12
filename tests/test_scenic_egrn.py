@@ -23,7 +23,7 @@ from epione.scenic._aucell import aucell, rank_cells
 from epione.scenic._egrn_basc import basc_threshold
 from epione.scenic._egrn_gsea import gene_set_seed, gsea_batch, permutations, significance
 from epione.scenic._egrn_triplet import map_regions, triplet_rank
-from epione.scenic._egrn_argsort import argsort_np126
+from epione.scenic._np126 import argsort_np126
 from epione.scenic._rss import regulon_specificity_scores
 
 
