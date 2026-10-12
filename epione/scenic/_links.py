@@ -2,10 +2,16 @@
 
 Ports of ``scenicplus.TF_to_gene.calculate_TFs_to_genes_relationships`` (GRNBoost2 /
 arboreto) and ``scenicplus.enhancer_to_gene.calculate_regions_to_genes_relationships``.
-The tree models run through :mod:`epione.scenic._sktree` (scikit-learn 1.3.2 semantics
-in numba, no dask / arboreto / joblib process pool), genes are fitted in a thread pool,
-and the tables are assembled with the same pandas operations as upstream so that rows,
-row order and values match scenicplus 1.0.
+Two backends:
+
+* ``method="exact"`` runs the tree models through :mod:`epione.scenic._sktree`
+  (scikit-learn 1.3.2 semantics in numba, no dask / arboreto / joblib process pool) with
+  genes fitted in a thread pool, and assembles the tables with the same pandas operations
+  as upstream, so rows, row order and values match scenicplus 1.0 bit for bit;
+* ``method="fast"`` (default) uses histogram trees (:mod:`epione.scenic._links_fast`):
+  same model family and table layout, binned features shared across targets, much
+  faster, but not bit-identical.  ``region_to_gene(method="corr")`` skips the models
+  and ranks regions by |correlation|.
 """
 from __future__ import annotations
 
@@ -13,6 +19,7 @@ import json
 import os
 import subprocess
 import sys
+import warnings
 from concurrent.futures import ThreadPoolExecutor
 from typing import Iterable, Literal, Sequence
 
@@ -23,6 +30,7 @@ from scipy.stats import rankdata
 
 from ._links_argsort import argsort_np126
 from ._sktree import gbm_importances, rf_importances
+from . import _links_fast as _fast
 
 __all__ = ["tf_to_gene", "region_to_gene", "hashseed0_set_order"]
 
@@ -30,6 +38,11 @@ __all__ = ["tf_to_gene", "region_to_gene", "hashseed0_set_order"]
 SGBM_KWARGS = dict(learning_rate=0.01, n_estimators=5000, max_features=0.1, subsample=0.9)
 GBM_KWARGS = dict(learning_rate=0.01, n_estimators=500, max_features=0.1)
 RF_KWARGS = dict(n_estimators=1000, max_features="sqrt")
+# method="fast" for region-to-gene: the same shrinkage budget (learning_rate x
+# n_estimators = 5) in half as many steps, and a 100-tree forest.  TF-to-gene keeps the
+# GRNBoost2 settings: its early stopping already ends most genes at 25-55 trees.
+FAST_GBM_KWARGS = dict(learning_rate=0.02, n_estimators=250, max_features=0.1)
+FAST_RF_KWARGS = dict(n_estimators=100, max_features="sqrt")
 EARLY_STOP_WINDOW_LENGTH = 25
 RHO_THRESHOLD = 0.03
 
@@ -124,9 +137,64 @@ def _run_parallel(fn, items, n_jobs):
         return list(ex.map(fn, items))
 
 
+def _resolve_method(method, model):
+    """``method`` used to be the model name (``"GBM"`` / ``"RF"``); keep accepting that."""
+    m = str(method)
+    if m.upper() in ("GBM", "RF"):
+        warnings.warn("tf_to_gene(method='GBM'|'RF') is deprecated: the model is now "
+                      "`model=`, and `method=` picks 'fast' or 'exact'. Using the exact "
+                      "backend as before.", FutureWarning, stacklevel=3)
+        return "exact", m.upper()
+    if m not in ("fast", "exact"):
+        raise ValueError(f"method must be 'fast' or 'exact', got {method!r}")
+    if str(model).upper() not in ("GBM", "RF"):
+        raise ValueError(f"Unsupported model: {model}")
+    return m, str(model).upper()
+
+
+def _keep_sorted(names, imp, target):
+    """Links with importance > 0, sorted like scenicplus (descending importance)."""
+    keep = imp > 0
+    if not keep.any():
+        return None
+    names, imp = names[keep], imp[keep]
+    o = _nargsort(imp, ascending=False)
+    return names[o], imp[o], target
+
+
 # ---------------------------------------------------------------------------
 # TF -> gene
 # ---------------------------------------------------------------------------
+def _tf_to_gene_fast(X, tf_cols, tf_name_arr, is_tf, target_idx, genes, model, seed, n_jobs):
+    """Histogram-tree TF2G for all targets in one parallel loop (see ``_links_fast``)."""
+    B, nbins, zbin = _fast.bin_columns(X[:, tf_cols])
+    binned = (B, nbins, zbin) + _fast.csc_nonzero(B, zbin)
+    p = len(tf_cols)
+    tf_pos = np.full(X.shape[1], -1, dtype=np.int64)
+    tf_pos[tf_cols] = np.arange(p)
+    target_idx = np.asarray(target_idx, dtype=np.int64)
+    # every target uses all TFs but itself
+    p_t = np.where(is_tf[target_idx], p - 1, p)
+    feat_ptr = np.r_[0, np.cumsum(p_t)].astype(np.int64)
+    feats = np.empty(feat_ptr[-1], dtype=np.int64)
+    allf = np.arange(p, dtype=np.int64)
+    for t, gi in enumerate(target_idx):
+        feats[feat_ptr[t]:feat_ptr[t + 1]] = allf[allf != tf_pos[gi]] if is_tf[gi] else allf
+    if model == "GBM":
+        imp, n_est = _fast.gbm_many(binned, X, target_idx, target_idx, feat_ptr, feats,
+                                    early_stop_window=EARLY_STOP_WINDOW_LENGTH, seed=seed,
+                                    n_jobs=n_jobs, **SGBM_KWARGS)
+        imp = imp * np.repeat(n_est, p_t)
+    else:
+        imp = _fast.rf_many(binned, X, target_idx, target_idx, feat_ptr, feats, seed=seed,
+                            n_jobs=n_jobs, **RF_KWARGS)
+    out = []
+    for t, gi in enumerate(target_idx):
+        f = feats[feat_ptr[t]:feat_ptr[t + 1]]
+        out.append(_keep_sorted(tf_name_arr[f], imp[feat_ptr[t]:feat_ptr[t + 1]], genes[gi]))
+    return out
+
+
 def _add_correlation(adj: pd.DataFrame, X, gene_pos, rho_threshold):
     tf_i = np.fromiter((gene_pos[t] for t in adj["TF"]), dtype=np.int64, count=len(adj))
     tg_i = np.fromiter((gene_pos[t] for t in adj["target"]), dtype=np.int64, count=len(adj))
@@ -145,7 +213,8 @@ def tf_to_gene(
     expression,
     tf_names: Iterable[str],
     *,
-    method: Literal["GBM", "RF"] = "GBM",
+    method: Literal["fast", "exact"] = "fast",
+    model: Literal["GBM", "RF"] = "GBM",
     seed: int = 666,
     n_jobs: int = 1,
     rho_threshold: float = RHO_THRESHOLD,
@@ -155,9 +224,9 @@ def tf_to_gene(
 ) -> pd.DataFrame:
     """TF-to-gene adjacencies as ``scenicplus`` computes them (GRNBoost2 + correlation).
 
-    For every target gene a gradient-boosting model (``method="GBM"``: arboreto's SGBM,
+    For every target gene a gradient-boosting model (``model="GBM"``: arboreto's SGBM,
     5000 trees max, ``subsample=0.9``, OOB early stopping with window 25; importances
-    multiplied by the number of trees) or a random forest (``method="RF"``) predicts its
+    multiplied by the number of trees) or a random forest (``model="RF"``) predicts its
     expression from the TFs' expression.  Links with importance > 0 are kept, Pearson
     ``rho`` and ``regulation`` (sign at ``|rho| > rho_threshold``) are added, and every TF
     is injected as its own target with importance ``max + 1e-5``.
@@ -167,6 +236,12 @@ def tf_to_gene(
     expression
         Cells x genes expression (raw counts in SCENIC+): AnnData, DataFrame or matrix with
         ``var_names``.  Values are used as float32, like the scenicplus MuData.
+    method
+        ``"fast"`` (default): histogram trees, TF columns binned once and shared by all
+        targets, sparse-aware histograms; not bit-identical to scenicplus.
+        ``"exact"``: scikit-learn 1.3.2 trees, bit-identical to scenicplus 1.0 (slow).
+    model
+        ``"GBM"`` (GRNBoost2, the SCENIC+ default) or ``"RF"``.
     tf_names
         Candidate regulators; the predictor columns are the genes that are TFs, in
         expression-matrix column order (as in arboreto).
@@ -183,6 +258,7 @@ def tf_to_gene(
     -------
     DataFrame ``TF, target, importance, regulation, rho``.
     """
+    method, model = _resolve_method(method, model)
     X, _, genes = _matrix(expression, var_names=var_names)
     X = np.asfortranarray(X)
     tf_set = set(tf_names)
@@ -201,22 +277,18 @@ def tf_to_gene(
             return None
         names = tf_name_arr[tf_cols != gi] if is_tf[gi] else tf_name_arr
         y = X[:, gi]
-        if method.upper() == "GBM":
+        if model == "GBM":
             imp, n_est = gbm_importances(X, y, cols=cols, seed=seed,
                                          early_stop_window=EARLY_STOP_WINDOW_LENGTH, **SGBM_KWARGS)
             imp = imp * n_est
-        elif method.upper() == "RF":
-            imp = rf_importances(X, y, cols=cols, seed=seed, **RF_KWARGS)
         else:
-            raise ValueError(f"Unsupported method: {method}")
-        keep = imp > 0
-        if not keep.any():
-            return None
-        names, imp = names[keep], imp[keep]
-        o = _nargsort(imp, ascending=False)
-        return names[o], imp[o], genes[gi]
+            imp = rf_importances(X, y, cols=cols, seed=seed, **RF_KWARGS)
+        return _keep_sorted(names, imp, genes[gi])
 
-    res = _run_parallel(fit, target_idx, n_jobs)
+    if method == "exact":
+        res = _run_parallel(fit, target_idx, n_jobs)
+    else:
+        res = _tf_to_gene_fast(X, tf_cols, tf_name_arr, is_tf, target_idx, genes, model, seed, n_jobs)
     res = [r for r in res if r is not None]
     tf_col = np.concatenate([r[0] for r in res]) if res else np.empty(0, dtype=object)
     imp_col = np.concatenate([r[1] for r in res]) if res else np.empty(0)
@@ -260,11 +332,49 @@ def _spearman_columns(A, y):
     return out
 
 
+def _region_to_gene_fast(EXPm, ACC, acc_idx, exp_cols, imp_kind, mask_expr_dropout, seed, n_jobs):
+    """Histogram-tree R2G importances for all genes in one parallel loop."""
+    if mask_expr_dropout:
+        # the cells differ per gene: fit gene by gene on its own binned submatrix
+        out = []
+        for cols, gc in zip(acc_idx, exp_cols):
+            y = EXPm[:, gc]
+            nz = y != 0
+            sub = ACC[np.ix_(nz, cols)]
+            B, nbins, zbin = _fast.bin_columns(sub)
+            binned = (B, nbins, zbin) + _fast.csc_nonzero(B, zbin)
+            Y = np.asfortranarray(y[nz].reshape(-1, 1))
+            fp = np.array([0, len(cols)], dtype=np.int64)
+            f = np.arange(len(cols), dtype=np.int64)
+            if imp_kind == "GBM":
+                imp, _ = _fast.gbm_many(binned, Y, [0], [gc], fp, f, seed=seed, n_jobs=1, **FAST_GBM_KWARGS)
+            else:
+                imp = _fast.rf_many(binned, Y, [0], [gc], fp, f, seed=seed, n_jobs=1, **FAST_RF_KWARGS)
+            out.append(imp)
+        return out
+    used = np.unique(np.concatenate(acc_idx)) if len(acc_idx) else np.empty(0, dtype=np.int64)
+    B, nbins, zbin = _fast.bin_columns(ACC[:, used])
+    # accessibility is dense: the sparse histogram path would not pay off
+    binned = (B, nbins, zbin, np.zeros(len(used) + 1, dtype=np.int64), np.empty(0, dtype=np.int32),
+              np.empty(0, dtype=B.dtype))
+    feats = np.searchsorted(used, np.concatenate(acc_idx)).astype(np.int64) if len(acc_idx) else np.empty(0, dtype=np.int64)
+    feat_ptr = np.r_[0, np.cumsum([len(c) for c in acc_idx])].astype(np.int64)
+    Y = np.asfortranarray(EXPm)
+    if imp_kind == "GBM":
+        imp, _ = _fast.gbm_many(binned, Y, exp_cols, exp_cols, feat_ptr, feats, seed=seed,
+                                n_jobs=n_jobs, use_sparse=False, **FAST_GBM_KWARGS)
+    else:
+        imp = _fast.rf_many(binned, Y, exp_cols, exp_cols, feat_ptr, feats, seed=seed,
+                            n_jobs=n_jobs, use_sparse=False, **FAST_RF_KWARGS)
+    return [imp[feat_ptr[i]:feat_ptr[i + 1]] for i in range(len(acc_idx))]
+
+
 def region_to_gene(
     expression,
     accessibility,
     search_space: pd.DataFrame,
     *,
+    method: Literal["fast", "exact", "corr"] = "fast",
     importance: Literal["GBM", "RF"] = "GBM",
     correlation: Literal["SR", "PR"] = "SR",
     mask_expr_dropout: bool = False,
@@ -291,6 +401,12 @@ def region_to_gene(
         accessibility in SCENIC+).
     search_space
         ``Name``, ``Gene`` (and ``Distance``) table from :func:`get_search_space`.
+    method
+        ``"fast"`` (default): histogram trees on accessibility binned once for all genes,
+        with the GBM's shrinkage taken in half as many steps (``learning_rate=0.02``,
+        250 trees instead of 0.01 x 500) and 100 instead of 1000 trees for the forest.
+        ``"exact"``: scikit-learn 1.3.2 trees, bit-identical to scenicplus 1.0 (slow).
+        ``"corr"``: no model; the importance is the absolute correlation (``correlation``).
     targets
         Only fit these genes.  The region (feature) order of each gene is still derived
         from the whole search space, exactly as scenicplus does, so the result for a gene
@@ -332,6 +448,16 @@ def region_to_gene(
     imp_kind = importance.upper()
     if imp_kind not in ("GBM", "RF"):
         raise ValueError("Unsuported regression model")
+    if method not in ("fast", "exact", "corr"):
+        raise ValueError(f"method must be 'fast', 'exact' or 'corr', got {method!r}")
+    if correlation.upper() not in ("SR", "PR"):
+        raise ValueError("Unsuported regression model")
+
+    def corr(A, y):
+        if correlation.upper() == "SR":
+            return _spearman_columns(A, y)
+        Ad = A.astype(np.float64)
+        return np.array([np.corrcoef(Ad[:, j], y.astype(np.float64))[0, 1] for j in range(A.shape[1])])
 
     def fit(i):
         cols = acc_idx[i]
@@ -345,16 +471,27 @@ def region_to_gene(
             imp, _ = gbm_importances(Af, y, seed=seed, **GBM_KWARGS)
         else:
             imp = rf_importances(Af, y, seed=seed, **RF_KWARGS)
-        if correlation.upper() == "SR":
-            rho = _spearman_columns(A, y)
-        elif correlation.upper() == "PR":
-            Ad = A.astype(np.float64)
-            rho = np.array([np.corrcoef(Ad[:, j], y.astype(np.float64))[0, 1] for j in range(A.shape[1])])
-        else:
-            raise ValueError("Unsuported regression model")
-        return imp, rho
+        return imp, corr(A, y)
 
-    res = _run_parallel(fit, range(len(uniq)), n_jobs)
+    def rho_only(i):
+        cols = acc_idx[i]
+        y = EXPm[:, exp_cols[i]]
+        A = ACC[:, cols]
+        if mask_expr_dropout:
+            nz = y != 0
+            y, A = y[nz], A[nz]
+        return corr(A, y)
+
+    if method == "exact":
+        res = _run_parallel(fit, range(len(uniq)), n_jobs)
+    else:
+        rhos = _run_parallel(rho_only, range(len(uniq)), n_jobs)
+        if method == "corr":
+            imps = [np.nan_to_num(np.abs(r)) for r in rhos]
+        else:
+            imps = _region_to_gene_fast(EXPm, ACC, acc_idx, exp_cols, imp_kind, mask_expr_dropout,
+                                        seed, n_jobs)
+        res = list(zip(imps, rhos))
     target = np.concatenate([np.full(len(c), g, dtype=object) for g, c in zip(uniq, acc_idx)]) if len(uniq) else np.empty(0, dtype=object)
     region = np.concatenate([rnames_arr[c] for c in acc_idx]) if len(uniq) else np.empty(0, dtype=object)
     imp = np.concatenate([r[0] for r in res]) if res else np.empty(0)

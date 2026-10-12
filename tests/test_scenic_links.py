@@ -170,11 +170,12 @@ def _toy_multiome():
     return expr, acc, regions, ss
 
 
-def test_tf_to_gene_schema_and_thread_invariance():
+@pytest.mark.parametrize("method", ["exact", "fast"])
+def test_tf_to_gene_schema_and_thread_invariance(method):
     expr, *_ = _toy_multiome()
     tfs = ["G0", "G1", "G2", "G3"]
-    a = sc.tf_to_gene(expr, tfs, n_jobs=1)
-    b = sc.tf_to_gene(expr, tfs, n_jobs=3)
+    a = sc.tf_to_gene(expr, tfs, method=method, n_jobs=1)
+    b = sc.tf_to_gene(expr, tfs, method=method, n_jobs=3)
     assert list(a.columns) == ["TF", "target", "importance", "regulation", "rho"]
     pd.testing.assert_frame_equal(a, b)
     self_rows = a[a.TF == a.target]
@@ -184,18 +185,113 @@ def test_tf_to_gene_schema_and_thread_invariance():
     assert g5.TF.iloc[0] == "G0" and g5.regulation.iloc[0] == 1
 
 
-def test_region_to_gene_schema_and_thread_invariance():
+@pytest.mark.parametrize("method", ["exact", "fast"])
+def test_region_to_gene_schema_and_thread_invariance(method):
     expr, acc, regions, ss = _toy_multiome()
-    a = sc.region_to_gene(expr, acc, ss, n_jobs=1, accessibility_var_names=regions)
-    b = sc.region_to_gene(expr, acc, ss, n_jobs=4, accessibility_var_names=regions)
+    a = sc.region_to_gene(expr, acc, ss, method=method, n_jobs=1, accessibility_var_names=regions)
+    b = sc.region_to_gene(expr, acc, ss, method=method, n_jobs=4, accessibility_var_names=regions)
     pd.testing.assert_frame_equal(a, b)
     assert list(a.columns) == ["target", "region", "importance", "rho", "importance_x_rho",
                                "importance_x_abs_rho", "Distance"]
     assert len(a) == len(ss)
     np.testing.assert_allclose(a.groupby("target").importance.sum(), 1.0)
-    c = sc.region_to_gene(expr, acc, ss, importance="RF", n_jobs=2, accessibility_var_names=regions,
-                          targets=["G1", "G2"])
+    c = sc.region_to_gene(expr, acc, ss, method=method, importance="RF", n_jobs=2,
+                          accessibility_var_names=regions, targets=["G1", "G2"])
     assert set(c.target) == {"G1", "G2"}
+
+
+# ---------------------------------------------------------------------------
+# fast modes
+# ---------------------------------------------------------------------------
+def test_bin_columns_is_lossless_and_ordered():
+    from epione.scenic import _links_fast as F
+    rs = np.random.RandomState(0)
+    X = np.c_[rs.poisson(0.3, 500), rs.randn(500), np.round(rs.gamma(2, 2, 500), 1), np.zeros(500)]
+    B, nb, zb = F.bin_columns(X)
+    assert B.dtype == np.uint16                            # column 1 has 500 distinct values
+    assert F.bin_columns(X[:, [0, 3]])[0].dtype == np.uint8
+    for j in range(X.shape[1]):
+        u, inv = np.unique(X[:, j], return_inverse=True)
+        assert nb[j] == len(u)
+        np.testing.assert_array_equal(B[:, j], inv)      # one bin per value, in value order
+    assert zb[0] == 0 and zb[1] == -1 and zb[3] == 0       # negative values -> no zero bin
+    # above max_bins the bins are quantiles but stay monotone in the value
+    B2, nb2, _ = F.bin_columns(X[:, 1:2], max_bins=16)
+    assert nb2[0] <= 16
+    o = np.argsort(X[:, 1], kind="stable")
+    assert (np.diff(B2[o, 0].astype(int)) >= 0).all()
+
+
+def test_csc_nonzero_matches_bins():
+    from epione.scenic import _links_fast as F
+    rs = np.random.RandomState(1)
+    X = rs.poisson(0.2, size=(300, 6)).astype(np.float32)
+    B, nb, zb = F.bin_columns(X)
+    ip, ix, iv = F.csc_nonzero(B, zb)
+    for j in range(6):
+        rows = ix[ip[j]:ip[j + 1]]
+        np.testing.assert_array_equal(rows, np.flatnonzero(X[:, j] != 0))
+        np.testing.assert_array_equal(iv[ip[j]:ip[j + 1]], B[rows, j])
+
+
+def test_sparse_and_dense_histograms_agree():
+    """The sparse (column non-zeros + zero-bin remainder) path grows the same trees."""
+    from epione.scenic import _links_fast as F
+    X, y = _toy()
+    B, nb, zb = F.bin_columns(X)
+    binned = (B, nb, zb) + F.csc_nonzero(B, zb)
+    Y = np.asfortranarray(np.c_[y])
+    fp = np.array([0, X.shape[1]])
+    f = np.arange(X.shape[1])
+    kw = dict(learning_rate=0.05, n_estimators=60, max_features=0.5, subsample=0.9, seed=3)
+    a, na = F.gbm_many(binned, Y, [0], [7], fp, f, use_sparse=True, **kw)
+    b, nb_ = F.gbm_many(binned, Y, [0], [7], fp, f, use_sparse=False, **kw)
+    np.testing.assert_allclose(a, b, rtol=1e-9, atol=1e-12)
+    assert na[0] == nb_[0]
+
+
+def test_fast_gbm_recovers_signal_and_is_seeded_per_target():
+    from epione.scenic import _links_fast as F
+    X, y = _toy()
+    B, nb, zb = F.bin_columns(X)
+    binned = (B, nb, zb) + F.csc_nonzero(B, zb)
+    Y = np.asfortranarray(np.c_[y, y])
+    fp = np.array([0, 15, 30])
+    f = np.r_[np.arange(15), np.arange(15)]
+    kw = dict(learning_rate=0.05, n_estimators=200, max_features=0.3)
+    imp, _ = F.gbm_many(binned, Y, [0, 1], [11, 11], fp, f, **kw)
+    np.testing.assert_allclose(imp[:15].sum(), 1.0)
+    assert set(np.argsort(imp[:15])[-2:]) == {0, 3}          # the two true predictors
+    np.testing.assert_array_equal(imp[:15], imp[15:])          # same key -> same model
+    imp2, _ = F.gbm_many(binned, Y, [0, 1], [11, 12], fp, f, **kw)
+    assert not np.array_equal(imp2[:15], imp2[15:])            # another key -> another stream
+    rf = F.rf_many(binned, Y, [0], [5], fp[:2], f[:15], n_estimators=50, max_features="sqrt")
+    assert set(np.argsort(rf)[-2:]) == {0, 3}
+
+
+def test_fast_links_agree_with_exact_on_toy():
+    expr, acc, regions, ss = _toy_multiome()
+    tfs = ["G0", "G1", "G2", "G3"]
+    fa = sc.tf_to_gene(expr, tfs, method="fast")
+    ex = sc.tf_to_gene(expr, tfs, method="exact")
+    for t in ("G5",):
+        top = lambda d: d[(d.target == t) & (d.TF != d.target)].nlargest(1, "importance").TF.iloc[0]
+        assert top(fa) == top(ex)
+    rf = sc.region_to_gene(expr, acc, ss, method="fast", accessibility_var_names=regions)
+    re_ = sc.region_to_gene(expr, acc, ss, method="exact", accessibility_var_names=regions)
+    pd.testing.assert_frame_equal(rf[["target", "region", "rho", "Distance"]],
+                                  re_[["target", "region", "rho", "Distance"]])
+    co = sc.region_to_gene(expr, acc, ss, method="corr", accessibility_var_names=regions)
+    np.testing.assert_allclose(co.importance, np.abs(co.rho.fillna(0)))
+
+
+def test_method_argument_validation_and_legacy_alias():
+    expr, *_ = _toy_multiome()
+    with pytest.raises(ValueError):
+        sc.tf_to_gene(expr, ["G0"], method="slow")
+    with pytest.warns(FutureWarning):
+        a = sc.tf_to_gene(expr, ["G0", "G1", "G2", "G3"], method="GBM")
+    pd.testing.assert_frame_equal(a, sc.tf_to_gene(expr, ["G0", "G1", "G2", "G3"], method="exact"))
 
 
 def test_hashseed0_set_order():
