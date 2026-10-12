@@ -176,3 +176,51 @@ budget in half the steps (`learning_rate=0.02`, 250 trees), about 3×; `learning
 bin per distinct value, up to 65,535. With 255 quantile bins, the subset top-50 Jaccard
 fell below the exact seed spread (0.235 vs 0.266). The registered gates F1–F7 are as
 written above.
+
+### Results (registered run; thresholds above unchanged)
+
+`validate_fast.py` on the full data (2,313 cells; TF2G 30,015 expressed targets with links,
+R2G 17,750 genes with ≥ 10 candidate regions), 8 threads, `PYTHONHASHSEED=0`. Exact
+seed-spread baseline: `method="exact"` with seed 667 against the scenicplus reference
+(seed 666).
+
+| # | Metric | fast | exact seed spread | threshold | Gate |
+|---|--------|------|-------------------|-----------|------|
+| F1 | TF2G median per-target Spearman | −0.104 | −0.113 | ≥ −0.113 | PASS |
+| F2 | TF2G median top-50 Jaccard | 0.282 | 0.266 | ≥ 0.266 | PASS |
+| F3 | R2G median per-target Spearman | 0.891 | 0.920 | ≥ 0.8 | PASS |
+| F4 | R2G median top-10 Jaccard | 0.667 | 0.667 | ≥ 0.6 | PASS |
+| F5 | eGRN TF-set Jaccard, direct | 0.404 | 0.408 | ≥ 0.408 | **FAIL** |
+| F5 | eGRN TF-set Jaccard, extended | 0.500 | 0.456 | ≥ 0.456 | PASS |
+| F6 | eGRN median target-gene Jaccard, direct | 0.453 | 0.422 | ≥ 0.422 | PASS |
+| F6 | eGRN median target-gene Jaccard, extended | 0.452 | 0.435 | ≥ 0.435 | PASS |
+| F7 | `n_jobs=1` vs 8 (500 targets, TF2G and R2G); subset run equals full run | identical | | | PASS |
+
+F5 (direct) misses by 0.005, about one TF: fast links give 67 TFs with direct eRegulons
+(94 eRegulons), the exact seed-667 run 83 TFs (114), the reference 86 (125). Fewer
+eRegulons, not different ones: the target-gene overlap of the eRegulons both have (F6) is
+higher for fast than for the second exact run.
+
+The seed-spread baseline is itself a finding. For two exact SCENIC+ runs that differ only in
+the TF2G / R2G seed, the eRegulon TF sets have a Jaccard index of 0.41 (direct) and 0.46
+(extended), and the median target-gene Jaccard of shared eRegulons is 0.42 / 0.43. The instability comes from GRNBoost2's
+random feature draws on genes that stop at 25 trees.
+
+`method="corr"` R2G (reported, no gate): Spearman 0.285, top-10 Jaccard 0.176; with fast
+TF2G, eGRN TF-set Jaccard 0.386 / 0.397 and target-gene Jaccard 0.374 / 0.362 (direct /
+extended).
+
+#### Timing (full data, 8 threads, same shared allocation)
+
+| Step | `method="exact"` | `method="fast"` | speedup | `method="corr"` |
+|---|---|---|---|---|
+| TF2G (GRNBoost2, 36,601 targets) | 1,758 s | 234 s | 7.5× | — |
+| R2G GBM (18,549 genes, 1.57 M pairs) | 1,119 s | 212 s | 5.3× | 38 s (29×) |
+
+The ≥ 10× target is not met. Single-thread profiling of TF2G: 50 ms per target (fast) vs
+430 ms (exact), 8.6×, with early stopping at the same ~27 trees. The remaining cost is about
+half histogram accumulation (~4 ns per non-zero entry, bound by the dependency chain on
+the bin counters) and half per-draw overhead from scikit-learn's rule of redrawing constant
+features. For R2G, the exact splitter is already cheap on few-valued accessibility (at
+most 33 distinct values per region). R2G random forest (not gated; 600-target subset vs the
+reference): 5.8× faster than exact, Spearman 0.984, top-10 Jaccard 0.818.
