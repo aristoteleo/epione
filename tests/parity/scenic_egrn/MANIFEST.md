@@ -77,7 +77,7 @@ Reproducibility notes (why exactness does not depend on the installed numpy/SciP
 * SCENIC+ breaks ties by shuffling and then calling numpy's unstable `argsort`. On AVX-512 CPUs
   numpy 1.26 uses x86-simd-sort; numpy 2.x ships a newer version with a different tie order
   (36–61% of AUC values change, by up to 0.024; most triplet ranks change).
-  `epione/scenic/_egrn_argsort.py` emulates numpy 1.26's algorithm exactly. It was checked
+  `epione/scenic/_egrn_argsort.py` (now merged into `_np126.py`) emulates numpy 1.26's algorithm exactly. It was checked
   against `np.argsort` under numpy 1.26.4 on 672 tie-heavy arrays (int32/uint32/int64/float32/
   float64/int16, n = 2..100,000), with no mismatch.
 * numpy 1.x summed reductions in 8,192-element blocks (TF rankings reach 12,630 genes); the

@@ -28,7 +28,7 @@ import pandas as pd
 import scipy.sparse as sp
 from scipy.stats import rankdata
 
-from ._links_argsort import argsort_np126
+from ._np126 import argsort_np126
 from ._sktree import gbm_importances, rf_importances
 from . import _links_fast as _fast
 

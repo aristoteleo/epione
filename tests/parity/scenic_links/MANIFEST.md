@@ -78,7 +78,7 @@ Two order details had to be reproduced to pass rows 1 and 5:
   `np.argsort(kind="quicksort")`; 4.7 % of the importances are tied, and their order
   depends on numpy's SIMD sort (numpy 1.26 AVX-512 x86-simd-sort for the reference; numpy
   2.x orders ties differently). Float keys are sorted with an emulation of the numpy 1.26
-  AVX-512 argsort (`_links_argsort.py`, shared with the eGRN block). The TF → TF rows are
+  AVX-512 argsort (`_links_argsort.py`, now merged into `_np126.py` with the topics and eGRN copies). The TF → TF rows are
   emitted in `PYTHONHASHSEED=0` set order with `self_link_order="upstream"`.
 
 ### Timing

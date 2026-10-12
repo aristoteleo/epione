@@ -26,7 +26,7 @@ import numpy as np
 import pandas as pd
 from scipy import sparse
 
-from ._egrn_argsort import argsort_np126
+from ._np126 import argsort_np126
 
 __all__ = ["CellRanking", "rank_cells", "aucell", "eregulon_signatures", "score_eregulons"]
 
