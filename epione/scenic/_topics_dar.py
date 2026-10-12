@@ -28,6 +28,7 @@ import pandas as pd
 import scipy.sparse as sp
 from scipy import special
 
+from ._dem import p_adjust_bh as _p_adjust_bh
 from ._np126 import argsort_compat, log1p_compat, log_compat
 from ._topics import TopicModel
 
@@ -383,18 +384,6 @@ def _log2_fc(fg_mean, bg_mean):
     for i in range(fg_mean.shape[0]):
         out[i] = np.log2((fg_mean[i] + 10 ** -12) / (bg_mean[i] + 10 ** -12))
     return out
-
-
-def _p_adjust_bh(pvals) -> np.ndarray:
-    """Benjamini-Hochberg q-values (step-up, capped at 1)."""
-    pvals = np.asarray(pvals, dtype=float)
-    n = len(pvals)
-    desc = pvals.argsort()[::-1]                     # largest p first
-    scale = float(n) / np.arange(n, 0, -1)           # n / rank
-    q_desc = np.minimum(1, np.minimum.accumulate(scale * pvals[desc]))
-    q = np.empty(n)
-    q[desc] = q_desc
-    return q
 
 
 def find_diff_features(

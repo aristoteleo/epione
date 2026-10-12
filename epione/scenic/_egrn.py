@@ -30,21 +30,12 @@ from scipy import sparse
 
 from ._egrn_basc import basc_thresholds_grouped
 from ._egrn_gsea import gene_set_seed, gsea_batch, permutations, significance
+from ._dem import p_adjust_bh
 from ._np126 import argsort_np126
 
 __all__ = ["build_egrn", "p_adjust_bh"]
 
 REGIONS2GENES_COLUMNS = ["region", "target", "importance", "rho", "importance_x_rho", "importance_x_abs_rho"]
-
-
-def p_adjust_bh(p) -> np.ndarray:
-    """Benjamini-Hochberg adjusted p-values (same operation order as SCENIC+/pycisTopic)."""
-    p = np.asarray(p, dtype=float)
-    by_descend = p.argsort()[::-1]
-    by_orig = by_descend.argsort()
-    steps = float(len(p)) / np.arange(len(p), 0, -1)
-    q = np.minimum(1, np.minimum.accumulate(steps * p[by_descend]))
-    return q[by_orig]
 
 
 def _sort_descending(values: np.ndarray) -> np.ndarray:
