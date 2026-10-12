@@ -99,3 +99,68 @@ The tree models do the same work as scikit-learn's Cython code; reproducing its 
 order (introsort ties, Fisher-Yates feature draws) rules out algorithmic shortcuts such as
 presorting. The per-tree speedup comes from removing the Python, joblib and dask overhead
 around each tree.
+
+## Fast modes (`method="fast"`, `method="corr"`): pre-registered validation
+
+Registered **before** any fast-mode code was written or run; the gates above (rows 1–11,
+`method="exact"`) are unchanged and still apply to the exact path.
+
+`method="fast"` is not meant to reproduce scikit-learn. It is a histogram GBM (features
+binned once and shared across targets, GRNBoost2-like semantics: least squares, depth-3
+trees, learning rate 0.01, subsample 0.9 with arboreto's OOB early stopping for TF2G,
+500 trees for R2G, gain importances, correlation sign). `method="corr"` (R2G only) ranks
+regions by |correlation| alone. The question is whether the fast links are as good a
+substitute for the exact links as the exact method is for itself.
+
+### Why the coordinator's fixed thresholds can't be the whole gate
+
+Before registering, the exact method was compared **with itself** across seeds
+(seed 666 vs 667, 300 random expressed targets; metric definitions below):
+
+| | median per-target Spearman | median top-k Jaccard |
+|---|---|---|
+| TF2G, exact vs exact | −0.11 | 0.27 (k = 50) |
+| R2G GBM, exact vs exact | 0.92 | 0.67 (k = 10) |
+
+GRNBoost2 with arboreto's monitor stops most targets at the 25-tree minimum (seen on a
+probe of 12 genes: 25–55 trees). Each depth-3 tree samples 10 % of the 1,597 TFs per node,
+so the ~50–150 TFs with non-zero importance are largely a random draw: the exact method
+reproduces only a quarter of its own top-50 under another seed. A fixed "Spearman ≥ 0.8,
+top-50 Jaccard ≥ 0.6" gate for TF2G would fail for the reference method itself. So each
+gate below is `min(fixed threshold, exact-vs-exact spread)`. The fixed threshold applies
+where the exact method itself meets it, and otherwise the fast mode must agree with the
+reference at least as well as a second exact run with another seed does. The spread is
+re-measured on the **full** data (exact seed 667 vs the reference seed 666), not taken
+from the probe.
+
+### Metrics
+
+* Per-target Spearman: for each target, Spearman correlation of the importances over the
+  union of the links either method reports (a link missing on one side counts as 0);
+  targets with fewer than 3 such links are skipped; the median over targets is gated.
+  R2G uses targets with ≥ 10 candidate regions.
+* Top-k Jaccard: Jaccard of the top-k links by importance per target (TF2G k = 50; R2G
+  k = 10, because the median gene has about 85 candidate regions, so its top 50 would be
+  more than half of all candidates); median over targets.
+* Downstream: `epione.scenic.build_egrn` (block ④, `PYTHONHASHSEED=0`) on the reference
+  cistromes (`A/scplus_inputs`, direct and extended), with TF2G and R2G both from the
+  method under test, compared with the reference eRegulons (`A/egrn`). TF-set Jaccard is
+  the Jaccard of the sets of TFs that have at least one eRegulon. The target-gene
+  Jaccard is computed per eRegulon name present in both, and its median is gated.
+
+### Gates (`method="fast"`, seed 666, full data, vs the exact reference)
+
+| # | Output | Gate |
+|---|--------|------|
+| F1 | TF2G median per-target Spearman | ≥ min(0.8, exact seed spread) |
+| F2 | TF2G median top-50 Jaccard | ≥ min(0.6, exact seed spread) |
+| F3 | R2G (GBM importance) median per-target Spearman | ≥ min(0.8, exact seed spread) |
+| F4 | R2G (GBM importance) median top-10 Jaccard | ≥ min(0.6, exact seed spread) |
+| F5 | eGRN TF-set Jaccard, direct and extended | ≥ min(0.8, exact seed spread) |
+| F6 | eGRN median target-gene Jaccard, direct and extended | ≥ min(0.6, exact seed spread) |
+| F7 | `fast` with `n_jobs=1` vs `n_jobs=N` | identical (determinism) |
+
+Timing is reported, not gated: full TF2G and R2G wall time per mode with the thread
+count, against `method="exact"` at the same thread count (target ≥ 10×).
+`method="corr"` (R2G) is reported on F3, F4 and the downstream metrics without a pass/fail.
+For downstream comparisons it is paired with the `fast` TF2G links.
