@@ -138,7 +138,8 @@ def p_adjust_bh(p: np.ndarray) -> np.ndarray:
 
     Walks the p-values from largest to smallest, scaling each by
     ``n / rank`` and taking the running minimum (capped at 1). Ties receive
-    the same adjusted value whatever their order.
+    the same adjusted value whatever their order, so the result does not depend on the
+    sort's tie order.  Shared by the DEM, DAR (topics) and eGRN steps.
     """
     p = np.asarray(p, dtype=np.float64)
     n = len(p)
