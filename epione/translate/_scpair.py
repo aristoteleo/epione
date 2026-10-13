@@ -193,8 +193,14 @@ class ScPair(TranslationModel):
     Parameters
     ----------
     fast
-        bf16 autocast on CUDA and batch 520. Validated separately; see
+        bf16 autocast on CUDA and batch 520. **Not equivalent** to the default
+        (RNA->ATAC clustering drops) and only about 1.2x faster on PBMC 10k; see
         ``tests/parity/translate_scpair/MANIFEST.md``.
+
+    Notes
+    -----
+    Validated against scTranslation's scPair on PBMC 10k (3 seeds a side):
+    23 of 23 metric x direction pairs within the reference seed spread.
     **kwargs
         Any :class:`ScPairConfig` field.
     """
