@@ -114,6 +114,8 @@ test = [
     # the embedding format upstream scooby reads
     # (tests/test_scooby_targets.py).
     'pyarrow',
+    # epi.tl.tsne (tests/test_multimodal.py).
+    'openTSNE>=1.0',
 ]
 translate = [
     # epione.translate methods (scButterfly, ...); prepare/metrics need none of these.
@@ -124,8 +126,14 @@ scenic = [
     'pyarrow',
     'tables',
 ]
+multimodal = [
+    # epi.tl.multivi, epi.tl.tsne, epi.io.read_10x_multiome(backed=...)
+    'scvi-tools>=1.3',
+    'openTSNE>=1.0',
+    'mudataoom',
+]
 full = [
-    'epione[diffexp,motif,footprint,upstream,scenic,translate]',
+    'epione[diffexp,motif,footprint,upstream,scenic,translate,multimodal]',
 ]
 
 
