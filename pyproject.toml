@@ -132,8 +132,14 @@ multimodal = [
     'openTSNE>=1.0',
     'mudataoom',
 ]
+doublets = [
+    # epi.pp.scdblfinder / amulet / clamulet (scATAC mode of the omicverse scDblFinder port).
+    'pyscdblfinder>=0.3.0',
+    # epi.pp.archr_doublets: Louvain clustering inside the iterative LSI.
+    'igraph',
+]
 full = [
-    'epione[diffexp,motif,footprint,upstream,scenic,translate,multimodal]',
+    'epione[diffexp,motif,footprint,upstream,scenic,translate,multimodal,doublets]',
 ]
 
 
