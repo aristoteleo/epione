@@ -80,6 +80,7 @@ tutorials/single/clusters
 tutorials/single/regulation
 tutorials/single/footprints
 tutorials/single/scenic
+tutorials/single/multimodal
 tutorials/single/translation
 tutorials/single/hic
 ```

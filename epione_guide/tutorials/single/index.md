@@ -44,6 +44,13 @@ TF footprinting, PRINT and sequence-to-profile deep learning models.
 The full SCENIC+ pipeline, from topics to eRegulons, with bit-exact parity to the reference implementation.
 :::
 
+:::{grid-item-card} Multimodal analysis
+:link: multimodal
+:link-type: doc
+
+Joint embeddings, weighted nearest neighbours and deep generative latent spaces for paired RNA + ATAC cells.
+:::
+
 :::{grid-item-card} Cross-modality translation
 :link: translation
 :link-type: doc
