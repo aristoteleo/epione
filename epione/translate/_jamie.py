@@ -247,8 +247,15 @@ class JAMIE(TranslationModel):
     Parameters
     ----------
     fast
-        bf16 autocast on CUDA and batch 512. Validated separately; see
-        ``tests/parity/translate_jamie/MANIFEST.md``.
+        bf16 autocast on CUDA and batch 512: about 2x faster but **not
+        equivalent** to the default; see ``tests/parity/translate_jamie/MANIFEST.md``.
+
+    Notes
+    -----
+    Validated against scTranslation's JAMIE on PBMC 10k (3 seeds a side):
+    20 of 21 gated metric x direction pairs within tolerance. The miss is
+    RNA->ATAC Leiden ARI (0.505 vs 0.473); Leiden differs between the two
+    environments by about +0.006 to +0.02 on the reference's own predictions.
     **kwargs
         Any :class:`JAMIEConfig` field.
     """
