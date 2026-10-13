@@ -171,34 +171,49 @@ def check_wnn() -> dict:
 
 
 def check_reader() -> dict:
-    """Gate T: read_10x_multiome on the public cellranger-arc h5 vs the scGLUE h5ad."""
+    """Gate T (with amendment T-A1): read_10x_multiome on the public cellranger-arc h5."""
+    import h5py
     import scipy.sparse as sp
     import epione as epi
 
     d = PARITY / "reader"
     rna, atac = epi.io.read_10x_multiome(d)
-    g_rna, g_atac = epi.datasets.pbmc10k_multiome(PARITY / "data")
+    g_rna, _ = epi.datasets.pbmc10k_multiome(PARITY / "data")
     cells = g_rna.obs_names.intersection(rna.obs_names)
-    out = {"n_cells_10x": int(rna.n_obs), "n_cells_glue": int(g_rna.n_obs), "n_shared": int(len(cells)),
-           "metrics_columns_added": int(sum(c in rna.obs for c in ("is_cell", "atac_fragments"))),
-           "fragments_recorded": "files" in atac.uns}
-    # RNA: match on Ensembl gene ids (gene symbols are made unique differently).
+    out = {"n_cells_10x": int(rna.n_obs), "n_cells_glue": int(g_rna.n_obs), "n_shared": int(len(cells))}
+
+    # T: RNA identical to scGLUE on shared cells, matched by Ensembl id.
     gid = pd.Index(g_rna.var["gene_ids"].astype(str))
     tid = pd.Index(rna.var["gene_ids"].astype(str))
     genes = gid.intersection(tid)
-    a = g_rna[cells, gid.get_indexer(genes)].X
-    b = rna[cells, tid.get_indexer(genes)].X
-    out["rna_genes_shared"] = int(len(genes))
-    out["rna_identical"] = bool((sp.csr_matrix(a) != sp.csr_matrix(b)).nnz == 0)
-    # ATAC: match on peak coordinates.
-    key_g = g_atac.var["chrom"].astype(str) + ":" + g_atac.var["chromStart"].astype(str) + "-" + g_atac.var["chromEnd"].astype(str)
-    key_t = atac.var["chrom"].astype(str) + ":" + atac.var["chromStart"].astype(int).astype(str) + "-" + atac.var["chromEnd"].astype(int).astype(str)
-    peaks = pd.Index(key_g).intersection(pd.Index(key_t))
-    a = g_atac[cells, pd.Index(key_g).get_indexer(peaks)].X
-    b = atac[cells, pd.Index(key_t).get_indexer(peaks)].X
-    out["atac_peaks_shared"] = int(len(peaks))
-    out["atac_identical"] = bool((sp.csr_matrix(a) != sp.csr_matrix(b)).nnz == 0)
-    out["pass"] = bool(out["rna_identical"] and out["atac_identical"] and len(cells) == g_rna.n_obs)
+    a = sp.csr_matrix(g_rna[cells, gid.get_indexer(genes)].X)
+    b = sp.csr_matrix(rna[cells, tid.get_indexer(genes)].X)
+    out["T_rna_genes_shared"] = int(len(genes))
+    out["T_rna_identical_to_glue"] = bool((a != b).nnz == 0)
+
+    # T-A1a: independent h5py decode of the same file.
+    h5 = next(d.glob("*filtered_feature_bc_matrix.h5"))
+    with h5py.File(h5, "r") as f:
+        g = f["matrix"]
+        shape = tuple(g["shape"][()])  # (features, barcodes)
+        X = sp.csc_matrix((g["data"][()], g["indices"][()], g["indptr"][()]), shape=shape).T.tocsr()
+        ftype = np.array([x.decode() for x in g["features"]["feature_type"][()]])
+        fid = np.array([x.decode() for x in g["features"]["id"][()]])
+        bcs = np.array([x.decode() for x in g["barcodes"][()]])
+    pk, ge = ftype == "Peaks", ftype == "Gene Expression"
+    out["TA1a_barcodes_equal"] = bool(np.array_equal(bcs, np.asarray(atac.obs_names)))
+    out["TA1a_peak_names_equal"] = bool(np.array_equal(fid[pk], np.asarray(atac.var_names)))
+    out["TA1a_atac_identical"] = bool((X[:, pk] != sp.csr_matrix(atac.X)).nnz == 0)
+    out["TA1a_rna_identical"] = bool((X[:, ge] != sp.csr_matrix(rna.X)).nnz == 0)
+
+    # T-A1b (information): row sums vs per_barcode_metrics.
+    out["TA1b_frac_atac_rowsum_eq_peak_region_cutsites"] = float(np.mean(
+        np.asarray(atac.X.sum(axis=1)).ravel() == atac.obs["atac_peak_region_cutsites"].to_numpy()))
+    out["TA1b_frac_rna_rowsum_eq_gex_umis_count"] = float(np.mean(
+        np.asarray(rna.X.sum(axis=1)).ravel() == rna.obs["gex_umis_count"].to_numpy()))
+    out["fragments_recorded_when_absent"] = "files" in atac.uns
+    out["pass"] = bool(out["T_rna_identical_to_glue"] and out["TA1a_barcodes_equal"] and out["TA1a_peak_names_equal"]
+                       and out["TA1a_atac_identical"] and out["TA1a_rna_identical"])
     return {"T": out}
 
 

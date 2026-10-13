@@ -173,3 +173,12 @@ The ATAC part of gate T is replaced by:
 - **T-A1b (information):** fraction of cells whose ATAC row sum equals
   `atac_peak_region_cutsites` and whose RNA row sum equals `gex_umis_count`
   in `per_barcode_metrics.csv`.
+
+### T · reader, with T-A1: PASS
+
+| check | result |
+|---|---|
+| RNA vs scGLUE, 9,627 shared cells × 29,095 genes | identical |
+| T-A1a: barcodes, peak names, ATAC and RNA matrices vs an independent `h5py` decode | all identical |
+| T-A1b (information): ATAC row sum = `atac_peak_region_cutsites` | 100% of 11,898 cells |
+| T-A1b (information): RNA row sum = `gex_umis_count` | 0% (10x's metric counts a different UMI set) |
