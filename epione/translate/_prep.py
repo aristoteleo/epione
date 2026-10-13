@@ -200,7 +200,8 @@ def prepare(
     method
         The method the data are for. ``"scbutterfly"``: log-normalised RNA and
         TF-IDF-scaled ATAC. ``"babel"``: raw RNA counts of the same genes and
-        binary ATAC (BABEL normalises RNA internally).
+        binary ATAC (BABEL normalises RNA internally). ``"scpair"``: raw RNA
+        counts and raw peak counts (scPair binarises peaks internally).
 
     Returns
     -------
@@ -215,10 +216,12 @@ def prepare(
     elif not np.array_equal(rna.obs_names, atac.obs_names):
         atac = atac[rna.obs_names]
     rkw, akw = dict(rna_kwargs or {}), dict(atac_kwargs or {})
-    if method == "babel":
+    if method in ("babel", "scpair"):
         rkw.setdefault("output", "counts")
         akw.setdefault("use_tfidf", False)
         akw.setdefault("scale", False)
+        if method == "scpair":
+            akw.setdefault("binarize", False)  # scPair binarises internally; its truth is counts
     elif method != "scbutterfly":
         raise ValueError(f"unknown method {method!r}")
     rna_p = prepare_rna(rna, n_top_genes=n_top_genes, **rkw)
