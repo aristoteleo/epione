@@ -42,6 +42,8 @@ def _parity_dir() -> Path:
 
 
 METHOD = "scbutterfly"
+# (direction, metric) pairs exempt from G2/G3 gating, per method MANIFEST
+EXEMPT = {"jamie": {("rna2atac", "MSE"), ("rna2atac", "MMD")}}
 REF_DIRS = {"scbutterfly": ("scbutterfly", "scButterfly"), "babel": ("babel", "BABEL"), "scpair": ("scpair", "scPair"), "jamie": ("jamie", "JAMIE")}
 
 
@@ -241,7 +243,7 @@ def cmd_gates(args):
                 sd = float(np.std(b, ddof=1)) if len(b) > 1 else 0.0
                 tol = max(2 * sd, _tol(FLOORS[m], b.mean()))
                 diff = float(abs(o.mean() - b.mean()))
-                gated = not (m == "AUROC" and d == "atac2rna")
+                gated = not (m == "AUROC" and d == "atac2rna") and (d, m) not in EXEMPT.get(METHOD, set())
                 rows.append({"direction": d, "metric": m, f"{name}_baseline_mean": float(b.mean()), "baseline_sd": sd,
                              "mean": float(o.mean()), "values": o.tolist(), "baseline_values": b.tolist(),
                              "abs_diff": diff, "tol": tol, "gated": gated, "pass": bool(diff <= tol)})
