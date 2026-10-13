@@ -29,6 +29,9 @@ Results stored on the AnnData:
         "features_final" - boolean mask (n_vars,) of features used last round
         "depth_cor"      - per-component correlation with log10(depth)
         "kept_dims"      - indices of components kept after cor_cut_off filter
+        "feature_sums"   - per-feature totals over the fitted cells (IDF)
+        "n_cells_fit"    - number of cells in the final SVD
+        "scale_mean", "scale_sd" - dim scaling of the kept components
         "iterations"     - list of per-iteration info (features, clusters)
         "params"         - the parameters the call was made with
 """
@@ -437,6 +440,8 @@ def iterative_lsi(
             U_full[fit_idx] = U
 
         emb = U_full[:, kept_dims]
+        emb_mean = emb.mean(axis=0)
+        emb_sd = emb.std(axis=0, ddof=1)
         if scale_dims:
             emb = _scale_dims(emb)
 
@@ -491,8 +496,15 @@ def iterative_lsi(
                     dtype=np.float32),
             }
 
+            # LSI model for projecting new profiles (epione.tl.LSIModel):
+            # IDF denominators over the fitted cells and the dim scaling.
+            fit_sums = _col_sums(X_sub).astype(np.float64)
             adata.uns[key_added] = {
                 "stdev": s.astype(np.float32),
+                "feature_sums": fit_sums,
+                "n_cells_fit": int(len(fit_idx)),
+                "scale_mean": emb_mean.astype(np.float64),
+                "scale_sd": emb_sd.astype(np.float64),
                 "features_final": features.astype(np.int8),
                 "depth_cor": depth_cor.astype(np.float32),
                 "kept_dims": kept_dims.astype(np.int32),
