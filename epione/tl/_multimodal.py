@@ -155,18 +155,38 @@ def _kernel(d: np.ndarray, d1: np.ndarray, sigma: np.ndarray) -> np.ndarray:
     return np.exp(-np.maximum(d - d1, 0.0) / width)
 
 
+def _bandwidth(x: np.ndarray, idx_k: np.ndarray, n_select: int = 20) -> np.ndarray:
+    """Cell-specific kernel bandwidth of Hao et al. (STAR Methods).
+
+    For each cell, among all cells sharing at least one k-NN neighbour with
+    it (Jaccard similarity of k-NN sets > 0, the cell itself excluded), take
+    the ``n_select`` with the lowest Jaccard similarity, breaking ties by the
+    larger Euclidean distance, and return their mean distance.
+    """
+    n, k = idx_k.shape
+    A = sp.csr_matrix((np.ones(n * k), idx_k.ravel(), np.arange(0, n * k + 1, k)), shape=(n, n))
+    S = (A @ A.T).tocsr()
+    S.setdiag(0)
+    S.eliminate_zeros()
+    sigma = np.empty(n)
+    for i in range(n):
+        lo, hi = S.indptr[i], S.indptr[i + 1]
+        cols = S.indices[lo:hi]
+        inter = S.data[lo:hi]
+        jac = inter / (2 * k - inter)
+        d = np.linalg.norm(x[cols] - x[i], axis=1)
+        # lowest Jaccard first; among equal Jaccard, furthest first
+        order = np.lexsort((-d, jac))[:n_select]
+        sigma[i] = d[order].mean()
+    return sigma
+
+
 def _modality_stats(x: np.ndarray, k: int, knn_range: int, n_jobs: int):
     n = x.shape[0]
     dist_r, idx_r = _knn(x, min(knn_range, n), n_jobs)
     idx_k = idx_r[:, :k]
     d1 = dist_r[:, 1] if dist_r.shape[1] > 1 else np.zeros(n)
-    # Jaccard similarity of k-NN sets between each cell and its knn_range candidates.
-    A = sp.csr_matrix((np.ones(n * k), idx_k.ravel(), np.arange(0, n * k + 1, k)), shape=(n, n))
-    S = (A @ A.T).tocsr()
-    inter = np.asarray(S[np.repeat(np.arange(n), idx_r.shape[1]), idx_r.ravel()]).reshape(n, -1)
-    jac = inter / (2 * k - inter)
-    top = np.argsort(-jac, axis=1, kind="stable")[:, :k]
-    sigma = np.take_along_axis(dist_r, top, axis=1).mean(axis=1)
+    sigma = _bandwidth(x, idx_k, n_select=k)
     return dist_r, idx_r, idx_k, d1, sigma
 
 
