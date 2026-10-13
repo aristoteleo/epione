@@ -179,7 +179,7 @@ RNA → ATAC and ATAC → RNA translators learned from paired multiome cells, be
 | Task | Functions |
 |---|---|
 | Preprocessing (`prepare(..., method=)`: normalise/log1p/HVG or raw counts; binarise, filter, TF-IDF, scale) | {func}`epione.translate.prepare`, {func}`epione.translate.size_normalize`, {func}`epione.translate.prepare_rna`, {func}`epione.translate.prepare_atac`, {func}`epione.translate.tfidf`, {func}`epione.translate.chrom_blocks` |
-| Train / translate / save (`method="scbutterfly"`, `"babel"` or `"scpair"`; `fast=True` trades accuracy for speed, see each method's parity MANIFEST) | {func}`epione.translate.fit`, {class}`epione.translate.TranslationModel`, {func}`epione.translate.load`, {func}`epione.translate.available_methods` |
+| Train / translate / save (`method="scbutterfly"`, `"babel"`, `"scpair"` or `"jamie"`; `fast=True` trades accuracy for speed, see each method's parity MANIFEST) | {func}`epione.translate.fit`, {class}`epione.translate.TranslationModel`, {func}`epione.translate.load`, {func}`epione.translate.available_methods` |
 | Metrics: Leiden ARI/AMI/NMI/HOM, per-cell PCC/SPCC, MSE/MAE, per-feature CORR, MMD, graph iLISI, AUROC/AUPRC | {mod}`epione.translate.metrics` |
 | Benchmark tables and plot (scib style) | {func}`epione.translate.evaluate`, {func}`epione.translate.benchmark`, {func}`epione.translate.summarize`, {func}`epione.translate.plot_benchmark` |
 | multiDGD (`method="multidgd"`): raw-count inputs, source-only translation, joint reconstruction | {func}`epione.translate.prepare_counts`, {meth}`epione.translate._multidgd.MultiDGD.predict`, {meth}`epione.translate._multidgd.MultiDGD.reconstruct` |

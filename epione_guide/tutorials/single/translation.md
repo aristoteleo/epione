@@ -1,6 +1,6 @@
 # Cross-modality translation
 
-Predict chromatin accessibility from gene expression and expression from accessibility, and benchmark translation methods (scButterfly, BABEL, scPair, multiDGD).
+Predict chromatin accessibility from gene expression and expression from accessibility, and benchmark translation methods (scButterfly, BABEL, scPair, multiDGD, JAMIE).
 
 ```{toctree}
 :maxdepth: 1
