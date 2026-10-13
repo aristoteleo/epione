@@ -20,6 +20,7 @@ from ._prep import check_paired, resolve_split
 # name -> module that registers it (imported on first use)
 _METHOD_MODULES = {
     "scbutterfly": "._scbutterfly",
+    "babel": "._babel",
 }
 _REGISTRY: dict = {}
 
@@ -71,6 +72,7 @@ class TranslationModel:
 
     method: str = ""
     directions: tuple = DIRECTIONS
+    default_sparsify: Optional[float] = 1e-4
 
     rna_features: pd.Index
     atac_features: pd.Index
@@ -83,7 +85,7 @@ class TranslationModel:
         direction: Optional[str] = None,
         *,
         device=None,
-        sparsify: Optional[float] = 1e-4,
+        sparsify="auto",
     ) -> AnnData:
         """Translate the cells in ``adata`` to the other modality.
 
@@ -97,8 +99,9 @@ class TranslationModel:
             ``"rna2atac"`` or ``"atac2rna"``. Inferred from ``adata``'s features
             when omitted.
         sparsify
-            Values below this are set to zero and the result is stored sparse,
-            as scButterfly returns its predictions. ``None`` keeps a dense array.
+            Values below this are set to zero and the result is stored sparse.
+            ``"auto"`` uses the method's convention (scButterfly: 1e-4, as it
+            returns its predictions; BABEL: dense). ``None`` keeps a dense array.
 
         Returns
         -------
@@ -116,6 +119,8 @@ class TranslationModel:
         X = adata[:, src].X if not adata.var_names.equals(src) else adata.X
         X = sp.csr_matrix(X, dtype=np.float32)
         Y = self._predict(X, direction, _device(device))
+        if sparsify == "auto":
+            sparsify = self.default_sparsify
         if sparsify is not None:
             Y = np.where(Y < sparsify, 0.0, Y).astype(np.float32)
             Y = sp.csr_matrix(Y)
