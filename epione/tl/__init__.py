@@ -142,6 +142,8 @@ from ._differential import (
 from ._harmony import harmony, run_harmony
 from ._module_score import add_module_score, confusion_matrix
 from ._bulk_projection import LSIModel, project_bulk_atac, deconvolve_bulk
+from ._multimodal import combined_dims, wnn, multivi
+from ._tsne import tsne
 
 
 __all__ = [
@@ -204,4 +206,8 @@ __all__ = [
     "LSIModel",
     "project_bulk_atac",
     "deconvolve_bulk",
+    "combined_dims",
+    "wnn",
+    "multivi",
+    "tsne",
 ]
