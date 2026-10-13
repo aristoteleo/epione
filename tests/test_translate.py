@@ -342,3 +342,66 @@ def test_sctranslation_convention_swaps_roles(pt):
     # the standard convention drops undefined features instead
     std = M.regression_scores(pred, truth)["CORR"]
     assert std == pytest.approx(np.nanmean(M.pearson_per_feature(pred, truth)))
+
+
+# ------------------------------------------------------------------ BABEL
+def test_size_normalize_and_babel_prepare():
+    rna, atac = _synthetic()
+    r, a = T.prepare(rna, atac, n_top_genes=50, method="babel")
+    assert np.allclose(r.X.data, np.round(r.X.data))          # raw counts kept
+    assert set(np.unique(a.X.data)) == {1.0}                    # binary peaks
+    rs = T.prepare(rna, atac, n_top_genes=50)[0]
+    assert list(r.var_names) == list(rs.var_names)             # same genes as scButterfly
+    n = T.size_normalize(r)
+    tot = np.asarray(r.X.sum(1)).ravel()
+    np.testing.assert_allclose(np.asarray(n.X.sum(1)).ravel()[tot > 0], np.median(tot), rtol=1e-5)
+
+
+def test_nb_nll_matches_scipy():
+    from scipy.stats import nbinom
+    from epione.translate._babel import nb_nll
+
+    rng = np.random.default_rng(8)
+    y = rng.integers(0, 30, 200).astype(float)
+    mu = rng.gamma(2.0, 3.0, 200)
+    th = rng.gamma(2.0, 1.0, 200) + 0.1
+    got = nb_nll(torch.tensor(y), torch.tensor(mu), torch.tensor(th), eps=0.0).numpy()
+    ref = -nbinom.logpmf(y, th, th / (th + mu))
+    np.testing.assert_allclose(got, ref, rtol=1e-8, atol=1e-8)
+
+
+def test_block_linear_equals_per_block_linears():
+    from epione.translate._nn import BlockLinear
+
+    torch.manual_seed(1)
+    m = BlockLinear(3, 4, 2)
+    x = torch.randn(5, 12)
+    ref = torch.cat([x[:, 4 * j:4 * j + 4] @ m.weight[j] + m.bias[j] for j in range(3)], 1)
+    torch.testing.assert_close(m(x), ref)
+
+
+@pytest.fixture(scope="module")
+def babel_trained():
+    rna, atac = _synthetic()
+    r, a = T.prepare(rna, atac, n_top_genes=80, min_cells_frac=0.01, method="babel")
+    m = T.fit(r[:180], a[:180], method="babel", device="cpu", seed=2, threads=2, max_epochs=4)
+    return m, r, a
+
+
+def test_babel_predicts_both_directions(babel_trained):
+    m, r, a = babel_trained
+    pa, pr = m.predict(r[180:]), m.predict(a[180:])
+    assert pa.shape == (60, a.n_vars) and pr.shape == (60, r.n_vars)
+    assert not sp.issparse(pa.X)                              # BABEL keeps dense outputs
+    assert pa.X.min() >= 0 and pa.X.max() <= 1               # sigmoid ATAC head
+    assert pr.X.min() > 0                                      # NB means
+    assert len(m.history["val"]) == 4 and m.history["best_epoch"] <= 3
+
+
+def test_babel_deterministic_and_save_load(babel_trained, tmp_path):
+    m, r, a = babel_trained
+    m2 = T.fit(r[:180], a[:180], method="babel", device="cpu", seed=2, threads=2, max_epochs=4)
+    np.testing.assert_array_equal(m.predict(a[180:]).X, m2.predict(a[180:]).X)
+    m.save(tmp_path / "b.pt")
+    m3 = T.load(tmp_path / "b.pt")
+    np.testing.assert_array_equal(m.predict(r[180:]).X, m3.predict(r[180:]).X)
