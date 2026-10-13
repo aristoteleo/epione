@@ -66,3 +66,19 @@ results are reported; no method is excluded after seeing results.
   `pbmc_granulocyte_sorted_10k_filtered_feature_bc_matrix.h5`, RNA and ATAC
   counts of the cells shared with the scGLUE h5ad must be **identical**
   (gene names / peak coordinates matched).
+
+### WNN implementation choices, fixed before the first run
+
+The paper leaves these details open. They are chosen a priori and are not
+tuned against Seurat afterwards (any later change is an amendment):
+
+- each modality's embedding is L2-normalised per cell; distances are Euclidean;
+- modality kNN graphs use k = 20 and include the cell itself;
+- within- and cross-modality predictions average the embeddings of those 20 neighbours;
+- the kernel offset is the distance to the nearest neighbour other than the cell itself;
+- bandwidth σ: among the 200 nearest cells, take the 20 with the highest
+  Jaccard similarity of 20-NN sets, and use their mean distance;
+- ε = 1e-4 in the within/cross affinity ratio; weights are a softmax over modalities;
+- WNN candidates are the union of each modality's 200 nearest cells; the final
+  graph keeps the 20 with the highest weighted affinity, the cell itself included;
+- W2 compares neighbour sets with the cell itself removed on both sides.
