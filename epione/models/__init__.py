@@ -17,13 +17,18 @@ Currently:
     cell-state-conditioned decoder). The target and fold-preparation
     layers work without torch; the model layers need a torch
     environment.
+
+``aceso``
+    ACESO: genome-wide single-cell chromatin accessibility from a
+    targeted spatial RNA panel (EpiAgent state space, panel-agnostic
+    scGPT state encoder, scooby decoder, end-to-end joint fine-tuning).
 """
 from __future__ import annotations
 
 import importlib
 from typing import TYPE_CHECKING
 
-_SUBPACKAGES = ("scooby", "seq2print")
+_SUBPACKAGES = ("aceso", "scooby", "seq2print")
 
 __all__ = list(_SUBPACKAGES)
 
