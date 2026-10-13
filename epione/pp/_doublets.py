@@ -155,14 +155,21 @@ def _seurat_louvain(mat: np.ndarray, resolution: float, n_start: int, seed: int,
     g.es["weight"] = w[keep]
     best, best_q = None, -np.inf
     rng = np.random.RandomState(seed)
-    for _ in range(int(n_start)):
-        perm = rng.permutation(n)
-        gp = g.permute_vertices(perm.tolist())
-        part = gp.community_multilevel(weights="weight", resolution=resolution)
-        memb = np.asarray(part.membership)[perm]
-        q = g.modularity(memb.tolist(), weights="weight", resolution=resolution)
-        if q > best_q:
-            best, best_q = memb, q
+    # igraph draws from Python's ``random`` module; seed it so the result is reproducible.
+    import random
+    state = random.getstate()
+    random.seed(seed)
+    try:
+        for _ in range(int(n_start)):
+            perm = rng.permutation(n)
+            gp = g.permute_vertices(perm.tolist())
+            part = gp.community_multilevel(weights="weight", resolution=resolution)
+            memb = np.asarray(part.membership)[perm]
+            q = g.modularity(memb.tolist(), weights="weight", resolution=resolution)
+            if q > best_q:
+                best, best_q = memb, q
+    finally:
+        random.setstate(state)
     return best
 
 

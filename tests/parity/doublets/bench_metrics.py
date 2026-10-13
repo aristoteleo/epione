@@ -33,14 +33,23 @@ for s in ("LowLoading", "HighLoading"):
         a = pd.read_csv(f, sep="\t", index_col=0).reindex(gt.index)
         scores["AMULET (R scDblFinder)"] = -np.log10(np.maximum(a["p.value"], 1e-300))
         calls["AMULET (R scDblFinder)"] = a["q.value"] < 0.01
+    f = B / f"{s}_amulet_pyscdbl.tsv"
+    if f.exists():
+        ap_ = pd.read_csv(f, sep="\t", index_col=0).reindex(gt.index)
+        scores["AMULET (pyscdblfinder branch)"] = -np.log10(np.maximum(ap_["amulet_p"], 1e-300))
+        calls["AMULET (pyscdblfinder branch)"] = ap_["amulet_q"] < 0.01
+        if "AMULET (R scDblFinder)" not in scores:
+            a = ap_.rename(columns={"amulet_p": "p.value"})
+            scores["_amulet_for_fisher"] = None
     f = B / f"{s}_scDblFinder_R.tsv"
     if f.exists():
         d = pd.read_csv(f, sep="\t", index_col=0).reindex(gt.index)
         scores["scDblFinder-ATAC (R)"] = d.score
         calls["scDblFinder-ATAC (R)"] = d["class"] == "doublet"
-        if "AMULET (R scDblFinder)" in scores:
+        if "AMULET (R scDblFinder)" in scores or "_amulet_for_fisher" in scores:
             p = np.maximum(np.c_[a["p.value"], 1 - d.score], 0.001)
-            scores["Fisher(AMULET, scDblFinder) (R)"] = -np.log10(chi2.sf(-2 * np.log(p).sum(1), 4))
+            scores["Fisher(AMULET, scDblFinder)"] = -np.log10(chi2.sf(-2 * np.log(p).sum(1), 4))
+    scores.pop("_amulet_for_fisher", None)
     f = B / f"{s}_clamulet_R.tsv"
     if f.exists():
         c = pd.read_csv(f, sep="\t", index_col=0).reindex(gt.index)

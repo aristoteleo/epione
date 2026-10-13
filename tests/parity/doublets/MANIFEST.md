@@ -122,3 +122,89 @@ The disagreement is mostly the stochasticity of the score itself, compounded by 
 **Threshold.** Unchanged: min(fixed, ArchR's worst seed pair).
 
 **Rule.** Pass/fail as before; all 3 samples must pass. The registered result above stays recorded as FAIL whatever A-1 shows.
+
+### Seeding fix, found after the runs above
+
+After the runs above, `archr_doublets` turned out to be non-deterministic for a fixed seed: igraph's Louvain draws from Python's global `random` module. The numbers above come from commit 5b7279d, before the fix. The fix seeds `random` locally and restores its state; `test_archr_doublets_is_deterministic` covers it.
+
+Gate A was re-run on the fixed code: driver `gate_a_amend.py`, output `analysis/gate_a_amendment.json`. The registered statistic (Epione seed 1 vs ArchR seed 1) on the fixed code:
+
+| sample | A1 | A2 | A3 | result |
+|---|---|---|---|---|
+| scATAC_BMMC_R1 | 0.574 | 0.429 | 0.641 | A1, A2 **fail** |
+| scATAC_CD34_BMMC_R1 | 0.635 | 0.182 | 0.577 | A1 **fail** by 0.001; A2, A3 pass |
+| scATAC_PBMC_R1 | 0.313 | 0.395 | 0.294 | **fail** all three |
+
+## Results, amendment A-1 (fixed code): **FAIL**
+
+Each cell is the mean over the 9 (Epione seed, ArchR seed) pairs / threshold.
+
+| sample | A1 enrichment ρ | A2 filter Jaccard | A3 score ρ |
+|---|---|---|---|
+| scATAC_BMMC_R1 | 0.572 / 0.609 **fail** | 0.412 / 0.500 **fail** | 0.649 / 0.600 pass |
+| scATAC_CD34_BMMC_R1 | 0.666 / 0.636 pass | 0.147 / 0.132 pass | 0.621 / 0.576 pass |
+| scATAC_PBMC_R1 | 0.343 / 0.387 **fail** | 0.573 / 0.500 pass | 0.329 / 0.352 **fail** |
+
+Gate A does not pass, either as registered or as amended. Epione's ArchR scores correlate with ArchR's slightly less well than ArchR's correlate with themselves across seeds; the gap in ρ is 0.02–0.05. The Epione docstring states that parity is metric-level and points here.
+
+## Results, gate F1: **PASS (exact)**
+
+`filter_doublets(method="archr")` on ArchR's own seed-1 scores removes the identical cell set that ArchR `filterDoublets` removes: 243 + 107 + 60 cells. `test_gate_f1_filter_matches_archr_exactly` re-checks this whenever `EPIONE_DOUBLETS_PARITY_DIR` is set.
+
+## Results, benchmark as registered (published cell sets)
+
+Truth is demuxlet DBL vs singlets (AMB excluded). AUPRC of a random score equals the doublet fraction: 0.030 (Low) and 0.066 (High).
+
+| dataset | method | AUROC | AUPRC | called | precision | recall |
+|---|---|---|---|---|---|---|
+| Low | ArchR (published) | 0.489 | 0.038 | | | |
+| Low | ArchR port, enrichment | 0.483 | 0.037 | 1,248 | 0.046 | 0.173 |
+| Low | scrublet | 0.555 | 0.113 | 21 | 0.619 | 0.039 |
+| Low | AMULET (pyscdblfinder branch) | 0.478 | 0.030 | 148 | 0.034 | 0.015 |
+| Low | scDblFinder-ATAC (R 1.23.4) | 0.535 | **0.176** | 441 | 0.170 | 0.223 |
+| Low | Fisher(AMULET, scDblFinder) | 0.515 | 0.107 | | | |
+| Low | clamulet (R 1.23.4) | 0.352 | 0.031 | | | |
+| High | ArchR (published) | 0.654 | 0.179 | | | |
+| High | ArchR port, enrichment | 0.531 | 0.085 | 2,571 | 0.098 | 0.236 |
+| High | scrublet | 0.678 | 0.217 | 780 | 0.308 | 0.225 |
+| High | AMULET (pyscdblfinder branch) | 0.484 | 0.066 | 509 | 0.063 | 0.030 |
+| High | scDblFinder-ATAC (R 1.23.4) | 0.628 | **0.228** | 2,260 | 0.165 | 0.351 |
+| High | Fisher(AMULET, scDblFinder) | 0.595 | 0.116 | | | |
+
+**Deviations from the plan, all disclosed.**
+- **AMULET.** R `scDblFinder::amulet` did not finish in 4.5 h on the shared node; it was stopped. AMULET is therefore reported from the pyscdblfinder `feat/atac-mode` branch (0.3.0, not yet released), and the Fisher row uses that AMULET.
+- **clamulet for High** was not run, because R clamulet took 1.5 h on Low.
+- **Genome.** GSE162690 is aligned to **hg38**, checked at known TSSs. The tile grids were built on hg38 chromosome sizes. An earlier hg19-grid run, superseded, gave the same conclusions.
+
+**Gate B1.** Low: |ΔAUPRC| = 0.001, **pass**. High: |ΔAUPRC| = 0.094, **fail**.
+
+### Why the published cell sets are a biased benchmark (diagnostic, after the registered run)
+
+The published cell sets were already filtered for doublets by the authors. Of the genotype doublets that pass ArchR's own QC (TSS ≥ 4, ≥ 1,000 fragments), the published High set keeps 13.9%; of the singlets, it keeps 90.9%. The doublets that remain are mostly ones ArchR-style scores miss.
+
+That explains B1's failure as registered. ArchR's published scores were computed with all ~20.7k QC cells present, while the port was run only on the 16k filtered cells. On *identical* inputs (ArchR 1.0.3's own QC cells, High loading):
+
+| scored on | ArchR port | ArchR 1.0.3, re-run | ArchR published |
+|---|---|---|---|
+| all 20,654 QC cells (28.9% doublets) | **0.825** | 0.776 | — |
+| the published subset of them | 0.165 | 0.198 | 0.190 |
+
+So the port is at least as good as ArchR on the same cells. B1 stays recorded as FAIL because the registered design compared different inputs.
+
+## Supplementary benchmark: QC-only cells (post hoc, not pre-registered)
+
+Given the bias above, every method was re-scored on QC-only cells: demuxlet-called barcodes with ≥ 1,000 unique fragments and no prior doublet removal, i.e. the cell set of the tutorial. Wrappers use the pyscdblfinder branch.
+
+| dataset | cells | doublets | scrublet | ArchR port | scDblFinder | Fisher | AMULET | random |
+|---|---|---|---|---|---|---|---|---|
+| Low, AUPRC | 12,856 | 2,701 (21%) | **0.893** | 0.790 | 0.773 | 0.680 | 0.267 | 0.210 |
+| Low, AUROC | | | **0.938** | 0.894 | 0.872 | 0.837 | 0.573 | 0.5 |
+| High, AUPRC | 20,805 | 6,016 (29%) | **0.817** | 0.701 | 0.805 | 0.698 | 0.358 | 0.289 |
+| High, AUROC | | | **0.900** | 0.829 | 0.868 | 0.822 | 0.579 | 0.5 |
+
+**Findings.**
+- Scrublet leads on both loadings. scDblFinder is close on High, and the ArchR port is close on Low.
+- AMULET is weak, because these cells are shallow (median ≈ 5k fragments, against the 10–15k its authors recommend). Fisher-combining it with scDblFinder therefore lowers scDblFinder's AUPRC.
+- This is one cell-line mixture. Cell lines are more distinct than cell types, which favours simulation-based methods, so these rankings should not be generalised.
+
+**Runtime on the QC-only cells, High (20.8k cells, shared node).** Tile matrix 3,907 s; scrublet 1,042 s; ArchR port 219 s; scDblFinder 891 s; AMULET 148 s.
