@@ -141,6 +141,7 @@ from ._differential import (
 
 from ._harmony import harmony, run_harmony
 from ._module_score import add_module_score, confusion_matrix
+from ._bulk_projection import LSIModel, project_bulk_atac, deconvolve_bulk
 
 
 __all__ = [
@@ -200,4 +201,7 @@ __all__ = [
     "correlate_matrices",
     "positive_tf_regulators",
     "group_means",
+    "LSIModel",
+    "project_bulk_atac",
+    "deconvolve_bulk",
 ]
