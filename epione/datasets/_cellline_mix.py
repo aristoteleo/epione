@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Optional, Union
 
 GEO_SUPPL = "https://ftp.ncbi.nlm.nih.gov/geo/series/GSE162nnn/GSE162690/suppl/"
-UCSC_HG19_SIZES = "https://hgdownload.soe.ucsc.edu/goldenPath/hg19/bigZips/hg19.chrom.sizes"
+UCSC_HG38_SIZES = "https://hgdownload.soe.ucsc.edu/goldenPath/hg38/bigZips/hg38.chrom.sizes"
 
 _FILES = {
     "low": {
@@ -31,7 +31,7 @@ _FILES = {
                      "sha256:5807e56dd00941f70e438783521fb02137c2ed22117bccde451d9cb84f4df947"),
     },
 }
-_HG19_SIZES_HASH = "sha256:b404927655a4aada254ea94ad4da0c8901ed0737e67a0dcabedf673354b1f505"
+_HG38_SIZES_HASH = "sha256:e1d9152418038457a959e949d99c9caf7ae3e4f87cfbb4ffe7d8b9a54ba1202b"
 
 
 def _bgzip_and_index(src: Path, dst: Path) -> Path:
@@ -67,14 +67,14 @@ def granja2021_cellline_mix(
         A dict with:
 
         - ``"fragments"``: path to a BGZF-compressed, tabix-indexed fragment
-          file (hg19). The GEO file is plain gzip, so on first use it is
+          file (hg38). The GEO file is plain gzip, so on first use it is
           re-compressed, which needs about 4 GB of temporary disk for
           ``"low"``.
         - ``"demuxlet"``: DataFrame indexed by barcode, with ``call``
           (``"SNG"``, ``"DBL"`` or ``"AMB"``), ``cell_line`` (the singlet's
           line, or the pair for doublets) and demuxlet's read counts.
         - ``"chrom_sizes"``: ``{chrom: length}`` for chr1–22, X and Y (UCSC
-          hg19).
+          hg38).
 
     Notes:
         Demuxlet cannot detect two cells of the *same* line in one droplet,
@@ -98,8 +98,8 @@ def granja2021_cellline_mix(
     for what, (fname, h) in _FILES[key].items():
         got[what] = Path(pooch.retrieve(url=GEO_SUPPL + fname, known_hash=h, fname=fname,
                                         path=str(data_dir), progressbar=progressbar))
-    sizes_f = pooch.retrieve(url=UCSC_HG19_SIZES, known_hash=_HG19_SIZES_HASH,
-                             fname="hg19.chrom.sizes", path=str(data_dir), progressbar=False)
+    sizes_f = pooch.retrieve(url=UCSC_HG38_SIZES, known_hash=_HG38_SIZES_HASH,
+                             fname="hg38.chrom.sizes", path=str(data_dir), progressbar=False)
     frag = _bgzip_and_index(got["fragments"], data_dir / f"cellline_{key}.fragments.bgz.tsv.gz")
 
     dmx = pd.read_csv(got["demuxlet"], sep="\t")
