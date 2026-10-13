@@ -23,6 +23,7 @@ _METHOD_MODULES = {
     "babel": "._babel",
     "scpair": "._scpair",
     "multidgd": "._multidgd",
+    "jamie": "._jamie",
 }
 _REGISTRY: dict = {}
 
