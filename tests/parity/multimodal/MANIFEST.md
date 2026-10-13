@@ -125,3 +125,29 @@ cell itself excluded); σ is the mean distance to the 20 with the lowest
 non-zero value, ties broken by the larger Euclidean distance. All other
 choices and all gates are unchanged. If A1 still fails, the result is
 reported as is and `epi.tl.wnn` keeps the paper's definition.
+
+### W · WNN, amendment A1 (paper's bandwidth): FAIL (3 of 4 gates), reported as is
+
+| gate | Epione vs Seurat | first run | A1 | result |
+|---|---|---|---|---|
+| W1 | weight Pearson r / median \|Δ\| | 0.761 / 0.088 | **0.939** / **0.011** | fail (r < 0.95; median \|Δ\| passes) |
+| W2 | median 20-NN Jaccard | 0.407 | **0.900** | pass |
+| W3 | partition ARI, Leiden seed 0 | 0.874 | 0.7997 | fail (by 0.0003) |
+| W4 | cell-type ARI, Epione vs Seurat | 0.773 vs 0.730 | 0.905 vs 0.730 | fail (Epione higher by 0.175) |
+
+Mean RNA weight: Epione 0.508, Seurat 0.506. As registered, A1 is the last
+amendment: `epi.tl.wnn` keeps the paper's bandwidth and the failures stand.
+
+**Post-hoc, not a gate:** W3 and W4 use a single Leiden seed. Over 10 seeds on the same two graphs:
+
+| quantity | mean ± SD | range |
+|---|---|---|
+| partition ARI, Epione vs Seurat | 0.843 ± 0.061 | 0.775–0.982 |
+| partition ARI, Seurat vs Seurat re-seeded | 0.868 ± 0.056 | 0.773–0.954 |
+| cell-type ARI, Epione | 0.830 ± 0.078 | 0.748–0.906 |
+| cell-type ARI, Seurat | 0.769 ± 0.057 | 0.730–0.920 |
+
+The Epione–Seurat partition agreement is close to Seurat's own
+seed-to-seed agreement, so W3/W4 were too tight for a single Leiden seed.
+The remaining W1 gap (r = 0.94) means the per-cell weights still differ in
+detail from Seurat's implementation, whose code was deliberately not consulted.
