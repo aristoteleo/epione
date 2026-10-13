@@ -168,7 +168,15 @@ def benchmark(
     return pd.DataFrame(rows, columns=["task", "method", "metric", "category", "higher_is_better", "value"])
 
 
-def summarize(results: pd.DataFrame, *, weights: Optional[Mapping[str, float]] = None) -> pd.DataFrame:
+def _spec(metrics):
+    """``metric -> (category, higher_is_better)`` and the category order."""
+    spec = METRICS if metrics is None else dict(metrics)
+    cats = tuple(dict.fromkeys(c for c, _ in spec.values()))
+    return spec, (CATEGORIES if metrics is None else cats)
+
+
+def summarize(results: pd.DataFrame, *, weights: Optional[Mapping[str, float]] = None,
+              metrics: Optional[Mapping[str, tuple]] = None) -> pd.DataFrame:
     """Per-category and overall scores, scib style.
 
     Each metric is min-max scaled across methods within a task (lower-is-better
@@ -176,7 +184,12 @@ def summarize(results: pd.DataFrame, *, weights: Optional[Mapping[str, float]] =
     scores 1). Category scores are the mean of their scaled metrics; the
     overall score is the weighted mean of categories (equal weights by
     default). Rows are ``(task, method)``, sorted by overall score.
+    ``metrics`` (``metric -> (category, higher_is_better)``) overrides the
+    translation metric set, e.g. for the joint-embedding benchmark of
+    :mod:`epione.tl`; ``results`` then needs ``category`` and
+    ``higher_is_better`` columns consistent with it.
     """
+    spec, categories = _spec(metrics)
     df = results.copy()
 
     def scale(g):
@@ -189,17 +202,18 @@ def summarize(results: pd.DataFrame, *, weights: Optional[Mapping[str, float]] =
 
     df["scaled"] = df.groupby(["task", "metric"], group_keys=False)[["value", "higher_is_better"]].apply(scale)
     cat = df.pivot_table(index=["task", "method"], columns="category", values="scaled", aggfunc="mean")
-    cats = [c for c in CATEGORIES if c in cat.columns]
+    cats = [c for c in categories if c in cat.columns]
     w = pd.Series({c: (weights or {}).get(c, 1.0) for c in cats})
     cat = cat[cats]
     cat["overall"] = (cat[cats] * w).sum(axis=1, min_count=1) / cat[cats].notna().mul(w).sum(axis=1)
     raw = df.pivot_table(index=["task", "method"], columns="metric", values="value")
-    raw = raw[[m for m in METRICS if m in raw.columns]]
+    raw = raw[[m for m in spec if m in raw.columns]]
     out = pd.concat({"metric": raw, "score": cat}, axis=1)
     return out.sort_values([("score", "overall")], ascending=False).sort_index(level=0, sort_remaining=False)
 
 
-def plot_benchmark(results: pd.DataFrame, task: Optional[str] = None, *, ax=None, cmap: str = "viridis"):
+def plot_benchmark(results: pd.DataFrame, task: Optional[str] = None, *, ax=None, cmap: str = "viridis",
+                   metrics: Optional[Mapping[str, tuple]] = None):
     """scib-like table: a circle per metric (size and colour = scaled score),
     bars for category and overall scores, one row per method.
 
@@ -209,13 +223,14 @@ def plot_benchmark(results: pd.DataFrame, task: Optional[str] = None, *, ax=None
     import matplotlib.pyplot as plt
     from matplotlib import colors
 
-    summ = summarize(results)
+    spec, categories = _spec(metrics)
+    summ = summarize(results, metrics=metrics)
     tasks = summ.index.get_level_values(0).unique()
     task = task or tasks[0]
     s = summ.loc[task].sort_values(("score", "overall"), ascending=False)
     sub = results[results["task"] == task]
-    metrics = [m for m in METRICS if m in set(sub["metric"])]
-    cats = [c for c in CATEGORIES if ("score", c) in s.columns]
+    metrics = [m for m in spec if m in set(sub["metric"])]
+    cats = [c for c in categories if ("score", c) in s.columns]
     scaled = {}
     for m in metrics:
         v = s[("metric", m)].astype(float)
@@ -224,7 +239,7 @@ def plot_benchmark(results: pd.DataFrame, task: Optional[str] = None, *, ax=None
             scaled[m] = pd.Series(1.0, index=v.index)
         else:
             z = (v - lo) / (hi - lo)
-            scaled[m] = z if METRICS[m][1] else 1 - z
+            scaled[m] = z if spec[m][1] else 1 - z
 
     ncol = len(metrics) + len(cats) + 1
     nrow = len(s)
