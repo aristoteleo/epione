@@ -42,7 +42,7 @@ def _parity_dir() -> Path:
 
 
 METHOD = "scbutterfly"
-REF_DIRS = {"scbutterfly": ("scbutterfly", "scButterfly"), "babel": ("babel", "BABEL")}
+REF_DIRS = {"scbutterfly": ("scbutterfly", "scButterfly"), "babel": ("babel", "BABEL"), "scpair": ("scpair", "scPair")}
 
 
 def load_inputs(P: Path):
@@ -54,6 +54,10 @@ def load_inputs(P: Path):
     if METHOD == "babel":
         rna = sc.read_h5ad(P / "inputs" / "rna_counts_hvg.h5ad")
         atac = T.prepare_atac(counts, use_tfidf=False, scale=False)
+    elif METHOD == "scpair":
+        # scPair binarises peaks internally; its truth files are the raw counts
+        rna = sc.read_h5ad(P / "inputs" / "rna_counts_hvg.h5ad")
+        atac = T.prepare_atac(counts, binarize=False, use_tfidf=False, scale=False)
     else:
         rna = sc.read_h5ad(P / "inputs" / "rna_lognorm_hvg.h5ad")
         atac = T.prepare_atac(counts)
@@ -294,7 +298,7 @@ def main():
     g.add_argument("--fast-mode", default="fast", choices=["fast", "fast_a1"])
     a = ap.parse_args()
     METHOD = a.method
-    if METHOD == "babel":
+    if METHOD in ("babel", "scpair"):
         MODES = {"default": {}, "fast": {"fast": True}}
     cmd_train(a) if a.cmd == "train" else cmd_gates(a)
 
