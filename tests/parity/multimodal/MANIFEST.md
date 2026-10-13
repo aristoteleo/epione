@@ -151,3 +151,25 @@ The Epione–Seurat partition agreement is close to Seurat's own
 seed-to-seed agreement, so W3/W4 were too tight for a single Leiden seed.
 The remaining W1 gap (r = 0.94) means the per-cell weights still differ in
 detail from Seurat's implementation, whose code was deliberately not consulted.
+
+### T · reader, first run
+
+- RNA: **identical** counts on all 29,095 genes (matched by Ensembl id) for the
+  9,627 cells shared with scGLUE. Four scGLUE cells are not among the
+  11,898 cellranger-arc 2.0.0 filtered barcodes.
+- ATAC: **not comparable**. scGLUE's 107,194 peaks and cellranger-arc 2.0.0's
+  143,887 share no exact coordinates; the peak sets were called differently.
+  This is a flaw in the registered design, not a reader result.
+- The check script also required all 9,631 scGLUE cells to be present, which
+  is stricter than the registered gate; that condition is dropped.
+
+## Amendment T-A1 (registered before running it)
+
+The ATAC part of gate T is replaced by:
+- **T-A1a (gate):** decode the same h5 independently with `h5py`
+  (`matrix/data`, `indices`, `indptr`, `features/feature_type`, `features/id`).
+  The reader's ATAC matrix and peak names must equal that decode exactly,
+  and so must its RNA matrix.
+- **T-A1b (information):** fraction of cells whose ATAC row sum equals
+  `atac_peak_region_cutsites` and whose RNA row sum equals `gex_umis_count`
+  in `per_barcode_metrics.csv`.

@@ -5,7 +5,6 @@ import pandas as pd
 import multiprocessing
 from tqdm import tqdm
 
-from epione.io._read import read_gtf
 
 def find_genes(adata,
                  gtf_file,
@@ -91,6 +90,9 @@ class Annotation(object):
 
     def __init__(self,gtf_path) -> None:
         # Parse only essential attributes and transcripts for speed; drop raw attribute string
+        # Imported here: epione.io imports epione.core, so a module-level
+        # import makes `epi.io` fail when it is accessed before epione.core.
+        from epione.io._read import read_gtf
         self.gtf=read_gtf(
             gtf_path,
             required_attrs=("gene_id", "gene_name"),

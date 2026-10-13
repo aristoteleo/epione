@@ -9,6 +9,7 @@ Public API:
     :func:`convert_gff_to_gtf`    format conversion
     :func:`save`, :func:`load`    pickle / h5ad cache helpers
     :func:`cached`                memoising decorator (writes to disk)
+    :func:`read_10x_multiome`     cellranger-arc Multiome output → (rna, atac)
 """
 from __future__ import annotations
 
@@ -20,6 +21,7 @@ from ._read import (
     convert_gff_to_gtf,
 )
 from ._helpers import save, load, cached
+from ._multiome import read_10x_multiome
 
 __all__ = [
     "read_ATAC_10x",
@@ -30,4 +32,5 @@ __all__ = [
     "save",
     "load",
     "cached",
+    "read_10x_multiome",
 ]
