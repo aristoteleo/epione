@@ -42,7 +42,7 @@ def _parity_dir() -> Path:
 
 
 METHOD = "scbutterfly"
-REF_DIRS = {"scbutterfly": ("scbutterfly", "scButterfly"), "babel": ("babel", "BABEL"), "scpair": ("scpair", "scPair")}
+REF_DIRS = {"scbutterfly": ("scbutterfly", "scButterfly"), "babel": ("babel", "BABEL"), "scpair": ("scpair", "scPair"), "jamie": ("jamie", "JAMIE")}
 
 
 def load_inputs(P: Path):
@@ -58,6 +58,14 @@ def load_inputs(P: Path):
         # scPair binarises peaks internally; its truth files are the raw counts
         rna = sc.read_h5ad(P / "inputs" / "rna_counts_hvg.h5ad")
         atac = T.prepare_atac(counts, binarize=False, use_tfidf=False, scale=False)
+    elif METHOD == "jamie":
+        # JAMIE's runner z-scores the >= 49-cell peak counts over all cells; RNA stays raw counts
+        rna = sc.read_h5ad(P / "inputs" / "rna_counts_hvg.h5ad")
+        a = T.prepare_atac(counts, binarize=False, use_tfidf=False, scale=False)
+        import anndata as _ad
+        atac = _ad.AnnData(X=a.X.toarray().astype(np.float32), obs=a.obs, var=a.var)
+        sc.pp.scale(atac, zero_center=True)
+        atac.X = np.nan_to_num(atac.X).astype(np.float32)
     else:
         rna = sc.read_h5ad(P / "inputs" / "rna_lognorm_hvg.h5ad")
         atac = T.prepare_atac(counts)
@@ -299,7 +307,7 @@ def main():
     g.add_argument("--fast-mode", default="fast", choices=["fast", "fast_a1"])
     a = ap.parse_args()
     METHOD = a.method
-    if METHOD in ("babel", "scpair"):
+    if METHOD in ("babel", "scpair", "jamie"):
         MODES = {"default": {}, "fast": {"fast": True}}
     cmd_train(a) if a.cmd == "train" else cmd_gates(a)
 

@@ -202,6 +202,8 @@ def prepare(
         TF-IDF-scaled ATAC. ``"babel"``: raw RNA counts of the same genes and
         binary ATAC (BABEL normalises RNA internally). ``"scpair"``: raw RNA
         counts and raw peak counts (scPair binarises peaks internally).
+        ``"jamie"``: raw RNA counts and peak counts z-scored over all the given
+        cells (dense), as the scTranslation runner prepares them.
 
     Returns
     -------
@@ -222,10 +224,24 @@ def prepare(
         akw.setdefault("scale", False)
         if method == "scpair":
             akw.setdefault("binarize", False)  # scPair binarises internally; its truth is counts
-    elif method != "scbutterfly":
+    elif method not in ("scbutterfly", "jamie"):
         raise ValueError(f"unknown method {method!r}")
+    if method == "jamie":
+        rkw.setdefault("output", "counts")
+        akw.setdefault("binarize", False)
+        akw.setdefault("use_tfidf", False)
+        akw.setdefault("scale", False)
     rna_p = prepare_rna(rna, n_top_genes=n_top_genes, **rkw)
     atac_p = prepare_atac(atac, min_cells_frac=min_cells_frac, **akw)
+    if method == "jamie":
+        # scTranslation's JAMIE runner z-scores the peak counts over all cells
+        import scanpy as sc
+
+        atac_p = AnnData(X=np.asarray(atac_p.X.toarray(), dtype=np.float32), obs=atac_p.obs, var=atac_p.var,
+                         uns=atac_p.uns)
+        sc.pp.scale(atac_p, zero_center=True)
+        atac_p.X = np.nan_to_num(atac_p.X).astype(np.float32)
+        atac_p.uns["translate_prep"]["zscore"] = True
     return rna_p, atac_p
 
 
