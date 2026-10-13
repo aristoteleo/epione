@@ -47,4 +47,33 @@ All results are recorded below, including failures.
 
 ## Results
 
-_Not yet run._
+Run on 2026-10-13. Reference: ArchR 1.0.3, uwot 0.2.4, R version 4.4.3 (2025-02-28), one thread. Epione: Python 3.11, numpy 2.4, umap-learn 0.5.12. Both on one core of the same node. **All gates pass.**
+
+| Gate | Result | Value |
+|---|---|---|
+| G0 feature mapping | pass | 0 differing entries over 25,000 features × 77 samples; overlap ratio 0.98932 on both sides |
+| G1 LSI projection, identical pseudo-cells | pass | raw max relative Δ 8.7e-15, scaled max Δ 1.8e-14 |
+| G2 end-to-end, `rng="archr"` | pass | same 19,250 pseudo-cell names, max Δ 1.8e-14, so every draw is reproduced bit-exactly |
+| G3a majority cluster per sample, `rng="numpy"` | pass | 1.00 (gate ≥ 0.95) |
+| G3b mean TVD of cluster fractions | pass | 0.0065 (gate ≤ 0.10) |
+| G3c centroid shift / spread | pass | median 0.093, max 0.135 (gates ≤ 0.25 / 0.5) |
+| G4a UMAP nearest cluster, per pseudo-cell | pass | 0.985 (gate ≥ 0.85) |
+| G4b UMAP nearest cluster, per-sample majority | pass | 1.00 (gate ≥ 0.95) |
+| G4c re-projection correlation | pass | Epione 0.9986 / 0.9984; ArchR 0.9984 / 0.9980 |
+| G5 deconvolution, 50 synthetic bulks | pass | Pearson 0.958 (≥ 0.90), MAE 0.0169 (≤ 0.05), median R² 0.838 |
+
+Timings for 77 samples × 250 pseudo-cells, one core:
+
+| | seconds |
+|---|---|
+| ArchR `projectBulkATAC` (with UMAP) | 76 |
+| Epione, `rng="archr"`, with the umap-learn fit and transform | 80 |
+| Epione, `rng="numpy"`, LSI only | 27 |
+| feature mapping | 1.0 |
+| deconvolution of 50 bulks | 4.3 |
+
+Dominant ArchR cluster (LSI nearest neighbours, ArchR run) per sorted population. This is reported, not gated; cluster names are those of the ArchR fixture, not of Epione's heme build: B → C6, CD4T → C8, CD8T → C8, CLP → C3, CMP → C9, Ery → C9, GMP → C11, HSC → C11, LMPP → C11, MEP → C9, MPP → C11, Mono → C5, NK → C7.
+
+Notes:
+- ArchR's `.projectLSI` calls `set.seed(LSI$seed)`. In a one-thread run, every bulk sample after the first is therefore sampled from the same RNG state. `rng="archr"` reproduces this.
+- uwot and umap-learn layouts differ, so G4 compares cluster assignments rather than coordinates.
