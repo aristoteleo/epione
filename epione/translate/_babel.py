@@ -201,8 +201,19 @@ class Babel(TranslationModel):
     Parameters
     ----------
     fast
-        bf16 autocast on CUDA, batch 256. Validated separately; see
+        bf16 autocast on CUDA, batch 256: about 2x faster but **not equivalent**
+        to the default (ATAC->RNA accuracy drops); see
         ``tests/parity/translate_babel/MANIFEST.md``.
+
+    Notes
+    -----
+    Validation against the reference implementation (scTranslation's BABEL,
+    3 seeds) does **not** pass: 6 of 23 metric x direction pairs are within
+    tolerance. Inputs, targets and metrics were verified identical; this
+    reimplementation is better for RNA->ATAC and worse for ATAC->RNA
+    clustering, for reasons that couldn't be resolved without the
+    (unlicensed) reference code. Use the original package to reproduce
+    published scTranslation numbers.
     **kwargs
         Any :class:`BabelConfig` field.
     """

@@ -162,3 +162,27 @@ The facts come from the reference run logs, which agent A saved under `work/sct_
 G2 and G3 are re-run with 3 seeds each and the same tolerances. If G2 still fails, it is reported as an unresolved discrepancy, with no further amendments.
 
 **The reference outputs above 1.** All of them are in the **rna2atac** predictions, i.e. the ATAC head: 0.7% of entries, maximum 1.95. The atac2rna predictions are NB means in size-normalised counts, so values above 1 are expected there and aren't counted. An ATAC output through a sigmoid can't exceed 1, so the reference's ATAC head is not a plain sigmoid at prediction time. The paper says sigmoid, and Epione keeps the sigmoid.
+
+## Results after A1 (final)
+
+| gate | result |
+|---|---|
+| G0, G1 | PASS (unchanged) |
+| **G2** | **FAIL: 6 / 23**. The same 17 pairs fail, with means equal to the pre-A1 runs to three decimals |
+| G3 | speed PASS (median 1.92×); metrics FAIL (12 / 23 pass) |
+
+**Why A1 changed nothing.** Epione stopped at 39 / 29 / 35 epochs, exactly as before. In the pre-A1 runs, the learning-rate cut only happened *after* each run's best epoch, and early stopping restores the best weights. So constant vs reduced learning rate yields the same model.
+
+The real schedule difference is *when the validation loss stops improving*:
+- Epione: best epoch about 4–14;
+- reference: about 18–28 (log facts).
+
+That is a property of the model and its optimisation, not of the schedule.
+
+**Status: unresolved discrepancy.** Per the instruction, there are no further amendments. Epione's BABEL is a reimplementation of the paper:
+- on RNA→ATAC it beats the reference implementation's scTranslation numbers on PCC, CORR and clustering;
+- on ATAC→RNA it falls short on clustering, MSE and MAE.
+
+It does **not** reproduce the reference within tolerance. Use the original package for results comparable to published scTranslation tables.
+
+`fast=True` (bf16, batch 256) is **not equivalent** to the default (G3 metrics fail).
