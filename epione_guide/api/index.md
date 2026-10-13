@@ -105,6 +105,8 @@ linked above.
 | Gene-set module scores (ArchR `addModuleScore`) | {func}`epione.tl.add_module_score` |
 | Label cross-tabulation (ArchR `confusionMatrix`) | {func}`epione.tl.confusion_matrix`, {func}`epione.pl.plot_confusion_matrix` |
 | Per-group ridge / violin plots (ArchR `plotGroups`) | {func}`epione.pl.plot_groups` |
+| Project bulk ATAC-seq into the embedding (ArchR `projectBulkATAC`) | {func}`epione.tl.project_bulk_atac`, {class}`epione.tl.LSIModel` |
+| Bulk ATAC composition by NNLS on cluster pseudobulks | {func}`epione.tl.deconvolve_bulk` |
 
 ### Multi-sample integration
 
@@ -262,6 +264,7 @@ RNA → ATAC and ATAC → RNA translators learned from paired multiome cells, be
 |---|---|
 | Pre-built `Genome` instances | {data}`epione.data.GRCh37`, {data}`epione.data.GRCh38`, {data}`epione.data.GRCm38`, {data}`epione.data.GRCm39`, {data}`epione.data.hg19`, {data}`epione.data.hg38`, {data}`epione.data.mm10`, {data}`epione.data.mm39` |
 | Example datasets | {func}`epione.datasets.archr_hematopoiesis` (ArchR Hematopoiesis tutorial fragments) |
+| Example bulk ATAC-seq | {func}`epione.datasets.corces2016_bulk_atac` (Corces 2016 sorted hematopoietic populations, GSE74912) |
 
 ## Plotting helpers (overview)
 
