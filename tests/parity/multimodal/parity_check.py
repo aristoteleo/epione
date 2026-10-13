@@ -77,7 +77,7 @@ def check_combined_dims() -> dict:
 
 def main(argv):
     what = argv[1] if len(argv) > 1 else "combined_dims"
-    res = {"combined_dims": check_combined_dims, "wnn": check_wnn}[what]()
+    res = {"combined_dims": check_combined_dims, "wnn": check_wnn, "reader": check_reader}[what]()
     print(json.dumps(res, indent=2))
     return 0 if all(v.get("pass", True) for k, v in res.items() if isinstance(v, dict) and k != "muon (information)") else 1
 
@@ -168,6 +168,38 @@ def check_wnn() -> dict:
     }
     res["seurat"]["pass"] = all(res["seurat"][g] for g in ("W1_pass", "W2_pass", "W3_pass", "W4_pass"))
     return res
+
+
+def check_reader() -> dict:
+    """Gate T: read_10x_multiome on the public cellranger-arc h5 vs the scGLUE h5ad."""
+    import scipy.sparse as sp
+    import epione as epi
+
+    d = PARITY / "reader"
+    rna, atac = epi.io.read_10x_multiome(d)
+    g_rna, g_atac = epi.datasets.pbmc10k_multiome(PARITY / "data")
+    cells = g_rna.obs_names.intersection(rna.obs_names)
+    out = {"n_cells_10x": int(rna.n_obs), "n_cells_glue": int(g_rna.n_obs), "n_shared": int(len(cells)),
+           "metrics_columns_added": int(sum(c in rna.obs for c in ("is_cell", "atac_fragments"))),
+           "fragments_recorded": "files" in atac.uns}
+    # RNA: match on Ensembl gene ids (gene symbols are made unique differently).
+    gid = pd.Index(g_rna.var["gene_ids"].astype(str))
+    tid = pd.Index(rna.var["gene_ids"].astype(str))
+    genes = gid.intersection(tid)
+    a = g_rna[cells, gid.get_indexer(genes)].X
+    b = rna[cells, tid.get_indexer(genes)].X
+    out["rna_genes_shared"] = int(len(genes))
+    out["rna_identical"] = bool((sp.csr_matrix(a) != sp.csr_matrix(b)).nnz == 0)
+    # ATAC: match on peak coordinates.
+    key_g = g_atac.var["chrom"].astype(str) + ":" + g_atac.var["chromStart"].astype(str) + "-" + g_atac.var["chromEnd"].astype(str)
+    key_t = atac.var["chrom"].astype(str) + ":" + atac.var["chromStart"].astype(int).astype(str) + "-" + atac.var["chromEnd"].astype(int).astype(str)
+    peaks = pd.Index(key_g).intersection(pd.Index(key_t))
+    a = g_atac[cells, pd.Index(key_g).get_indexer(peaks)].X
+    b = atac[cells, pd.Index(key_t).get_indexer(peaks)].X
+    out["atac_peaks_shared"] = int(len(peaks))
+    out["atac_identical"] = bool((sp.csr_matrix(a) != sp.csr_matrix(b)).nnz == 0)
+    out["pass"] = bool(out["rna_identical"] and out["atac_identical"] and len(cells) == g_rna.n_obs)
+    return {"T": out}
 
 
 if __name__ == "__main__":
