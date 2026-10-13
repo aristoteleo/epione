@@ -72,7 +72,8 @@ def prepare_rna(
 
     Same steps and scanpy calls as scButterfly's ``RNA_data_preprocessing``:
     ``normalize_total`` (median library size), ``log1p`` and
-    ``highly_variable_genes(flavor="seurat")`` on the log data.
+    ``highly_variable_genes(flavor="seurat")`` on the log data, ranking only
+    genes with at least one count.
     """
     import scanpy as sc
 
@@ -87,6 +88,10 @@ def prepare_rna(
     if log1p:
         sc.pp.log1p(out)
     if n_top_genes:
+        # genes without counts would shift the mean bins of the dispersion ranking
+        expressed = np.asarray((out.X > 0).sum(axis=0)).ravel() > 0
+        if not expressed.all():
+            out = out[:, expressed].copy()
         sc.pp.highly_variable_genes(out, n_top_genes=n_top_genes)
         out = out[:, out.var["highly_variable"].to_numpy()].copy()
     out.uns["translate_prep"] = {
