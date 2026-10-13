@@ -82,3 +82,46 @@ tuned against Seurat afterwards (any later change is an amendment):
 - WNN candidates are the union of each modality's 200 nearest cells; the final
   graph keeps the 20 with the highest weighted affinity, the cell itself included;
 - W2 compares neighbour sets with the cell itself removed on both sides.
+
+## Results
+
+### C · combined_dims: PASS (4/4)
+
+| config | shape (Epione = ArchR) | max \|Δ\| |
+|---|---|---|
+| C1 | 10,660 × 60 | 7.1e-15 |
+| C2 | 10,660 × 60 | 6.9e-15 |
+| C3 | 10,660 × 40 | 8.9e-15 |
+| C4 | 10,660 × 59 (1 depth-correlated dim filtered) | 7.1e-15 |
+
+### W · WNN, first run (implementation choices as registered): FAIL (2 of 4 gates)
+
+| gate | Epione vs Seurat | result |
+|---|---|---|
+| W1 | weight r = 0.761, median \|Δ\| = 0.088 | fail |
+| W2 | median Jaccard = 0.407 | fail |
+| W3 | partition ARI = 0.874 | pass |
+| W4 | cell-type ARI 0.773 (Epione) vs 0.730 (Seurat) | pass |
+
+For information, Epione vs muon: weight r = 0.41, Jaccard 0.31, partition ARI
+0.74; muon vs Seurat was not gated. Mean RNA weight: Epione 0.550, Seurat
+0.506, muon 0.467.
+
+## Amendment A1 (registered after the first W run, before running it)
+
+Re-reading the STAR Methods of Hao *et al.* showed that the registered
+bandwidth choice contradicts the paper. The paper says, verbatim: *"For each
+cell i, we therefore aim to identify the 20 cells in the dataset with the
+lowest non-zero Jaccard similarity. … If more than 20 cells share the same
+Jaccard value, we select the 20 with the furthest euclidean distance to cell
+i. We take the average of the Euclidean distances from cell i to the 20
+selected cells, and set this as the cell-specific kernel bandwidth."* The
+registered choice took the 20 cells with the **highest** Jaccard among the 200
+nearest.
+
+A1 changes only σ, to follow the paper: the Jaccard similarity of 20-NN sets
+is computed for every cell sharing at least one neighbour with cell i (the
+cell itself excluded); σ is the mean distance to the 20 with the lowest
+non-zero value, ties broken by the larger Euclidean distance. All other
+choices and all gates are unchanged. If A1 still fails, the result is
+reported as is and `epi.tl.wnn` keeps the paper's definition.
