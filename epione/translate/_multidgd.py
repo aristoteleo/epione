@@ -191,16 +191,15 @@ class Decoder(nn.Module):
 
 # ------------------------------------------------------------------ NB likelihood on sparse counts
 class _SparseCounts:
-    """A CSR count matrix on the device, with row gathering and lgamma(k + 1) cached."""
+    """A CSR count matrix on the device, with row gathering."""
 
     def __init__(self, X: sp.csr_matrix, device):
         X = sp.csr_matrix(X, dtype=np.float32)
         X.sort_indices()
         self.shape = X.shape
         self.indptr = torch.from_numpy(X.indptr.astype(np.int64)).to(device)
-        self.indices = torch.from_numpy(X.indices.astype(np.int64)).to(device)
+        self.indices = torch.from_numpy(X.indices.astype(np.int32)).to(device)
         self.data = torch.from_numpy(X.data).to(device)
-        self.lgk1 = torch.lgamma(self.data + 1)
         self.library = torch.from_numpy(np.asarray(X.sum(axis=1), dtype=np.float32).ravel()).to(device)
 
     def rows(self, idx: torch.Tensor):
@@ -211,7 +210,8 @@ class _SparseCounts:
         rows = torch.repeat_interleave(torch.arange(len(idx), device=idx.device), lens)
         offs = torch.cumsum(lens, 0) - lens
         pos = torch.arange(total, device=idx.device) - torch.repeat_interleave(offs - start, lens)
-        return rows, self.indices[pos], self.data[pos], self.lgk1[pos]
+        k = self.data[pos]
+        return rows, self.indices[pos].long(), k, torch.lgamma(k + 1)
 
 
 def _nb_logprob(mu_frac, r, lib, nz, per_cell=False):
@@ -266,7 +266,7 @@ class MultiDGDConfig:
     inference_lr: float = 1e-2
     # execution only
     amp: bool = False
-    eval_batch_size: int = 512
+    eval_batch_size: int = 256
 
     @property
     def sd_mean(self) -> float:
