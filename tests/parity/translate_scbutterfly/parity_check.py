@@ -23,6 +23,8 @@ METRIC_MAP = {"PCC": "PCC", "SPCC": "SPCC", "MSE": "MSE", "MAE": "MAE", "CORR": 
 FLOORS = {"PCC": ("abs", 0.01), "SPCC": ("abs", 0.01), "CORR": ("abs", 0.01), "AUROC": ("abs", 0.005),
           "MSE": ("rel", 0.05), "MAE": ("rel", 0.05), "MMD": ("rel", 0.10), "LISI": ("abs", 0.02),
           "ARI": ("abs", 0.03), "AMI": ("abs", 0.03), "NMI": ("abs", 0.03), "HOM": ("abs", 0.03)}
+# fit() arguments per run mode; "fast_a1" is MANIFEST amendment A1
+MODES = {"default": {}, "fast": {"fast": True}, "fast_a1": {"fast": True, "batch_size": 128, "lr": 1e-3}}
 G1_TOL = {"PCC": ("abs", 1e-4), "SPCC": ("abs", 1e-4), "CORR": ("abs", 1e-4), "AUROC": ("abs", 1e-4),
           "MSE": ("rel", 1e-4), "MAE": ("rel", 1e-4), "MMD": ("rel", 1e-3), "LISI": ("abs", 1e-3),
           "ARI": ("abs", 0.02), "AMI": ("abs", 0.02), "NMI": ("abs", 0.02), "HOM": ("abs", 0.02)}
@@ -69,7 +71,7 @@ def cmd_train(args):
                 torch.cuda.reset_peak_memory_stats()
             t0 = time.time()
             model = T.fit(rna, atac, train_idx=split["train"], val_idx=split["valid"], device=args.device,
-                          seed=seed, fast=(mode == "fast"), threads=args.threads)
+                          seed=seed, threads=args.threads, **MODES[mode])
             train_s = time.time() - t0
             t0 = time.time()
             te = split["test"]
@@ -169,13 +171,14 @@ def cmd_gates(args):
 
     ep_default, secs_d = run_vals("default")
     res["G2"] = gate(ref_vals, ep_default, "reference")
-    if (out / "fast").exists():
-        ep_fast, secs_f = run_vals("fast")
+    if (out / args.fast_mode).exists():
+        ep_fast, secs_f = run_vals(args.fast_mode)
         res["G3"] = gate(ep_default, ep_fast, "default")
         ratios = [secs_d[k] / secs_f[k] for k in secs_d if k in secs_f]
-        res["speed"] = {"default_seconds": secs_d, "fast_seconds": secs_f, "ratios": ratios,
-                        "median_ratio": float(np.median(ratios)) if ratios else None,
-                        "pass": bool(ratios and np.median(ratios) >= 1.5)}
+        need = 1.5 if args.fast_mode == "fast" else 1.3
+        res["speed"] = {"fast_mode": args.fast_mode, "default_seconds": secs_d, "fast_seconds": secs_f,
+                        "ratios": ratios, "median_ratio": float(np.median(ratios)) if ratios else None,
+                        "required": need, "pass": bool(ratios and np.median(ratios) >= need)}
     ref_secs = []
     for s in ref_seeds:
         rj = R / "rna2atac" / f"seed{s}" / "run.json"
@@ -215,6 +218,7 @@ def main():
     g = sub.add_parser("gates")
     g.add_argument("--out", required=True)
     g.add_argument("--json", default=None)
+    g.add_argument("--fast-mode", default="fast", choices=["fast", "fast_a1"])
     a = ap.parse_args()
     cmd_train(a) if a.cmd == "train" else cmd_gates(a)
 

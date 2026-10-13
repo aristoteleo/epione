@@ -301,9 +301,13 @@ class _Batches:
     def _one(self, X, idx):
         m = X[idx]
         if self.min_rows is not None and len(idx) >= self.min_rows:
-            return torch.sparse_csr_tensor(torch.from_numpy(m.indptr.astype(np.int64)),
-                                           torch.from_numpy(m.indices.astype(np.int64)),
-                                           torch.from_numpy(m.data), size=m.shape)
+            import warnings
+
+            with warnings.catch_warnings():  # "sparse CSR support is in beta"
+                warnings.simplefilter("ignore", UserWarning)
+                return torch.sparse_csr_tensor(torch.from_numpy(m.indptr.astype(np.int64)),
+                                               torch.from_numpy(m.indices.astype(np.int64)),
+                                               torch.from_numpy(m.data), size=m.shape)
         return torch.from_numpy(m.toarray())
 
     def _load(self, idx):

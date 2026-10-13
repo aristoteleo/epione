@@ -42,6 +42,23 @@ def _labels(truth, labels):
     return np.asarray(labels)
 
 
+def _quiet_sparse(fn):
+    """Silence scipy's SparseEfficiencyWarning raised inside the metric stack."""
+    import functools
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        import warnings
+        from scipy.sparse import SparseEfficiencyWarning
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", SparseEfficiencyWarning)
+            return fn(*args, **kwargs)
+
+    return wrapper
+
+
+@_quiet_sparse
 def evaluate(
     pred,
     truth,
