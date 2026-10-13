@@ -25,6 +25,8 @@ Written before any Epione JAMIE code or run existed.
 
 **Vendored vs upstream** (daifengwanglab/JAMIE@802148b): checked with `ast.unparse` before the runs; see "Results".
 
+**A reference quirk, reproduced.** `edModelVar.refactor` returns `logvar`, the last modality's log-variance, instead of the list. The KL term's `logvars[i]` is therefore *row i* of that tensor, broadcast against modality i's means. Epione computes the KL the same way and documents it in the code.
+
 **Epione differences, all in execution.**
 - Geodesic distances use Dijkstra on the same kNN graph, not Floyd–Warshall. The shortest paths are identical; Floyd–Warshall is O(n³).
 - GPU throughout.
