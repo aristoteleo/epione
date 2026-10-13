@@ -319,3 +319,26 @@ def test_chrom_linear_equals_per_chromosome_linears():
     assert torch.all(enc.weight.grad[1, 3:, :] == 0)
     dec(h).sum().backward()
     assert torch.all(dec.weight.grad[1, :, 3:] == 0) and torch.all(dec.bias.grad[1, 3:] == 0)
+
+
+def test_sctranslation_convention_swaps_roles(pt):
+    from sklearn.metrics import roc_auc_score
+    from sklearn.feature_selection import r_regression
+
+    pred, truth = pt
+    truth = truth.copy()
+    truth[:, 0] = 0.3          # constant measured feature
+    pred = pred.copy()
+    pred[:, 1] = 0.5           # constant predicted feature
+    y = (pred > np.median(pred)).astype(int)
+    assert M.auroc(pred, truth, convention="sctranslation") == pytest.approx(roc_auc_score(y.ravel(), truth.ravel()))
+    feats = [j for j in range(pred.shape[1]) if len(np.unique(pred[:, j])) > 1]
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        ref = [r_regression(truth[:, [j]], pred[:, j])[0] for j in feats]
+    got = M.regression_scores(pred, truth, convention="sctranslation")["CORR"]
+    assert got == pytest.approx(np.mean(ref))
+    # the standard convention drops undefined features instead
+    std = M.regression_scores(pred, truth)["CORR"]
+    assert std == pytest.approx(np.nanmean(M.pearson_per_feature(pred, truth)))

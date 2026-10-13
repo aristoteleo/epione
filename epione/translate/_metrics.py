@@ -107,7 +107,7 @@ def mae_per_cell(pred, truth) -> np.ndarray:
     return np.mean(np.abs(p - t), axis=1)
 
 
-def regression_scores(pred, truth) -> dict:
+def regression_scores(pred, truth, *, convention: str = "standard") -> dict:
     """Per-cell PCC, SPCC, MSE, MAE and the per-feature correlation CORR.
 
     * ``PCC`` -- mean over cells of the Pearson correlation of the predicted and
@@ -118,12 +118,22 @@ def regression_scores(pred, truth) -> dict:
       absolute error;
     * ``CORR`` -- mean over features of the Pearson correlation across cells,
       over features where it is finite.
+
+    With ``convention="sctranslation"``, CORR reproduces the benchmark's code.
+    That code averages over features whose *prediction* is not constant, and
+    scores a feature with constant measured values as 0 (sklearn's
+    ``r_regression(force_finite=True)``).
     """
     p, t = _pair(pred, truth)
     pcc = _rowwise_pearson(p, t)
     spcc = _rowwise_pearson(_rank_rows(p), _rank_rows(t))
     n_ok = int(np.isfinite(pcc).sum())
     corr = _rowwise_pearson(p.T, t.T)
+    if convention == "sctranslation":
+        varying_pred = (p.max(axis=0) > p.min(axis=0))
+        corr = np.where(np.isfinite(corr), corr, 0.0)[varying_pred]
+    elif convention != "standard":
+        raise ValueError(f"convention must be 'standard' or 'sctranslation', not {convention!r}")
     return {
         "PCC": float(np.nansum(pcc) / n_ok) if n_ok else float("nan"),
         "SPCC": float(np.nansum(spcc) / n_ok) if n_ok else float("nan"),
@@ -429,9 +439,16 @@ def binarize_truth(truth, how="median") -> np.ndarray:
     return (t > thr).astype(np.int8)
 
 
-def _score_binary(fn, pred, truth, binarize, average):
-    p, _ = _pair(pred, truth)
-    y = binarize_truth(truth, binarize)
+def _score_binary(fn, pred, truth, binarize, average, convention="standard"):
+    p, t = _pair(pred, truth)
+    if convention == "sctranslation":
+        # the benchmark passes (truth, pred) to a function expecting (pred, truth):
+        # the prediction is binarised and the measured values are the scores
+        p, y = t, binarize_truth(p, binarize)
+    elif convention == "standard":
+        y = binarize_truth(t, binarize)
+    else:
+        raise ValueError(f"convention must be 'standard' or 'sctranslation', not {convention!r}")
     if average == "global":
         if y.min() == y.max():
             return float("nan")
@@ -444,20 +461,26 @@ def _score_binary(fn, pred, truth, binarize, average):
     return float(np.mean(axis_vals)) if axis_vals else float("nan")
 
 
-def auroc(pred, truth, *, binarize="median", average: str = "global") -> float:
+def auroc(pred, truth, *, binarize="median", average: str = "global", convention: str = "standard") -> float:
     """Area under the ROC curve of ``pred`` for the binarised ``truth``.
 
     ``average="global"`` pools every entry (scTranslation); ``"feature"`` /
     ``"cell"`` average the per-feature / per-cell AUROC over those with both
     classes present.
+
+    ``convention="sctranslation"`` reproduces the benchmark's code, which swaps
+    the two roles: the *prediction* is binarised at its median and the measured
+    values are the scores. That number is much lower (about 0.57 vs 0.89 for
+    scButterfly on PBMC 10k) and is provided only for comparison with
+    published tables.
     """
     from sklearn.metrics import roc_auc_score
 
-    return _score_binary(roc_auc_score, pred, truth, binarize, average)
+    return _score_binary(roc_auc_score, pred, truth, binarize, average, convention)
 
 
-def auprc(pred, truth, *, binarize="median", average: str = "global") -> float:
+def auprc(pred, truth, *, binarize="median", average: str = "global", convention: str = "standard") -> float:
     """Average precision (area under the precision-recall curve); see :func:`auroc`."""
     from sklearn.metrics import average_precision_score
 
-    return _score_binary(average_precision_score, pred, truth, binarize, average)
+    return _score_binary(average_precision_score, pred, truth, binarize, average, convention)

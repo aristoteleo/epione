@@ -70,6 +70,7 @@ def evaluate(
     binarize="median",
     auc_average: str = "global",
     mmd_max_cells: Optional[int] = 5000,
+    convention: str = "standard",
     seed: int = 0,
 ) -> dict:
     """All metrics for one predicted matrix.
@@ -88,6 +89,11 @@ def evaluate(
     categories
         Subset of ``clustering``, ``regression``, ``distribution``,
         ``classification``.
+    convention
+        ``"standard"`` (default) or ``"sctranslation"``. The latter reproduces
+        the scTranslation code for AUROC/AUPRC and CORR, which differs from
+        the stated definitions (see :func:`epione.translate.metrics.auroc`).
+        Every other metric is identical under both.
     """
     if hasattr(pred, "obs") and hasattr(truth, "obs"):
         pred = pred[truth.obs_names, truth.var_names]
@@ -105,13 +111,13 @@ def evaluate(
     if "clustering" in categories and lab is not None:
         out.update(M.cluster_scores(pred, lab, n_pcs=n_pcs, seed=seed))
     if "regression" in categories:
-        out.update(M.regression_scores(pred, truth))
+        out.update(M.regression_scores(pred, truth, convention=convention))
     if "distribution" in categories:
         out["MMD"] = M.mmd(pred, truth, n_pcs=n_pcs, max_cells=mmd_max_cells, seed=seed)
         out["iLISI"] = M.ilisi(pred, truth, n_pcs=n_pcs, seed=seed)
     if "classification" in categories:
-        out["AUROC"] = M.auroc(pred, truth, binarize=binarize, average=auc_average)
-        out["AUPRC"] = M.auprc(pred, truth, binarize=binarize, average=auc_average)
+        out["AUROC"] = M.auroc(pred, truth, binarize=binarize, average=auc_average, convention=convention)
+        out["AUPRC"] = M.auprc(pred, truth, binarize=binarize, average=auc_average, convention=convention)
     return out
 
 
