@@ -22,6 +22,7 @@ _METHOD_MODULES = {
     "scbutterfly": "._scbutterfly",
     "babel": "._babel",
     "scpair": "._scpair",
+    "multidgd": "._multidgd",
 }
 _REGISTRY: dict = {}
 
