@@ -98,6 +98,24 @@ def _evaluate(pred, truth, labels):
     return T.evaluate(pred, truth, labels=labels)
 
 
+def _evaluate_file(path: Path, truth, labels, tag: str = ""):
+    """Metrics of a saved prediction, cached next to it (keyed on its mtime)."""
+    import scanpy as sc
+
+    cache = path.with_name(path.stem + f".epione_metrics{tag}.json")
+    key = path.stat().st_mtime
+    if cache.exists():
+        c = json.loads(cache.read_text())
+        if c.get("mtime") == key:
+            return c["metrics"]
+    m = _evaluate(sc.read_h5ad(path), truth, labels)
+    try:
+        cache.write_text(json.dumps({"mtime": key, "metrics": m}))
+    except OSError:
+        pass
+    return m
+
+
 def cmd_gates(args):
     import scanpy as sc
 
@@ -129,8 +147,7 @@ def cmd_gates(args):
         for s in ref_seeds:
             sd = R / d / f"seed{s}"
             ref_m = json.loads((sd / "metrics.json").read_text())
-            pred = sc.read_h5ad(sd / "pred.h5ad")
-            mine = _evaluate(pred, truths[d], labels[d])
+            mine = _evaluate_file(sd / "pred.h5ad", truths[d], labels[d], tag="_ref")
             for m, em in METRIC_MAP.items():
                 ref_vals[d][m].append(ref_m[m])
                 tol = _tol(G1_TOL[m], ref_m[m])
@@ -147,8 +164,7 @@ def cmd_gates(args):
                 continue
             secs[sdir.name] = json.loads((sdir / "run.json").read_text())["train_seconds"]
             for d in DIRS:
-                pred = sc.read_h5ad(sdir / f"{d}.h5ad")
-                mine = _evaluate(pred, truths[d], labels[d])
+                mine = _evaluate_file(sdir / f"{d}.h5ad", truths[d], labels[d])
                 for m, em in METRIC_MAP.items():
                     vals[d][m].append(mine[em])
         return vals, secs

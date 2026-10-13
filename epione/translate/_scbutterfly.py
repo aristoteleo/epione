@@ -373,9 +373,13 @@ class ScButterfly(TranslationModel):
     Parameters
     ----------
     fast
-        Use the fast path: bf16 autocast on CUDA, batch 256 and learning rate
-        2e-3 (validated separately against the default; see
-        ``tests/parity/translate_scbutterfly/MANIFEST.md``).
+        Train with bf16 autocast on CUDA, batch 256 and learning rate 2e-3:
+        about 1.7x faster on an H100. This is *not* equivalent to the default
+        path. In the pre-registered check (PBMC 10k, 3 seeds; see
+        ``tests/parity/translate_scbutterfly/MANIFEST.md``), RNA->ATAC
+        accuracy matched, but ATAC->RNA predictions clustered worse (Leiden ARI
+        0.35 vs 0.45) while correlating better per gene. Use the default for
+        results comparable to the reference implementation.
     **kwargs
         Any :class:`ScButterflyConfig` field.
     """
