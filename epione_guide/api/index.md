@@ -170,6 +170,7 @@ RNA → ATAC and ATAC → RNA translators learned from paired multiome cells, be
 | Train / translate / save (`method="scbutterfly"`, `"babel"` or `"scpair"`; `fast=True` trades accuracy for speed, see each method's parity MANIFEST) | {func}`epione.translate.fit`, {class}`epione.translate.TranslationModel`, {func}`epione.translate.load`, {func}`epione.translate.available_methods` |
 | Metrics: Leiden ARI/AMI/NMI/HOM, per-cell PCC/SPCC, MSE/MAE, per-feature CORR, MMD, graph iLISI, AUROC/AUPRC | {mod}`epione.translate.metrics` |
 | Benchmark tables and plot (scib style) | {func}`epione.translate.evaluate`, {func}`epione.translate.benchmark`, {func}`epione.translate.summarize`, {func}`epione.translate.plot_benchmark` |
+| multiDGD (`method="multidgd"`): raw-count inputs, source-only translation, joint reconstruction | {func}`epione.translate.prepare_counts`, {meth}`epione.translate._multidgd.MultiDGD.predict`, {meth}`epione.translate._multidgd.MultiDGD.reconstruct` |
 | Example data: 10x Multiome PBMC 10k (scGLUE release) | {func}`epione.datasets.pbmc10k_multiome` |
 
 ### Differential & peak-to-gene linkage
