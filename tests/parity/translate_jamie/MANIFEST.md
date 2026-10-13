@@ -23,8 +23,6 @@ Written before any Epione JAMIE code or run existed.
 | prediction | `decoder_to(μ(encoder_from(x)))` in eval mode, mapped back by the inverse standardisation and inverse PCA. Predictions therefore live in **raw-count space** for RNA and **z-scored space** for ATAC |
 | truth files | ATAC→RNA: raw HVG counts. RNA→ATAC: z-scored peaks. Hence the count-scale MSE (contract §8) |
 
-**Vendored vs upstream** (daifengwanglab/JAMIE@802148b): checked with `ast.unparse` before the runs; see "Results".
-
 **A reference quirk, reproduced.** `edModelVar.refactor` returns `logvar`, the last modality's log-variance, instead of the list. The KL term's `logvars[i]` is therefore *row i* of that tensor, broadcast against modality i's means. Epione computes the KL the same way and documents it in the code.
 
 **Epione differences, all in execution.**
@@ -60,6 +58,75 @@ The structure, tolerances and floors follow the earlier MANIFESTs.
   - Speed gate: ≥ 1.5×.
   - If it fails, fast mode is documented as **not equivalent**, with no amendments.
 
-## Results
+## Results (2026-10-13)
 
-Filled in after the runs.
+**Vendored vs upstream** (`ast.unparse` diff against daifengwanglab/JAMIE@802148b). Upstream adds sparse-matrix support for P/F and refactors only. **No deviation that changes the model or its predictions.**
+
+| gate | result |
+|---|---|
+| G0 preprocessing | **PASS**: both truths identical |
+| G1 metric implementation | non-clustering **PASS** (max \|Δ\| ≤ 8e-4); clustering: **1 miss** (rna2atac seed 0 ARI: 0.4941 vs the reference's 0.4707; tolerance 0.02) |
+| **G2 training parity** | **FAIL: 20 / 21** gated pairs pass |
+| G3 fast mode | speed **PASS** (median 2.19×); metrics **FAIL** (13 / 21) |
+
+### G2: mean of 3 seeds, reference vs Epione
+
+| direction | metric | reference | Epione | \|Δ\| | tol | result |
+|---|---|---|---|---|---|---|
+| rna2atac | PCC | 0.1457 ± 0.0009 | 0.1452 | 0.0005 | 0.0100 | pass |
+| rna2atac | SPCC | 0.1636 ± 0.0048 | 0.1707 | 0.0072 | 0.0100 | pass |
+| rna2atac | MSE | 396.7626 ± 413.5406 | 341.7235 | 55.0391 | 827.0811 | (exempt) |
+| rna2atac | MAE | 0.7013 ± 0.2029 | 0.7029 | 0.0015 | 0.4059 | pass |
+| rna2atac | CORR | 0.0066 ± 0.0038 | 0.0052 | 0.0013 | 0.0100 | pass |
+| rna2atac | MMD | 0.0000 ± 0.0000 | 0.0000 | 0.0000 | 0.0000 | (exempt) |
+| rna2atac | LISI | 0.6955 ± 0.0233 | 0.6972 | 0.0017 | 0.0466 | pass |
+| rna2atac | AUROC | 0.5601 ± 0.0025 | 0.5641 | 0.0039 | 0.0051 | pass |
+| rna2atac | ARI | 0.4730 ± 0.0021 | 0.5047 | 0.0316 | 0.0300 | **fail** |
+| rna2atac | AMI | 0.6887 ± 0.0026 | 0.7032 | 0.0145 | 0.0300 | pass |
+| rna2atac | NMI | 0.6972 ± 0.0024 | 0.7113 | 0.0141 | 0.0300 | pass |
+| rna2atac | HOM | 0.7267 ± 0.0036 | 0.7364 | 0.0097 | 0.0300 | pass |
+| atac2rna | PCC | 0.9655 ± 0.0001 | 0.9655 | 0.0000 | 0.0100 | pass |
+| atac2rna | SPCC | 0.3195 ± 0.0049 | 0.3165 | 0.0029 | 0.0100 | pass |
+| atac2rna | MSE | 14.2418 ± 0.3328 | 14.0482 | 0.1937 | 0.7121 | pass |
+| atac2rna | MAE | 0.2015 ± 0.0020 | 0.2004 | 0.0011 | 0.0101 | pass |
+| atac2rna | CORR | 0.1581 ± 0.0034 | 0.1600 | 0.0019 | 0.0100 | pass |
+| atac2rna | MMD | 0.0832 ± 0.0083 | 0.0886 | 0.0054 | 0.0166 | pass |
+| atac2rna | LISI | 0.6559 ± 0.0427 | 0.6616 | 0.0057 | 0.0853 | pass |
+| atac2rna | AUROC | 0.5561 ± 0.0009 | 0.5556 | 0.0005 | 0.0050 | (exempt) |
+| atac2rna | ARI | 0.3416 ± 0.0426 | 0.3915 | 0.0499 | 0.0851 | pass |
+| atac2rna | AMI | 0.5983 ± 0.0161 | 0.6118 | 0.0135 | 0.0321 | pass |
+| atac2rna | NMI | 0.6104 ± 0.0149 | 0.6231 | 0.0127 | 0.0300 | pass |
+| atac2rna | HOM | 0.6544 ± 0.0092 | 0.6602 | 0.0058 | 0.0300 | pass |
+
+**The one failure: rna2atac Leiden ARI**, 0.505 vs 0.473 ± 0.002.
+- **Environment effect.** Leiden itself differs between the two software environments. G1 shows Epione's environment gives ARI 0.494, 0.474 and 0.469 (mean 0.479, SD 0.013) on the *reference's own* predictions.
+- **Same-environment comparison** (reported for information, not as a re-registered gate): Epione's mean is 0.026 from 0.479, inside the 0.03 floor.
+- **Spread.** Epione's own seeds range 0.44–0.54.
+- **AMI, NMI and HOM** for the same predictions pass.
+
+The pre-registered rule compares against the reference `metrics.json`, so **G2 is recorded as FAIL (20/21)**. No amendment was made.
+
+**Exempt pairs, as pre-registered.** rna2atac MSE: reference 397 ± 414, Epione 342. rna2atac MMD: both 0.0.
+
+### G3
+
+`fast=True` (bf16, batch 512) fails:
+
+| direction | metric | default | fast | result |
+|---|---|---|---|---|
+| rna2atac | SPCC | 0.1707 | 0.1525 | **fail** |
+| rna2atac | MAE | 0.7029 | 0.3731 | **fail** |
+| rna2atac | CORR | 0.0052 | 0.0853 | **fail** |
+| rna2atac | AMI | 0.7032 | 0.6664 | **fail** |
+| rna2atac | NMI | 0.7113 | 0.6753 | **fail** |
+| rna2atac | HOM | 0.7364 | 0.6938 | **fail** |
+| atac2rna | SPCC | 0.3165 | 0.3013 | **fail** |
+| atac2rna | MAE | 0.2004 | 0.2169 | **fail** |
+
+Training seconds:
+- default: 6153, 7221, 5556;
+- fast: 2808, 2676, 2991.
+
+`fast=True` is documented as **not equivalent**.
+
+**Timing vs reference.** The reference took 5708, 1627, 10140 s and Epione's default 6153, 7221, 5556 s. Both are dominated by stopping on the training loss, and the shared GPU's load varied, so this is not reported as a speed comparison.
