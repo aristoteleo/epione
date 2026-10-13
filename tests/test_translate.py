@@ -416,3 +416,56 @@ def test_benchmark_per_method_truth_and_exclude():
                       labels="cell_type", categories=("regression",), exclude=("MSE", "MAE"))
     assert set(res["metric"]) == {"PCC", "SPCC", "CORR"}
     assert np.allclose(res.loc[res.metric == "PCC", "value"], 1.0)
+
+
+# ----------------------------------------------------------------- scPair
+def test_zinb_loglik_matches_scipy():
+    from scipy.stats import nbinom
+    from epione.translate._scpair import log_zinb_positive
+
+    rng = np.random.default_rng(10)
+    y = rng.integers(0, 15, 300).astype(float)
+    y[:60] = 0
+    mu = rng.gamma(2.0, 2.0, 300)
+    th = rng.gamma(2.0, 1.0, 300) + 0.2
+    logit = rng.normal(0, 1, 300)
+    pi = 1 / (1 + np.exp(-logit))
+    nb = nbinom.pmf(y, th, th / (th + mu))
+    ref = np.log(np.where(y == 0, pi + (1 - pi) * nb, (1 - pi) * nb))
+    # eps separates the zero / non-zero cases (x < eps vs x > eps), so it must be > 0
+    got = log_zinb_positive(torch.tensor(y), torch.tensor(mu), torch.tensor(th), torch.tensor(logit)).numpy()
+    np.testing.assert_allclose(got, ref, rtol=1e-6, atol=1e-6)
+
+
+@pytest.fixture(scope="module")
+def scpair_trained():
+    rna, atac = _synthetic()
+    r, a = T.prepare(rna, atac, n_top_genes=80, min_cells_frac=0.01, method="scpair")
+    m = T.fit(r[:180], a[:180], method="scpair", device="cpu", seed=1, threads=2, max_epochs=4)
+    return m, r, a
+
+
+def test_scpair_prepare_keeps_counts():
+    rna, atac = _synthetic()
+    r, a = T.prepare(rna, atac, n_top_genes=50, method="scpair")
+    assert a.X.max() > 1 and np.allclose(a.X.data, np.round(a.X.data))   # peak counts
+    assert np.allclose(r.X.data, np.round(r.X.data))
+
+
+def test_scpair_predicts_proportions_and_probabilities(scpair_trained):
+    m, r, a = scpair_trained
+    pa, pr = m.predict(r[180:]), m.predict(a[180:])
+    np.testing.assert_allclose(pr.X.sum(1), 1.0, rtol=1e-5)
+    assert pa.X.min() >= 0 and pa.X.max() <= 1
+    assert set(m.history["epochs"]) == {"rna2atac", "atac2rna"}
+
+
+def test_scpair_single_direction_and_save_load(scpair_trained, tmp_path):
+    m, r, a = scpair_trained
+    one = T.fit(r[:180], a[:180], method="scpair", direction="rna2atac", device="cpu", seed=1, threads=2, max_epochs=3)
+    assert set(one.nets) == {"rna2atac"}
+    with pytest.raises(ValueError):
+        one.predict(a[180:], "atac2rna")
+    m.save(tmp_path / "s.pt")
+    m2 = T.load(tmp_path / "s.pt")
+    np.testing.assert_array_equal(m.predict(r[180:]).X, m2.predict(r[180:]).X)
