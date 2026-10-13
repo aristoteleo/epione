@@ -164,3 +164,19 @@ Changes:
 - G1 and G2 compare under `convention="sctranslation"`, so that both sides compute the same quantity.
 - The standard-convention AUROC, AUPRC and CORR are also reported, for both sides.
 - No tolerance or floor changes.
+
+## Amendment A3: unshuffled training in the reference runner (before running it)
+
+A preliminary G2, with one reference seed so the tolerance is the floor alone, failed on four pairs:
+- rna2atac iLISI: 0.197 reference vs 0.411 Epione;
+- rna2atac MMD: 0.064 vs 0.044;
+- atac2rna MMD: 0.115 vs 0.103;
+- atac2rna ARI: 0.396 vs 0.450.
+
+The semantic diff (`ast.unparse`) of scTranslation's vendored `train_model.py` against upstream scButterfly shows the training loop is identical. However, the runner supplies its own loaders: `scButterflyDataModule(...).get_dataloader()`, whose `shuffle` defaults to `False`. **The reference therefore trains on the same batches, in the same order, every epoch.** Upstream scButterfly shuffles.
+
+Changes:
+- `ScButterflyConfig.shuffle` is added. It defaults to `True`, the upstream behaviour.
+- **G2 is evaluated on Epione runs with `shuffle=False`** (mode `noshuffle`, seeds 0–2), the setting the reference ran.
+- The shuffled default is reported against the reference as **G2-shuffled**, for information.
+- Tolerances and floors are unchanged.

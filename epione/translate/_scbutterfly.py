@@ -273,6 +273,9 @@ class ScButterflyConfig:
     kl_mean: bool = True
     lock_encoder_and_decoder: bool = False
     discriminator_threshold: float = 1.35
+    # scButterfly shuffles training cells every epoch; scTranslation's runner
+    # does not (its DataLoader is built with shuffle=False)
+    shuffle: bool = True
     # execution only (does not change the model)
     amp: bool = False
     compile: bool = False
@@ -463,7 +466,7 @@ class ScButterfly(TranslationModel):
                 net.train()
                 tr_losses = []
                 w = warm(klw, epoch)
-                for r, a in data.iterate(_epoch_batches(train_idx, cfg.batch_size, gen, True)):
+                for r, a in data.iterate(_epoch_batches(train_idx, cfg.batch_size, gen, cfg.shuffle)):
                     x = r if kind == "rna" else a
                     with autocast():
                         out, mu, lv = tr(enc(x), sample=True)
@@ -531,7 +534,7 @@ class ScButterfly(TranslationModel):
             net.train()
             tr_l, dl = [], []
             klw = warm(kl_all, epoch)
-            for r, a in data.iterate(_epoch_batches(train_idx, cfg.batch_size, gen, True)):
+            for r, a in data.iterate(_epoch_batches(train_idx, cfg.batch_size, gen, cfg.shuffle)):
                 with autocast():
                     ld = disc_loss(r, a, True)
                 step(("dr", "da"), ld)

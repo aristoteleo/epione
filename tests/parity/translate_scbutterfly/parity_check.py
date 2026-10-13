@@ -24,7 +24,9 @@ FLOORS = {"PCC": ("abs", 0.01), "SPCC": ("abs", 0.01), "CORR": ("abs", 0.01), "A
           "MSE": ("rel", 0.05), "MAE": ("rel", 0.05), "MMD": ("rel", 0.10), "LISI": ("abs", 0.02),
           "ARI": ("abs", 0.03), "AMI": ("abs", 0.03), "NMI": ("abs", 0.03), "HOM": ("abs", 0.03)}
 # fit() arguments per run mode; "fast_a1" is MANIFEST amendment A1
-MODES = {"default": {}, "fast": {"fast": True}, "fast_a1": {"fast": True, "batch_size": 128, "lr": 1e-3}}
+MODES = {"default": {}, "fast": {"fast": True}, "fast_a1": {"fast": True, "batch_size": 128, "lr": 1e-3},
+         # amendment A3: scTranslation's runner trains without shuffling
+         "noshuffle": {"shuffle": False}}
 G1_TOL = {"PCC": ("abs", 1e-4), "SPCC": ("abs", 1e-4), "CORR": ("abs", 1e-4), "AUROC": ("abs", 1e-4),
           "MSE": ("rel", 1e-4), "MAE": ("rel", 1e-4), "MMD": ("rel", 1e-3), "LISI": ("abs", 1e-3),
           "ARI": ("abs", 0.02), "AMI": ("abs", 0.02), "NMI": ("abs", 0.02), "HOM": ("abs", 0.02)}
@@ -210,7 +212,12 @@ def cmd_gates(args):
         return rows
 
     ep_default, secs_d = run_vals("default")
-    res["G2"] = gate(ref_vals, ep_default, "reference")
+    res["G2_shuffled"] = gate(ref_vals, ep_default, "reference")
+    if (out / "noshuffle").exists():
+        ep_ns, _ = run_vals("noshuffle")
+        res["G2"] = gate(ref_vals, ep_ns, "reference")
+    else:
+        res["G2"] = res["G2_shuffled"]
     if (out / args.fast_mode).exists():
         ep_fast, secs_f = run_vals(args.fast_mode)
         res["G3"] = gate(ep_default, ep_fast, "default")
@@ -231,6 +238,7 @@ def cmd_gates(args):
         "G1_non_clustering": all(r["pass"] for r in res["G1"] if r["metric"] not in ("ARI", "AMI", "NMI", "HOM")),
         "G1_clustering": all(r["pass"] for r in res["G1"] if r["metric"] in ("ARI", "AMI", "NMI", "HOM")),
         "G2": all(r["pass"] for r in res["G2"] if r["gated"]) if res["G2"] else None,
+        "G2_shuffled": all(r["pass"] for r in res["G2_shuffled"] if r["gated"]) if res["G2_shuffled"] else None,
         "G3_metrics": all(r["pass"] for r in res["G3"] if r["gated"]) if res["G3"] else None,
         "G3_speed": res["speed"].get("pass"),
     }
@@ -238,7 +246,7 @@ def cmd_gates(args):
     if args.json:
         Path(args.json).write_text(json.dumps(res, indent=1, default=float))
     print(json.dumps(summary, indent=1))
-    for key in ("G2", "G3"):
+    for key in ("G2", "G2_shuffled", "G3"):
         for r in res[key]:
             flag = "PASS" if r["pass"] else ("fail" if r["gated"] else "(not gated)")
             base = r.get("reference_baseline_mean", r.get("default_baseline_mean"))
