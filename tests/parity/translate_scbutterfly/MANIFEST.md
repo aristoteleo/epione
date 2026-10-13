@@ -94,7 +94,7 @@ Run on 2026-10-12 on the shared H100, seeds 0–2, interleaved default/fast per 
 
 The median ratio is 1.69 (gate ≥ 1.5). Default seed 2 stopped early at translator epoch 181; every other run used the full 100 + 100 + 200 epochs.
 
-**Metrics: FAIL**, 7 of 22 gated (metric, direction) pairs.
+**Metrics: FAIL**, 6 of 22 gated (metric, direction) pairs.
 
 | direction | metric | default | fast | \|Δ\| | tol | result |
 |---|---|---|---|---|---|---|
