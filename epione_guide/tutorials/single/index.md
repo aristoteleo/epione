@@ -44,6 +44,13 @@ TF footprinting, PRINT and sequence-to-profile deep learning models.
 The full SCENIC+ pipeline, from topics to eRegulons, with bit-exact parity to the reference implementation.
 :::
 
+:::{grid-item-card} Cross-modality translation
+:link: translation
+:link-type: doc
+
+Predict chromatin accessibility from gene expression and expression from accessibility, and benchmark translation methods.
+:::
+
 :::{grid-item-card} Single-cell Hi-C
 :link: hic
 :link-type: doc

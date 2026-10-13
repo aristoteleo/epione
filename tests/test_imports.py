@@ -26,6 +26,7 @@ SUBMODULES = [
     "epione.pl",
     "epione.pp",
     "epione.utils",
+    "epione.translate",
 ]
 
 

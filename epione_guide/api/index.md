@@ -39,6 +39,7 @@ Stages that work on any modality once the data is loaded into
    epione.pp
    epione.tl
    epione.pl
+   epione.translate
 ```
 
 ## Infrastructure
@@ -156,6 +157,18 @@ In pipeline order: topics → cisTarget / DEM → region-to-gene and TF-to-gene 
 | TF-region-gene triplet ranking / cisTarget motif ranks | {func}`epione.scenic.triplet_rank`, {func}`epione.scenic.tf_region_max_rank` |
 | AUCell eRegulon scores (rank once, score many) | {func}`epione.scenic.rank_cells`, {func}`epione.scenic.aucell`, {func}`epione.scenic.score_eregulons`, {func}`epione.scenic.eregulon_signatures` |
 | Regulon specificity scores (RSS) | {func}`epione.scenic.regulon_specificity_scores` |
+
+### Cross-modality translation (`epione.translate`)
+
+RNA → ATAC and ATAC → RNA translators learned from paired multiome cells, behind one interface, plus a scib-style benchmark on the metrics of the scTranslation benchmark. Methods need PyTorch (`pip install epione[translate]`).
+
+| Task | Functions |
+|---|---|
+| Preprocessing (normalise/log1p/HVG; binarise, filter, TF-IDF, scale) | {func}`epione.translate.prepare`, {func}`epione.translate.prepare_rna`, {func}`epione.translate.prepare_atac`, {func}`epione.translate.tfidf`, {func}`epione.translate.chrom_blocks` |
+| Train / translate / save (`method="scbutterfly"`; `fast=True` for the validated fast path) | {func}`epione.translate.fit`, {class}`epione.translate.TranslationModel`, {func}`epione.translate.load`, {func}`epione.translate.available_methods` |
+| Metrics: Leiden ARI/AMI/NMI/HOM, per-cell PCC/SPCC, MSE/MAE, per-feature CORR, MMD, graph iLISI, AUROC/AUPRC | {mod}`epione.translate.metrics` |
+| Benchmark tables and plot (scib style) | {func}`epione.translate.evaluate`, {func}`epione.translate.benchmark`, {func}`epione.translate.summarize`, {func}`epione.translate.plot_benchmark` |
+| Example data: 10x Multiome PBMC 10k (scGLUE release) | {func}`epione.datasets.pbmc10k_multiome` |
 
 ### Differential & peak-to-gene linkage
 
