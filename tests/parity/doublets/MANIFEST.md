@@ -15,7 +15,7 @@ scDblFinder and AMULET are deliberately **not** reimplemented in Epione, because
 
 ## References
 
-The reference environment is outside the repository: `epione_dev/bin/Rscript-archr` (R 4.4.3, ArchR 1.0.3, scDblFinder 1.23.4, xgboost 3.0.5.1). It is used read-only, and its scripts live in `epione_dev/doublet_ref/scripts/`.
+The reference environment is outside the repository: an R 4.4.3 install with ArchR 1.0.3, scDblFinder 1.23.4 and xgboost 3.0.5.1. It is used read-only, and its scripts live in `epione_dev/doublet_ref/scripts/`.
 
 - **Parity fixture.** The ArchR hematopoiesis tutorial project (`epione_dev/fixture/ArchR_base`): 3 samples, BMMC, CD34 BMMC and PBMC. ArchR runs on a *copy* of its Arrow files, because `addDoubletScores` writes into Arrow files.
 - **Benchmark data.** GEO GSE162690 (Granja et al. 2021): 10x scATAC-seq of a mixture of 11 cell lines at low and high loading.
