@@ -81,21 +81,31 @@ def read_10x_multiome(
         >>> atac.uns["files"]["fragments"]
         'sample/outs/atac_fragments.tsv.gz'
     """
+    import warnings
+
     import scanpy as sc
+
+    def _read_h5(f):
+        with warnings.catch_warnings():
+            # 10x matrices repeat some gene symbols; they are made unique below.
+            warnings.filterwarnings("ignore", message="Variable names are not unique")
+            return sc.read_10x_h5(str(f), gex_only=False)
 
     path = Path(path)
     root = path if path.is_dir() else path.parent
     if path.is_file():
-        adata = sc.read_10x_h5(str(path), gex_only=False)
+        adata = _read_h5(path)
     else:
         h5 = _find(path, _H5_NAMES)
         mtx = _find(path, _MTX_NAMES)
         if (path / "matrix.mtx.gz").exists() or (path / "matrix.mtx").exists():
             mtx, h5, root = path, None, path.parent
         if h5 is not None:
-            adata = sc.read_10x_h5(str(h5), gex_only=False)
+            adata = _read_h5(h5)
         elif mtx is not None:
-            adata = sc.read_10x_mtx(str(mtx), var_names="gene_symbols", gex_only=False, make_unique=False)
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", message="Variable names are not unique")
+                adata = sc.read_10x_mtx(str(mtx), var_names="gene_symbols", gex_only=False, make_unique=False)
             root = mtx.parent
         else:
             raise FileNotFoundError(f"no filtered_feature_bc_matrix(.h5) under {path}")

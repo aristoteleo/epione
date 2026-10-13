@@ -182,3 +182,25 @@ The ATAC part of gate T is replaced by:
 | T-A1a: barcodes, peak names, ATAC and RNA matrices vs an independent `h5py` decode | all identical |
 | T-A1b (information): ATAC row sum = `atac_peak_region_cutsites` | 100% of 11,898 cells |
 | T-A1b (information): RNA row sum = `gex_umis_count` | 0% (10x's metric counts a different UMI set) |
+
+### B · benchmark (no gate), 10x Multiome PBMC 10k, 9,631 cells, 27 cell types
+
+Leiden at resolution 1.0 on 20-NN graphs, ARI/NMI averaged over seeds 0–2.
+
+| representation | ARI (± SD over seeds) | NMI | cell-type silhouette | 20-NN purity | time |
+|---|---|---|---|---|---|
+| RNA (PCA 50) | 0.722 ± 0.036 | 0.837 | 0.204 | 0.902 | — |
+| ATAC (LSI 2:50) | 0.728 ± 0.005 | 0.832 | 0.057 | 0.890 | — |
+| CCA, RNA vs ATAC gene activity (cca_py) | 0.650 ± 0.022 | 0.787 | 0.080 | 0.841 | 24 s |
+| combined_dims (PCA + LSI 2:50) | 0.741 ± 0.002 | 0.848 | 0.131 | 0.920 | < 0.01 s |
+| **WNN** | **0.807 ± 0.066** | **0.868** | 0.445 † | **0.932** | 7 s |
+| MultiVI (300 epochs, early stopping) | 0.515 ± 0.024 | 0.746 | 0.194 | 0.899 | 57 min (H100, shared; 1.1 GB) |
+
+† WNN has no embedding; as registered, its silhouette is computed on its
+UMAP, which inflates it. It is not comparable with the other rows.
+
+- WNN is best on ARI, NMI and neighbourhood purity, and combined_dims is second.
+- MultiVI's neighbourhoods are about as pure as RNA's, but its Leiden clusters at resolution 1.0 match the labels less well.
+- CCA, designed for unpaired data, is the weakest joint method.
+- Caveat: the reference labels come from a Seurat WNN analysis of this sample, which may favour WNN-like graphs.
+- MultiVI trained with features detected in ≥ 1% of cells (13,315 genes, 79,386 peaks), seed 0, single run.
