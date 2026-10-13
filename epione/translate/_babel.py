@@ -37,7 +37,9 @@ Choices where the paper gives no value (documented, not reverse-engineered):
 * batch normalisation after every hidden (non-latent, non-output) linear layer,
   before its PReLU;
 * gradient-norm clipping at 5;
-* PyTorch's ``ReduceLROnPlateau`` defaults (factor 0.1, patience 10);
+* a constant learning rate. The paper mentions reducing it, but the reference
+  runs' logs show it stayed at 0.01 throughout (``lr_patience`` enables
+  ``ReduceLROnPlateau``);
 * early-stopping patience 25 and batch size 64, from the scTranslation config;
 * at most 500 epochs, keeping the weights with the lowest validation loss;
 * losses averaged over entries;
@@ -169,7 +171,7 @@ class BabelConfig:
     batch_size: int = 64
     max_epochs: int = 500
     patience: int = 25
-    lr_patience: int = 10
+    lr_patience: Optional[int] = None  # None: constant learning rate (as the reference ran)
     lr_factor: float = 0.1
     grad_clip: float = 5.0
     clip_quantile: float = 0.005
@@ -257,7 +259,8 @@ class Babel(TranslationModel):
         use_amp = cfg.amp and device.type == "cuda"
         autocast = (lambda: torch.autocast("cuda", dtype=torch.bfloat16)) if use_amp else _nullcontext
         opt = torch.optim.Adam(net.parameters(), lr=cfg.lr)
-        sched = torch.optim.lr_scheduler.ReduceLROnPlateau(opt, factor=cfg.lr_factor, patience=cfg.lr_patience)
+        sched = (None if cfg.lr_patience is None else
+                 torch.optim.lr_scheduler.ReduceLROnPlateau(opt, factor=cfg.lr_factor, patience=cfg.lr_patience))
         stopper = _EarlyStop(cfg.patience)
         beta = cfg.beta
 
@@ -299,7 +302,8 @@ class Babel(TranslationModel):
             hist["val"].append(v)
             hist["val_parts"].append(torch.stack(parts).mean(0).float().cpu().numpy().tolist())
             hist["lr"].append(opt.param_groups[0]["lr"])
-            sched.step(v)
+            if sched is not None:
+                sched.step(v)
             stopper(v, net)
             if verbose and epoch % 10 == 0:
                 print(f"[BABEL] epoch {epoch}: train {hist['train'][-1]:.4f} val {v:.4f} lr {hist['lr'][-1]:.2e}")
