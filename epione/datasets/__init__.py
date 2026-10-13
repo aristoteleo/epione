@@ -21,7 +21,7 @@ data anchored to specific tutorials.
 from __future__ import annotations
 
 from ._archr import archr_hematopoiesis
-from ._multiome import pbmc10k_multiome
+from ._multiome import pbmc10k_multiome, pbmc10k_multiome_10x
 from ._corces import corces2016_bulk_atac
 
-__all__: list[str] = ["archr_hematopoiesis", "pbmc10k_multiome", "corces2016_bulk_atac"]
+__all__: list[str] = ["archr_hematopoiesis", "pbmc10k_multiome", "pbmc10k_multiome_10x", "corces2016_bulk_atac"]

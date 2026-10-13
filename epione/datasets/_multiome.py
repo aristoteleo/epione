@@ -53,3 +53,51 @@ def pbmc10k_multiome(
     rna = ad.read_h5ad(paths["10x-Multiome-Pbmc10k-RNA.h5ad"])
     atac = ad.read_h5ad(paths["10x-Multiome-Pbmc10k-ATAC.h5ad"])
     return rna, atac
+
+
+TENX_BASE_URL = "https://cf.10xgenomics.com/samples/cell-arc/2.0.0/pbmc_granulocyte_sorted_10k/"
+
+PBMC10K_MULTIOME_10X = {
+    "pbmc_granulocyte_sorted_10k_filtered_feature_bc_matrix.h5":
+        "sha256:f6824171378787baab244f559b8b438f79db2eb39f78d17b2196f7ecd2c03549",
+    "pbmc_granulocyte_sorted_10k_per_barcode_metrics.csv":
+        "sha256:fd3e069b83e152145af234667b419c982968aca0df322a92adb71284d0d902cd",
+}
+
+
+def pbmc10k_multiome_10x(
+    data_dir: Optional[Union[str, os.PathLike]] = None,
+    *,
+    progressbar: bool = False,
+) -> Path:
+    """The cellranger-arc 2.0.0 output of the same 10x PBMC 10k Multiome sample.
+
+    Downloads the filtered feature-barcode matrix (``.h5``, 192 MB; Gene
+    Expression + Peaks) and ``per_barcode_metrics.csv`` (89 MB) from 10x
+    Genomics, verified against pinned sha256 sums, and returns the folder.
+    Read it with :func:`epione.io.read_10x_multiome`. The 2 GB fragment file
+    is not downloaded.
+
+    Arguments:
+        data_dir: Folder for the files. Defaults to
+            ``<pooch cache>/epione/pbmc10k_multiome_10x``.
+        progressbar: Show a download progress bar.
+
+    Returns:
+        The folder containing the two files.
+
+    Examples:
+        >>> rna, atac = epi.io.read_10x_multiome(epi.datasets.pbmc10k_multiome_10x())
+        >>> rna.shape, atac.shape
+        ((11898, 36601), (11898, 143887))
+    """
+    import pooch
+
+    if data_dir is None:
+        data_dir = Path(pooch.os_cache("epione")) / "pbmc10k_multiome_10x"
+    data_dir = Path(data_dir)
+    data_dir.mkdir(parents=True, exist_ok=True)
+    for fname, known_hash in PBMC10K_MULTIOME_10X.items():
+        pooch.retrieve(url=TENX_BASE_URL + fname, known_hash=known_hash, fname=fname,
+                       path=str(data_dir), progressbar=progressbar)
+    return data_dir

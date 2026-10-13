@@ -97,7 +97,7 @@ linked above.
 | Task | Functions |
 |---|---|
 | LSI / iterative LSI | {func}`epione.tl.lsi`, {func}`epione.tl.iterative_lsi` |
-| UMAP / t-SNE / PCA | {func}`epione.tl.umap`, {func}`epione.pl.umap`, {func}`epione.pl.tsne`, {func}`epione.pl.pca`, {func}`epione.pl.diffmap`, {func}`epione.pl.draw_graph` |
+| UMAP / t-SNE / PCA | {func}`epione.tl.umap`, {func}`epione.tl.tsne` (openTSNE / FIt-SNE), {func}`epione.pl.umap`, {func}`epione.pl.tsne`, {func}`epione.pl.pca`, {func}`epione.pl.diffmap`, {func}`epione.pl.draw_graph` |
 | Clustering (leiden / louvain / kmeans / RPH-kmeans / hierarchical) | {func}`epione.tl.clusters` |
 | Marker features per cluster | {func}`epione.tl.find_marker_features` |
 | MAGIC imputation (ArchR `addImputeWeights` / `imputeMatrix`) | {func}`epione.tl.add_impute_weights`, {func}`epione.tl.impute_matrix` |
@@ -115,6 +115,16 @@ linked above.
 | Cross-batch integration | {func}`epione.tl.integrate`, {func}`epione.tl.joint_embedding` |
 | CCA-based label transfer | {func}`epione.tl.transfer_labels` |
 | Harmony batch correction (ArchR `addHarmony`) | {func}`epione.tl.harmony`, {func}`epione.tl.run_harmony` |
+
+### Paired multiome (RNA + ATAC in the same cells)
+
+| Task | Functions |
+|---|---|
+| Read cellranger-arc output (h5, matrix folder or `outs/`; optional MuData / out-of-core `.h5mu`) | {func}`epione.io.read_10x_multiome` |
+| Concatenate embeddings at equal total variance (ArchR `addCombinedDims`) | {func}`epione.tl.combined_dims` |
+| Weighted nearest neighbours: per-cell modality weights and a joint graph (Hao *et al.* 2021) | {func}`epione.tl.wnn` |
+| Deep generative joint latent space, MultiVI (`pip install epione[multimodal]`) | {func}`epione.tl.multivi` |
+| Example data: cellranger-arc output of 10x PBMC 10k | {func}`epione.datasets.pbmc10k_multiome_10x` |
 
 ### chromVAR & motif analysis
 
@@ -247,6 +257,7 @@ RNA → ATAC and ATAC → RNA translators learned from paired multiome cells, be
 | GTF / GFF3 readers | {func}`epione.io.read_gtf`, {func}`epione.io.convert_gff_to_gtf`, {func}`epione.io.get_gene_annotation` |
 | Peak / feature files | {func}`epione.io.read_features` |
 | 10x ATAC matrix → AnnData | {func}`epione.io.read_ATAC_10x` |
+| 10x Multiome (cellranger-arc) → RNA + ATAC | {func}`epione.io.read_10x_multiome` |
 | Pickle / h5ad cache helpers | {func}`epione.io.save`, {func}`epione.io.load`, {func}`epione.io.cached` |
 
 ### Core — pure-Python infrastructure
