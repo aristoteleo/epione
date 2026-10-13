@@ -193,3 +193,23 @@ def test_wrapper_version_gate(monkeypatch):
     monkeypatch.setitem(sys.modules, "pyscdblfinder", old)
     with pytest.raises(ImportError, match="0.3.0"):
         epi.pp.scdblfinder(_synthetic(n_per_type=5, n_dbl=1))
+
+
+# --------------------------------------------------------------------------- parity (opt-in)
+
+def _parity():
+    import importlib.util
+    from pathlib import Path
+    spec = importlib.util.spec_from_file_location(
+        "doublets_parity_check", Path(__file__).parent / "parity/doublets/parity_check.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@pytest.mark.skipif(not __import__("os").environ.get("EPIONE_DOUBLETS_PARITY_DIR"),
+                    reason="needs EPIONE_DOUBLETS_PARITY_DIR (ArchR references)")
+def test_gate_f1_filter_matches_archr_exactly():
+    pc = _parity()
+    res = pc.gate_f1(pc.parity_dir())
+    assert res["identical"], res
