@@ -71,6 +71,7 @@ def evaluate(
     auc_average: str = "global",
     mmd_max_cells: Optional[int] = 5000,
     convention: str = "standard",
+    exclude: Sequence[str] = (),
     seed: int = 0,
 ) -> dict:
     """All metrics for one predicted matrix.
@@ -89,6 +90,9 @@ def evaluate(
     categories
         Subset of ``clustering``, ``regression``, ``distribution``,
         ``classification``.
+    exclude
+        Metric names to leave out (e.g. ``("MSE", "MAE")`` when methods are
+        scored in different units).
     convention
         ``"standard"`` (default) or ``"sctranslation"``. The latter reproduces
         the scTranslation code for AUROC/AUPRC and CORR, which differs from
@@ -118,7 +122,7 @@ def evaluate(
     if "classification" in categories:
         out["AUROC"] = M.auroc(pred, truth, binarize=binarize, average=auc_average, convention=convention)
         out["AUPRC"] = M.auprc(pred, truth, binarize=binarize, average=auc_average, convention=convention)
-    return out
+    return {k: v for k, v in out.items() if k not in set(exclude)}
 
 
 def benchmark(
@@ -136,7 +140,11 @@ def benchmark(
         ``{task: {method: pred}}``, e.g.
         ``{"rna2atac": {"scButterfly": atac_pred}, "atac2rna": {...}}``.
     truth
-        ``{task: measured AnnData}`` with the same cells as the predictions.
+        ``{task: measured AnnData}`` with the same cells as the predictions,
+        or ``{task: {method: measured AnnData}}`` when methods predict in
+        different spaces (e.g. TF-IDF vs binary ATAC). Each method is then
+        scored against its own target; pass ``exclude=("MSE", "MAE")``, since
+        errors in different units can't be ranked against each other.
     labels
         Cell-type labels (an ``obs`` column name or an array).
     **kwargs
@@ -152,7 +160,8 @@ def benchmark(
         if task not in truth:
             raise KeyError(f"no truth for task {task!r}")
         for method, pred in by_method.items():
-            scores = evaluate(pred, truth[task], labels=labels, task=task, **kwargs)
+            t = truth[task][method] if isinstance(truth[task], Mapping) else truth[task]
+            scores = evaluate(pred, t, labels=labels, task=task, **kwargs)
             for metric, value in scores.items():
                 cat, hib = METRICS[metric]
                 rows.append((task, method, metric, cat, hib, value))

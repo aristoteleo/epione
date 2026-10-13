@@ -405,3 +405,14 @@ def test_babel_deterministic_and_save_load(babel_trained, tmp_path):
     m.save(tmp_path / "b.pt")
     m3 = T.load(tmp_path / "b.pt")
     np.testing.assert_array_equal(m.predict(r[180:]).X, m3.predict(r[180:]).X)
+
+
+def test_benchmark_per_method_truth_and_exclude():
+    rng = np.random.default_rng(9)
+    t1, t2 = rng.random((40, 12)), rng.random((40, 12)) * 100
+    lab = np.repeat([0, 1], 20)
+    mk = lambda x: AnnData(x.astype(np.float32), obs=pd.DataFrame({"cell_type": lab.astype(str)}, index=[f"c{i}" for i in range(40)]))
+    res = T.benchmark({"t": {"a": mk(t1 + 0.1), "b": mk(t2 + 1)}}, {"t": {"a": mk(t1), "b": mk(t2)}},
+                      labels="cell_type", categories=("regression",), exclude=("MSE", "MAE"))
+    assert set(res["metric"]) == {"PCC", "SPCC", "CORR"}
+    assert np.allclose(res.loc[res.metric == "PCC", "value"], 1.0)
