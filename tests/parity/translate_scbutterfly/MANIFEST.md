@@ -119,3 +119,28 @@ A1 fast mode:
 - **learning rate 1e-3** (unchanged).
 
 It uses the same seeds, the same G3 metric rule and the same floors. The speed gate is relaxed to ≥ 1.3, since a smaller batch saves less. If A1 passes, it becomes `fast=True`. If it fails, `fast=True` keeps the registered setting and is documented as not equivalent to the default.
+
+## Results, amendment A1 (bf16, batch 128, learning rate 1e-3)
+
+**Speed: PASS**, median 1.42 (gate ≥ 1.3).
+
+| seed | A1 (s) | default (s) | ratio |
+|---|---|---|---|
+| 0 | 594 | 843 | 1.42 |
+| 1 | 577 | 817 | 1.42 |
+| 2 | 864 | 666 | 0.77 |
+
+For seed 2 the default run stopped early and the A1 run did not.
+
+**Metrics: FAIL**, 2 of 22 gated pairs.
+
+| direction | metric | default | A1 | \|Δ\| | tol | result |
+|---|---|---|---|---|---|---|
+| atac2rna | ARI | 0.4499 ± 0.0203 | 0.3690 ± 0.0113 | 0.0808 | 0.0406 | fail |
+| atac2rna | AMI | 0.7460 ± 0.0046 | 0.7149 ± 0.0091 | 0.0311 | 0.0300 | fail |
+
+The other 20 pass, including atac2rna SPCC, CORR and NMI, and rna2atac MMD, which failed under G3.
+
+Both fast variants lower the Leiden ARI of ATAC→RNA predictions. Their common element is bf16 autocast, which is a likely cause but was not tested.
+
+**Outcome, as pre-registered.** `fast=True` keeps the registered setting (bf16, batch 256, learning rate 2e-3). It is documented as faster but **not equivalent** to the default path. For results comparable to the reference, use the default.
