@@ -73,6 +73,17 @@ def test_archr_doublets_ranks_doublets_high():
     assert set(ad.uns["archr_doublet"]) == {"0"}
 
 
+def test_archr_doublets_is_deterministic():
+    """Same seed, same scores (igraph's Louvain draws from Python's random module)."""
+    import random
+    ad = _synthetic(n_per_type=120, n_dbl=20)
+    kw = dict(var_features=1500, total_features=6000, dims=10, n_sample=100, force=True, inplace=False)
+    a = epi.pp.archr_doublets(ad, seed=3, **kw)
+    random.seed(12345)  # perturb the global state between runs
+    b = epi.pp.archr_doublets(ad, seed=3, **kw)
+    pd.testing.assert_frame_equal(a, b)
+
+
 def test_archr_doublets_per_sample_and_not_inplace():
     ad = _synthetic(n_per_type=150, n_dbl=30)
     ad.obs["sample"] = np.where(np.arange(ad.n_obs) % 2 == 0, "A", "B")
