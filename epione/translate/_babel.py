@@ -42,6 +42,9 @@ Choices where the paper gives no value (documented, not reverse-engineered):
 * at most 500 epochs, keeping the weights with the lowest validation loss;
 * losses averaged over entries;
 * PyTorch default initialisation; one PReLU slope per layer;
+* the NB mean is kept in [1e-5, 1e6] and the dispersion in [1e-4, 1e4]. Without
+  this, the dispersion collapses to 0 and the ``logΓ(y+θ)`` gradient diverges
+  within the first epochs, the standard safeguard in NB autoencoders;
 * standardisation statistics and clip limits taken from the training cells and
   stored in the model.
 """
@@ -139,8 +142,10 @@ class BabelNet(nn.Module):
 
     def decode_rna(self, z):
         h = self.rna_dec(z)
-        mu = torch.exp(torch.clamp(self.rna_mu(h), max=self.max_log_mu))
-        theta = F.softplus(self.rna_theta(h))
+        mu = torch.clamp(torch.exp(torch.clamp(self.rna_mu(h), max=self.max_log_mu)), 1e-5, 1e6)
+        # the dispersion is kept in [1e-4, 1e4]: as theta -> 0 the gradient of
+        # logGamma(y + theta) at y = 0 diverges (digamma(0)) and training turns NaN
+        theta = torch.clamp(F.softplus(self.rna_theta(h)), 1e-4, 1e4)
         return mu, theta
 
     def decode_atac(self, z):
