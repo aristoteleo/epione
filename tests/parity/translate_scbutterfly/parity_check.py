@@ -100,7 +100,8 @@ def cmd_train(args):
             run = {"mode": mode, "seed": seed, "train_seconds": train_s, "test_seconds": test_s,
                    "device": args.device, "torch": torch.__version__,
                    "peak_gpu_mem_mb": (torch.cuda.max_memory_allocated() / 2**20) if torch.cuda.is_available() else None,
-                   "epochs": {k: len(v) for k, v in h.items() if isinstance(v, list) and k not in ("val_parts", "lr")}}
+                   "epochs": ({k: len(v) for k, v in h.items() if isinstance(v, list) and k not in ("val_parts", "lr")}
+                              or {k: len(v["val"]) for k, v in h.items() if isinstance(v, dict) and "val" in v})}
             (d / "run.json").write_text(json.dumps(run, indent=1))
             print(json.dumps(run), flush=True)
 
