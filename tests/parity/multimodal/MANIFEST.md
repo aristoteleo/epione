@@ -1,0 +1,68 @@
+# Multimodal parity and benchmark, pre-registered
+
+Written before any Epione run of `combined_dims`, `wnn`, `multivi` or `tsne`.
+References are produced outside the repo under `EPIONE_MULTIMODAL_PARITY_DIR`
+(R for ArchR / Seurat runs there; no R in this repository).
+
+Reference software: ArchR 1.0.3, Seurat 5.4.0 / SeuratObject 5.4.0 (R 4.4.3),
+muon 0.1.9, scvi-tools 1.4.2, openTSNE 1.0.2.
+
+## C · `epi.tl.combined_dims` vs ArchR `addCombinedDims`
+
+Inputs: the reduced dims stored in the ArchR hematopoiesis fixture project
+(`IterativeLSI` and `Harmony`, with ArchR's stored `corToDepth` and
+`scaleDims`), exported to text. Configurations:
+
+| id | reducedDims | dimWeights | dimsToUse | scaleDims | corCutOff |
+|---|---|---|---|---|---|
+| C1 | IterativeLSI, Harmony | default | default | default (stored) | 0.75 |
+| C2 | IterativeLSI, Harmony | 1, 0.5 | default | default | 0.75 |
+| C3 | IterativeLSI, Harmony | default | 1:20 | TRUE | 0.75 |
+| C4 | IterativeLSI, Harmony | default | default | FALSE | 0.5 |
+
+**Gate C:** for every configuration, the same shape and kept dims, and
+`max |Epione − ArchR| ≤ 1e-10` (float64).
+
+## W · `epi.tl.wnn` vs Seurat `FindMultiModalNeighbors`
+
+`epi.tl.wnn` is reimplemented from Hao *et al.*, Cell 2021 (STAR Methods),
+without Seurat code. Both sides get **identical** embeddings computed once in
+Python on 10x Multiome PBMC 10k (`epi.datasets.pbmc10k_multiome`, 9,631 cells):
+
+- RNA: library-size normalise to 1e4, log1p, 2,000 HVGs (`seurat_v3` on counts), scale, PCA 50; dims 1:50 used;
+- ATAC: TF-IDF + truncated SVD 50 (`epi`'s LSI); dims 2:50 used.
+
+Seurat: `FindMultiModalNeighbors(reduction.list = list("pca","lsi"),
+dims.list = list(1:50, 2:50))` with default arguments (k.nn = 20).
+muon: `mu.pp.neighbors` on the same embeddings, reported for information.
+
+Gates (Epione vs Seurat):
+
+| id | quantity | pass if |
+|---|---|---|
+| W1 | per-cell RNA modality weight | Pearson r ≥ 0.95 **and** median \|Δ\| ≤ 0.05 |
+| W2 | 20-NN neighbour sets of the WNN graph | median per-cell Jaccard ≥ 0.70 |
+| W3 | Leiden (scanpy, resolution 1.0, seed 0) on each WNN graph | ARI(Epione partition, Seurat-graph partition) ≥ 0.80 |
+| W4 | cell-type ARI of those partitions vs `obs["cell_type"]` | \|ΔARI\| ≤ 0.05 |
+
+Each gate is recorded pass/fail. A failure is reported, not tuned away; any
+change made after seeing results is an amendment recorded below, with its
+rationale, before its run.
+
+## B · benchmark (no gate)
+
+Same data. Joint representations compared: RNA-only (PCA), ATAC-only (LSI 2:50),
+`joint_embedding`-style CCA, `combined_dims` (PCA + LSI), WNN, MultiVI
+(default architecture, GPU, seed 0; seeds 1–2 if time allows).
+Metrics on Leiden clusters of each representation's kNN graph vs
+`obs["cell_type"]`: ARI, NMI; plus cell-type silhouette (on embeddings; for
+WNN, which has no embedding, on its UMAP) and 20-NN cell-type purity. All
+results are reported; no method is excluded after seeing results.
+
+## T · `epi.tl.tsne` and `epi.io.read_10x_multiome`
+
+- `tsne`: functional tests only (openTSNE is the reference implementation).
+- `read_10x_multiome`: on the public cellranger-arc
+  `pbmc_granulocyte_sorted_10k_filtered_feature_bc_matrix.h5`, RNA and ATAC
+  counts of the cells shared with the scGLUE h5ad must be **identical**
+  (gene names / peak coordinates matched).
