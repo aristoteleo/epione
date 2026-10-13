@@ -279,3 +279,38 @@ def resolve_split(
     perm = train[rng.permutation(len(train))]
     n_train = int(len(perm) * (1 - val_frac))
     return perm[:n_train], perm[n_train:]
+
+
+def prepare_counts(
+    rna: AnnData,
+    atac: AnnData,
+    *,
+    n_top_genes: Optional[int] = 3000,
+    min_cells_frac: Optional[float] = 0.005,
+    sort_peaks: bool = True,
+) -> tuple[AnnData, AnnData]:
+    """Raw-count inputs for count-likelihood methods (multiDGD).
+
+    Highly variable genes are selected as in :func:`prepare_rna` (on
+    library-normalised, log-transformed data), but the returned RNA matrix
+    holds the raw counts of those genes. ATAC keeps raw counts of the peaks
+    with a nonzero count in at least ``ceil(min_cells_frac * n_cells)`` cells.
+
+    Returns
+    -------
+    ``(rna, atac)`` count matrices (float32 CSR) with identical ``obs_names``.
+    """
+    common = rna.obs_names.intersection(atac.obs_names, sort=False)
+    if len(common) == 0:
+        raise ValueError("RNA and ATAC share no obs_names")
+    rna, atac = rna[common], atac[common]
+    hvg = prepare_rna(rna, n_top_genes=n_top_genes).var_names
+    rna_c = AnnData(X=_as_csr(rna.X).astype(np.float32), obs=rna.obs.copy(), var=rna.var.copy())
+    rna_c.var_names_make_unique()
+    rna_c = rna_c[:, hvg].copy()
+    atac_c = prepare_atac(atac, binarize=False, min_cells_frac=min_cells_frac, use_tfidf=False,
+                          scale=False, sort_peaks=sort_peaks)
+    atac_c.X = atac_c.X.astype(np.float32)
+    rna_c.uns["translate_prep"] = {"modality": "rna", "counts": True, "n_top_genes": n_top_genes}
+    atac_c.uns["translate_prep"] = {"modality": "atac", "counts": True, "min_cells_frac": min_cells_frac}
+    return rna_c, atac_c

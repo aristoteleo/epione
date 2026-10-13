@@ -23,6 +23,7 @@ Methods need PyTorch (``pip install epione[translate]``); preprocessing and
 metrics do not.
 """
 from ._prep import prepare, prepare_rna, prepare_atac, tfidf, chrom_blocks, peak_chromosomes, size_normalize
+from ._prep import prepare_counts
 from ._base import TranslationModel, available_methods, fit, load
 
 from ._bench import METRICS, evaluate, benchmark, summarize, plot_benchmark
@@ -46,4 +47,5 @@ __all__ = [
     "summarize",
     "plot_benchmark",
     "metrics",
+    "prepare_counts",
 ]
