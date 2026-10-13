@@ -16,8 +16,8 @@ benchmark (clustering, regression, distribution, classification)::
                                   {"rna2atac": atac_p[test]}, labels="cell_type")
     epi.translate.summarize(res); epi.translate.plot_benchmark(res)
 
-Available methods: ``"scbutterfly"`` and ``"babel"`` (prepare with
-``prepare(..., method="babel")``).
+Available methods: ``"scbutterfly"``, ``"babel"`` and ``"scpair"`` (prepare
+the inputs each expects with ``prepare(..., method=...)``).
 
 Methods need PyTorch (``pip install epione[translate]``); preprocessing and
 metrics do not.

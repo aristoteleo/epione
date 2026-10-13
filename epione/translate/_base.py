@@ -21,6 +21,7 @@ from ._prep import check_paired, resolve_split
 _METHOD_MODULES = {
     "scbutterfly": "._scbutterfly",
     "babel": "._babel",
+    "scpair": "._scpair",
 }
 _REGISTRY: dict = {}
 
