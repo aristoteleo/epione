@@ -117,11 +117,17 @@ def _positional(names) -> bool:
     return len(names) > 0 and all(str(n) == str(i) for i, n in enumerate(names[:50])) and str(names[-1]) == str(len(names) - 1)
 
 
-def _align(ad, features):
-    """Reference files name features 0..n-1 (scButterfly's tensor2adata); name them by position."""
+def _align(ad, features, cells=None):
+    """Reference files may name features (scButterfly) or cells (BABEL) 0..n-1; name them by position.
+
+    Positional cells are the test cells in split order; G0 checks the values, which confirms the order.
+    """
     if _positional(ad.var_names) and ad.n_vars == len(features):
         ad = ad.copy()
         ad.var_names = list(features)
+    if cells is not None and _positional(ad.obs_names) and ad.n_obs == len(cells):
+        ad = ad.copy()
+        ad.obs_names = list(cells)
     return ad
 
 
@@ -134,7 +140,7 @@ def _evaluate_file(path: Path, truth, labels, cache: Path):
         c = json.loads(cache.read_text())
         if c.get("mtime") == key and "standard" in c:
             return c["sctranslation"], c["standard"]
-    pred = _align(sc.read_h5ad(path), truth.var_names)
+    pred = _align(sc.read_h5ad(path), truth.var_names, truth.obs_names)
     m = _evaluate(pred, truth, labels, "sctranslation")
     from epione.translate import metrics as M
 
@@ -167,7 +173,7 @@ def cmd_gates(args):
             src = T.size_normalize(rna[te])
         t = sc.read_h5ad(R / d / f"seed{ref_seeds[0]}" / "truth.h5ad")
         positional = _positional(t.var_names)
-        t = _align(t, src.var_names)
+        t = _align(t, src.var_names, rna.obs_names[te])
         truths[d] = t
         mine = src[t.obs_names, t.var_names].X
         mine = mine.toarray() if hasattr(mine, "toarray") else np.asarray(mine)
