@@ -92,28 +92,44 @@ def _tol(kind_val, base):
     return v * abs(base) if kind == "rel" else v
 
 
-def _evaluate(pred, truth, labels):
+def _evaluate(pred, truth, labels, convention="sctranslation"):
+    """Gates use the scTranslation convention for AUROC/CORR (see MANIFEST, G1)."""
     import epione.translate as T
 
-    return T.evaluate(pred, truth, labels=labels)
+    return T.evaluate(pred, truth, labels=labels, convention=convention)
 
 
-def _evaluate_file(path: Path, truth, labels, tag: str = ""):
-    """Metrics of a saved prediction, cached next to it (keyed on its mtime)."""
+def _positional(names) -> bool:
+    return len(names) > 0 and all(str(n) == str(i) for i, n in enumerate(names[:50])) and str(names[-1]) == str(len(names) - 1)
+
+
+def _align(ad, features):
+    """Reference files name features 0..n-1 (scButterfly's tensor2adata); name them by position."""
+    if _positional(ad.var_names) and ad.n_vars == len(features):
+        ad = ad.copy()
+        ad.var_names = list(features)
+    return ad
+
+
+def _evaluate_file(path: Path, truth, labels, cache: Path):
+    """Metrics of a saved prediction under both conventions, cached in ``cache`` (keyed on mtime)."""
     import scanpy as sc
 
-    cache = path.with_name(path.stem + f".epione_metrics{tag}.json")
     key = path.stat().st_mtime
     if cache.exists():
         c = json.loads(cache.read_text())
-        if c.get("mtime") == key:
-            return c["metrics"]
-    m = _evaluate(sc.read_h5ad(path), truth, labels)
-    try:
-        cache.write_text(json.dumps({"mtime": key, "metrics": m}))
-    except OSError:
-        pass
-    return m
+        if c.get("mtime") == key and "standard" in c:
+            return c["sctranslation"], c["standard"]
+    pred = _align(sc.read_h5ad(path), truth.var_names)
+    m = _evaluate(pred, truth, labels, "sctranslation")
+    from epione.translate import metrics as M
+
+    pa, ta = M._pair(pred[truth.obs_names, truth.var_names], truth)
+    std = {"AUROC": M.auroc(pa, ta), "AUPRC": M.auprc(pa, ta),
+           "CORR": M.regression_scores(pa, ta)["CORR"]}
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    cache.write_text(json.dumps({"mtime": key, "sctranslation": m, "standard": std}))
+    return m, std
 
 
 def cmd_gates(args):
@@ -130,13 +146,17 @@ def cmd_gates(args):
     ref_seeds = sorted(int(p.name[4:]) for p in (R / "rna2atac").glob("seed*") if (p / "metrics.json").exists())
     # ---- G0
     for d in DIRS:
+        src = atac if d == "rna2atac" else rna
         t = sc.read_h5ad(R / d / f"seed{ref_seeds[0]}" / "truth.h5ad")
+        positional = _positional(t.var_names)
+        t = _align(t, src.var_names)
         truths[d] = t
         mine = (atac if d == "rna2atac" else rna)[t.obs_names, t.var_names].X
         mine = mine.toarray() if hasattr(mine, "toarray") else np.asarray(mine)
         theirs = t.X.toarray() if hasattr(t.X, "toarray") else np.asarray(t.X)
         ok = (np.allclose(mine, theirs, rtol=1e-5, atol=1e-7) if d == "rna2atac" else np.array_equal(mine, theirs))
         res["G0"][d] = {"pass": bool(ok), "max_abs_diff": float(np.max(np.abs(mine - theirs))),
+                        "reference_features_positional": positional,
                         "shape": list(theirs.shape), "same_features": bool(t.n_vars == (atac if d == "rna2atac" else rna).n_vars)}
     labels = {d: np.asarray(truths[d].obs["cell_type"]) if "cell_type" in truths[d].obs
               else np.asarray(rna.obs["cell_type"].loc[truths[d].obs_names]) for d in DIRS}
@@ -147,7 +167,9 @@ def cmd_gates(args):
         for s in ref_seeds:
             sd = R / d / f"seed{s}"
             ref_m = json.loads((sd / "metrics.json").read_text())
-            mine = _evaluate_file(sd / "pred.h5ad", truths[d], labels[d], tag="_ref")
+            mine, std = _evaluate_file(sd / "pred.h5ad", truths[d], labels[d],
+                                       out / "ref_metrics_cache" / d / f"seed{s}.json")
+            res.setdefault("reference_standard_convention", []).append({"direction": d, "seed": s, **std})
             for m, em in METRIC_MAP.items():
                 ref_vals[d][m].append(ref_m[m])
                 tol = _tol(G1_TOL[m], ref_m[m])
@@ -164,7 +186,9 @@ def cmd_gates(args):
                 continue
             secs[sdir.name] = json.loads((sdir / "run.json").read_text())["train_seconds"]
             for d in DIRS:
-                mine = _evaluate_file(sdir / f"{d}.h5ad", truths[d], labels[d])
+                mine, std = _evaluate_file(sdir / f"{d}.h5ad", truths[d], labels[d],
+                                           sdir / f"{d}.metrics.json")
+                res.setdefault("standard_convention", []).append({"mode": mode, "run": sdir.name, "direction": d, **std})
                 for m, em in METRIC_MAP.items():
                     vals[d][m].append(mine[em])
         return vals, secs

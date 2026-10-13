@@ -144,3 +144,23 @@ The other 20 pass, including atac2rna SPCC, CORR and NMI, and rna2atac MMD, whic
 Both fast variants lower the Leiden ARI of ATAC→RNA predictions. Their common element is bf16 autocast, which is a likely cause but was not tested.
 
 **Outcome, as pre-registered.** `fast=True` keeps the registered setting (bf16, batch 256, learning rate 2e-3). It is documented as faster but **not equivalent** to the default path. For results comparable to the reference, use the default.
+
+## Amendment A2: metric convention (before any G1/G2 result was recorded)
+
+A first look at reference seed 0 found two metrics that disagree.
+- Epione's AUROC was 0.893 against the reference's 0.568, for rna2atac.
+- Epione's CORR was 3.6e-3 higher, for atac2rna.
+
+Every other metric matched to within 1e-4, the clustering metrics exactly.
+
+Cause: scTranslation's `calculate_auroc` passes `(truth, pred)` to a function whose signature is `(imputed_data, data)`. That swaps the roles in two ways:
+- **AUROC.** The *prediction* is binarised at its median, and the measured values are used as scores.
+- **CORR.** The benchmark averages over features whose *prediction* is not constant. Features with constant measured values score 0, because of sklearn's `r_regression(force_finite=True)`.
+
+Recomputing with the roles swapped reproduces the reference seed-0 `metrics.json` to 1e-15, in both directions. The contract's §4 describes the intended definition, not what the code does.
+
+Changes:
+- `epione.translate` keeps the stated definitions as the default (`convention="standard"`). It adds `convention="sctranslation"`, which reproduces the benchmark's code.
+- G1 and G2 compare under `convention="sctranslation"`, so that both sides compute the same quantity.
+- The standard-convention AUROC, AUPRC and CORR are also reported, for both sides.
+- No tolerance or floor changes.
