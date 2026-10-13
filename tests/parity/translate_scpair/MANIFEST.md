@@ -58,6 +58,57 @@ The structure, tolerances and floors are those of the scButterfly and BABEL MANI
   - Speed gate: the median default/fast ratio of training time is ≥ 1.5.
   - If it fails, fast mode is documented as **not equivalent** to the default, with no amendments.
 
-## Results
+## Results (2026-10-13)
 
-Filled in after the runs.
+| gate | result |
+|---|---|
+| G0 preprocessing | **PASS**: both truths identical |
+| G1 metric implementation | **PASS**: max \|Δ\| ≤ 2e-6 for every metric; clustering exact |
+| **G2 training parity** | **PASS: 23 / 23** |
+| G3 fast mode | speed **FAIL** (median 1.17×, gate 1.5); metrics **FAIL** (20 / 23 pass) |
+
+### G2: mean of 3 seeds, reference vs Epione
+
+| direction | metric | reference | Epione | \|Δ\| | tol | result |
+|---|---|---|---|---|---|---|
+| rna2atac | PCC | 0.5313 ± 0.0018 | 0.5322 | 0.0010 | 0.0100 | pass |
+| rna2atac | SPCC | 0.3583 ± 0.0000 | 0.3581 | 0.0001 | 0.0100 | pass |
+| rna2atac | MSE | 0.6709 ± 0.0008 | 0.6710 | 0.0001 | 0.0335 | pass |
+| rna2atac | MAE | 0.2320 ± 0.0003 | 0.2317 | 0.0003 | 0.0116 | pass |
+| rna2atac | CORR | 0.1322 ± 0.0029 | 0.1276 | 0.0046 | 0.0100 | pass |
+| rna2atac | MMD | 3.1883 ± 0.0115 | 3.1898 | 0.0016 | 0.3188 | pass |
+| rna2atac | LISI | 0.0000 ± 0.0000 | 0.0000 | 0.0000 | 0.0200 | pass |
+| rna2atac | AUROC | 0.5685 ± 0.0000 | 0.5685 | 0.0000 | 0.0050 | pass |
+| rna2atac | ARI | 0.4107 ± 0.0251 | 0.4372 | 0.0265 | 0.0501 | pass |
+| rna2atac | AMI | 0.6704 ± 0.0110 | 0.6707 | 0.0003 | 0.0300 | pass |
+| rna2atac | NMI | 0.6810 ± 0.0108 | 0.6805 | 0.0006 | 0.0300 | pass |
+| rna2atac | HOM | 0.7371 ± 0.0117 | 0.7227 | 0.0144 | 0.0300 | pass |
+| atac2rna | PCC | 0.9694 ± 0.0006 | 0.9694 | 0.0000 | 0.0100 | pass |
+| atac2rna | SPCC | 0.4205 ± 0.0021 | 0.4165 | 0.0040 | 0.0100 | pass |
+| atac2rna | MSE | 27.9965 ± 0.0011 | 27.9967 | 0.0002 | 1.3998 | pass |
+| atac2rna | MAE | 0.2508 ± 0.0000 | 0.2508 | 0.0000 | 0.0125 | pass |
+| atac2rna | CORR | 0.1521 ± 0.0027 | 0.1565 | 0.0044 | 0.0100 | pass |
+| atac2rna | MMD | 3.6004 ± 0.0002 | 3.6004 | 0.0000 | 0.3600 | pass |
+| atac2rna | LISI | 0.0000 ± 0.0000 | 0.0000 | 0.0000 | 0.0200 | pass |
+| atac2rna | ARI | 0.3726 ± 0.0287 | 0.3544 | 0.0183 | 0.0574 | pass |
+| atac2rna | AMI | 0.6229 ± 0.0205 | 0.6194 | 0.0035 | 0.0410 | pass |
+| atac2rna | NMI | 0.6343 ± 0.0199 | 0.6306 | 0.0037 | 0.0397 | pass |
+| atac2rna | HOM | 0.6795 ± 0.0224 | 0.6746 | 0.0049 | 0.0448 | pass |
+
+### G3
+
+`fast=True` (bf16, batch 520) fails these pairs:
+
+| direction | metric | default | fast | result |
+|---|---|---|---|---|
+| rna2atac | ARI | 0.4372 | 0.3552 | **fail** |
+| rna2atac | AMI | 0.6707 | 0.6241 | **fail** |
+| rna2atac | NMI | 0.6805 | 0.6372 | **fail** |
+
+Training seconds, run concurrently:
+- default: 792, 623, 789;
+- fast: 770, 530, 658.
+
+The speed gate fails, so `fast=True` is documented as **not equivalent** and **not faster** on this data. It is kept only as an option.
+
+**Timing vs reference.** The reference took 966, 1692, 1200 s and Epione's default 792, 623, 789 s. The reference also trains the embedding-mapping phase, which Epione skips, so the times aren't compared as a speed-up.
