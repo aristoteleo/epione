@@ -315,8 +315,10 @@ class MultiDGD(TranslationModel):
     ----------
     fast
         bf16 autocast for the decoder's linear layers, batch 512 and decoder
-        learning rate 2e-4. See ``tests/parity/translate_multidgd/MANIFEST.md``
-        for whether it matches the default path.
+        learning rate 2e-4. In the pre-registered check (PBMC 10k, 3 seeds; see
+        ``tests/parity/translate_multidgd/MANIFEST.md``) it trained a median
+        2.1x faster on an H100 and stayed within tolerance of the default path
+        on every gated metric.
     **kwargs
         Any :class:`MultiDGDConfig` field.
     """

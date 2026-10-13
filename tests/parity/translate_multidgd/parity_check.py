@@ -74,7 +74,7 @@ def cmd_train(args):
                 torch.cuda.reset_peak_memory_stats()
             t0 = time.time()
             model = T.fit(rna, atac, method="multidgd", train_idx=split["train"], val_idx=split["valid"],
-                          device=args.device, seed=seed, **MODES[mode])
+                          device=args.device, seed=seed, verbose=True, **MODES[mode])
             train_s = time.time() - t0
             te = split["test"]
             t0 = time.time()

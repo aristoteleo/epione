@@ -89,3 +89,58 @@ It is compared with Epione's default path (`shuffle=True`, source-only `predict`
 - compute the NB log-likelihood as a dense zero-count term plus a sparse correction over nonzero counts. This is algebraically identical: for k = 0, lgamma(k + r) − lgamma(r) − lgamma(k + 1) = 0 and k·log(·) = 0.
 
 They change summation order only. G2 decides whether they are acceptable.
+
+## Results (all 3 reference seeds; 2026-10-13)
+
+Runs: H100 shared with other jobs (it was at 100% utilisation throughout). The `shuffle=False`, default and fast runs used separate processes on the same card. Command: `parity_check.py gates`, with convention `sctranslation`. The full JSON stays outside the repo.
+
+| gate | result |
+|---|---|
+| G0 preprocessing | **PASS**: both directions identical (max \|Δ\| 0), same features in the same order |
+| G1 metric implementation, non-clustering (3 seeds × 2 directions) | **PASS**: max \|Δ\| ≤ 1.9e-15 for PCC, SPCC and AUROC; 1.7e-6 for MSE; 6e-5 for MMD |
+| G1 clustering | one miss, reported and non-blocking: atac2rna seed 2 Leiden ARI 0.2107 (reference) vs 0.1813. Every other clustering value matches |
+| **G2 training parity (joint inference, `shuffle=False`)** | **FAIL, 22/23 gated pairs**. atac2rna PCC: \|Δ\| = 0.0200 vs tolerance 0.0195 |
+| G2-source (translation vs reference; not gated) | 22/23 within tolerance; atac2rna PCC outside it (\|Δ\| 0.0243) |
+| G2-shuffled (Epione default vs reference; not gated) | 18/23 within tolerance |
+| **G3 fast mode, metrics** | **PASS, 23/23** |
+| **G3 fast mode, speed** | **PASS**: median 2.09× (2.66, 2.09, 1.51); gate ≥ 1.5 |
+
+As registered, the G2 failure stands. No amendment was made. The failing pair is per-cell PCC of ATAC→RNA, under the protocol of §"What the reference does", point 5:
+- reference seeds 0.917, 0.937, 0.926;
+- Epione 0.887, 0.927, 0.906.
+
+The Epione mean is 0.0005 outside the tolerance. Every other informative metric passes: SPCC, CORR, AUROC and the clustering scores. The degenerate ones (MSE, MAE, MMD, LISI) agree to 4 or more digits, as they must, because they are set by the truth's scale.
+
+G2, joint inference, `shuffle=False`. Mean over 3 seeds:
+
+| direction | metric | reference | Epione | \|Δ\| | tol | |
+|---|---|---|---|---|---|---|
+| rna2atac | PCC | 0.5466 ± 0.0120 | 0.5419 | 0.0047 | 0.0240 | pass |
+| rna2atac | SPCC | 0.3388 ± 0.0087 | 0.3356 | 0.0031 | 0.0174 | pass |
+| rna2atac | CORR | 0.1034 ± 0.0128 | 0.1012 | 0.0022 | 0.0256 | pass |
+| rna2atac | AUROC | 0.5656 ± 0.0014 | 0.5652 | 0.0004 | 0.0050 | pass |
+| rna2atac | ARI | 0.2350 ± 0.0166 | 0.2199 | 0.0151 | 0.0332 | pass |
+| rna2atac | NMI | 0.5793 ± 0.0200 | 0.5743 | 0.0050 | 0.0400 | pass |
+| atac2rna | PCC | 0.9266 ± 0.0098 | 0.9066 | 0.0200 | 0.0195 | **fail** |
+| atac2rna | SPCC | 0.3229 ± 0.0114 | 0.3180 | 0.0049 | 0.0227 | pass |
+| atac2rna | CORR | 0.0944 ± 0.0115 | 0.0893 | 0.0051 | 0.0230 | pass |
+| atac2rna | AUROC | 0.5607 ± 0.0006 | 0.5604 | 0.0003 | 0.0050 | pass |
+| atac2rna | ARI | 0.2048 ± 0.0052 | 0.1971 | 0.0077 | 0.0300 | pass |
+| atac2rna | NMI | 0.5340 ± 0.0203 | 0.5408 | 0.0068 | 0.0406 | pass |
+
+AMI, HOM, MSE, MAE, MMD and LISI also pass; the JSON has every value.
+
+**Translation vs joint reconstruction.**
+- G2-source is within 0.01 of G2 on most metrics; atac2rna PCC is 0.902 vs 0.907.
+- With one mixture component and 20 inference steps, seeing the target modality adds little to these scores.
+- Epione's default `predict` therefore does about as well as the reference's joint protocol on the benchmark metrics.
+
+**Fast mode** (`fast=True`: bf16 decoder, batch 512, decoder learning rate 2e-4) passes both gates. All 3 fast seeds ran the full 500 epochs without early stopping; the default seeds ran 352, 500 and 462.
+
+**Training time** (s, this shared GPU):
+- reference: 1306, 848 and 2162;
+- Epione default: 1563, 1697 and 1179;
+- Epione `shuffle=False`: 712, 1043 and 1275;
+- Epione fast: 588, 811 and 779.
+
+The Epione default path is **not** faster than the reference on this contended card. The sparse NB likelihood saves arithmetic that is not the bottleneck here.
