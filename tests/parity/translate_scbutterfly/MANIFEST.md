@@ -180,3 +180,44 @@ Changes:
 - **G2 is evaluated on Epione runs with `shuffle=False`** (mode `noshuffle`, seeds 0–2), the setting the reference ran.
 - The shuffled default is reported against the reference as **G2-shuffled**, for information.
 - Tolerances and floors are unchanged.
+
+## Final results (all 3 reference seeds; 2026-10-13)
+
+`parity_check.py gates`, convention `sctranslation` (A2). The full JSON stays outside the repo.
+
+| gate | result |
+|---|---|
+| G0 preprocessing | **PASS**: ATAC max \|Δ\| 1.8e-7; RNA identical |
+| G1 metric implementation (3 seeds × 2 directions) | **PASS**: max \|Δ\| ≤ 2.7e-15 for PCC, SPCC, AUROC and the clustering metrics; ≤ 1.6e-10 for MSE and MAE; 5e-9 for CORR; 1.7e-7 for MMD; 8.5e-5 for LISI |
+| **G2 training parity, `shuffle=False` (A3)** | **PASS: 22/22 gated pairs** |
+| G2-shuffled (Epione default vs reference, for information) | 22/22 within tolerance |
+| G3 fast mode | speed PASS (1.69×); metrics FAIL (6/22); see above |
+
+G2, `shuffle=False`, mean over 3 seeds:
+
+| direction | metric | reference | Epione | \|Δ\| | tol |
+|---|---|---|---|---|---|
+| rna2atac | PCC | 0.3081 ± 0.0003 | 0.3080 | 0.0000 | 0.0100 |
+| rna2atac | SPCC | 0.3465 ± 0.0003 | 0.3462 | 0.0004 | 0.0100 |
+| rna2atac | CORR | 0.1427 ± 0.0003 | 0.1424 | 0.0004 | 0.0100 |
+| rna2atac | MSE | 0.00110 | 0.00110 | 0.0000 | 5% |
+| rna2atac | AUROC (sct.) | 0.5677 | 0.5677 | 0.0000 | 0.0050 |
+| rna2atac | MMD | 0.0598 ± 0.0091 | 0.0537 | 0.0060 | 0.0181 |
+| rna2atac | LISI | 0.2837 ± 0.0838 | 0.2980 | 0.0144 | 0.1676 |
+| rna2atac | ARI / NMI | 0.4410 / 0.7596 | 0.4308 / 0.7581 | 0.010 / 0.002 | 0.035 / 0.030 |
+| atac2rna | PCC | 0.7640 ± 0.0001 | 0.7640 | 0.0001 | 0.0100 |
+| atac2rna | SPCC | 0.3874 ± 0.0018 | 0.3872 | 0.0001 | 0.0100 |
+| atac2rna | CORR | 0.2513 ± 0.0014 | 0.2522 | 0.0009 | 0.0100 |
+| atac2rna | MSE | 0.0372 | 0.0372 | 0.0000 | 0.0019 |
+| atac2rna | MMD | 0.1111 ± 0.0052 | 0.1134 | 0.0023 | 0.0111 |
+| atac2rna | LISI | 0.5197 ± 0.0130 | 0.4970 | 0.0227 | 0.0259 |
+| atac2rna | ARI / NMI | 0.4603 / 0.7568 | 0.4347 / 0.7519 | 0.026 / 0.005 | 0.112 / 0.031 |
+
+AMI, HOM and MAE pass as well; the JSON has every value.
+
+**Training time** on the same GPU model (H100):
+- reference: 2476, 1923 and 2509 s;
+- Epione default: 843, 817 and 666 s;
+- Epione `shuffle=False`: 555, 514 and 511 s.
+
+The Epione default is about 3× faster than the reference.
