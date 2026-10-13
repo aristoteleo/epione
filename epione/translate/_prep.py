@@ -67,8 +67,12 @@ def prepare_rna(
     log1p: bool = True,
     n_top_genes: Optional[int] = 3000,
     layer: Optional[str] = None,
+    output: str = "lognorm",
 ) -> AnnData:
     """Normalise, log-transform and select highly variable genes.
+
+    ``output="counts"`` selects the same genes but returns their raw counts
+    (for methods that model counts, such as BABEL).
 
     Same steps and scanpy calls as scButterfly's ``RNA_data_preprocessing``:
     ``normalize_total`` (median library size), ``log1p`` and
@@ -77,12 +81,10 @@ def prepare_rna(
     """
     import scanpy as sc
 
-    out = AnnData(
-        X=_as_csr(rna.layers[layer] if layer else rna.X).astype(np.float32),
-        obs=rna.obs.copy(),
-        var=rna.var.copy(),
-    )
+    raw = _as_csr(rna.layers[layer] if layer else rna.X).astype(np.float32)
+    out = AnnData(X=raw.copy(), obs=rna.obs.copy(), var=rna.var.copy())
     out.var_names_make_unique()
+    out.layers["counts"] = raw
     if normalize_total:
         sc.pp.normalize_total(out)
     if log1p:
@@ -94,8 +96,14 @@ def prepare_rna(
             out = out[:, expressed].copy()
         sc.pp.highly_variable_genes(out, n_top_genes=n_top_genes)
         out = out[:, out.var["highly_variable"].to_numpy()].copy()
+    if output == "counts":
+        out.X = out.layers["counts"].copy()
+    elif output != "lognorm":
+        raise ValueError(f"output must be 'lognorm' or 'counts', not {output!r}")
+    del out.layers["counts"]
     out.uns["translate_prep"] = {
         "modality": "rna",
+        "output": output,
         "normalize_total": normalize_total,
         "log1p": log1p,
         "n_top_genes": n_top_genes,
@@ -174,6 +182,7 @@ def prepare(
     *,
     n_top_genes: Optional[int] = 3000,
     min_cells_frac: Optional[float] = 0.005,
+    method: str = "scbutterfly",
     rna_kwargs: Optional[dict] = None,
     atac_kwargs: Optional[dict] = None,
 ) -> tuple[AnnData, AnnData]:
@@ -188,6 +197,10 @@ def prepare(
         Highly variable genes kept for RNA (``None`` keeps all).
     min_cells_frac
         Minimum fraction of cells in which a peak must be open.
+    method
+        The method the data are for. ``"scbutterfly"``: log-normalised RNA and
+        TF-IDF-scaled ATAC. ``"babel"``: raw RNA counts of the same genes and
+        binary ATAC (BABEL normalises RNA internally).
 
     Returns
     -------
@@ -201,9 +214,41 @@ def prepare(
         atac = atac[common]
     elif not np.array_equal(rna.obs_names, atac.obs_names):
         atac = atac[rna.obs_names]
-    rna_p = prepare_rna(rna, n_top_genes=n_top_genes, **(rna_kwargs or {}))
-    atac_p = prepare_atac(atac, min_cells_frac=min_cells_frac, **(atac_kwargs or {}))
+    rkw, akw = dict(rna_kwargs or {}), dict(atac_kwargs or {})
+    if method == "babel":
+        rkw.setdefault("output", "counts")
+        akw.setdefault("use_tfidf", False)
+        akw.setdefault("scale", False)
+    elif method != "scbutterfly":
+        raise ValueError(f"unknown method {method!r}")
+    rna_p = prepare_rna(rna, n_top_genes=n_top_genes, **rkw)
+    atac_p = prepare_atac(atac, min_cells_frac=min_cells_frac, **akw)
     return rna_p, atac_p
+
+
+def size_normalize_matrix(X, target_sum: Optional[float] = None):
+    """Scale each row of ``X`` to ``target_sum`` (default: the median row sum).
+
+    Returns ``(CSR float32, target_sum)``.
+    """
+    X = sp.csr_matrix(X, dtype=np.float64)
+    tot = np.asarray(X.sum(axis=1)).ravel()
+    if target_sum is None:
+        target_sum = float(np.median(tot))
+    scale = np.divide(target_sum, tot, out=np.zeros_like(tot), where=tot > 0)
+    return sp.csr_matrix(sp.diags(scale) @ X, dtype=np.float32), target_sum
+
+
+def size_normalize(adata: AnnData, target_sum: Optional[float] = None) -> AnnData:
+    """Scale each cell's counts to ``target_sum`` (default: the median count per cell).
+
+    Puts measured RNA counts on the scale of BABEL's ATAC→RNA predictions
+    (BABEL normalises each set of cells to its own median).
+    """
+    X, t = size_normalize_matrix(adata.X, target_sum)
+    out = AnnData(X=X, obs=adata.obs.copy(), var=adata.var.copy())
+    out.uns["size_normalize"] = {"target_sum": t}
+    return out
 
 
 def check_paired(rna: AnnData, atac: AnnData) -> None:

@@ -1,7 +1,9 @@
-"""scButterfly metric-level parity: Epione runs and the gates of MANIFEST.md.
+"""Metric-level parity of epione.translate methods: Epione runs and the gates of MANIFEST.md.
 
-    python parity_check.py train --out RUNS [--modes default,fast] [--seeds 0,1,2] [--device cuda]
-    python parity_check.py gates --out RUNS [--json results.json]
+    python parity_check.py [--method babel] train --out RUNS [--modes default,fast] [--seeds 0,1,2]
+    python parity_check.py [--method babel] gates --out RUNS [--json results.json]
+
+Used by tests/parity/translate_scbutterfly (default) and translate_babel.
 
 ``EPIONE_TRANSLATE_PARITY_DIR`` points at the reference directory (contract
 inputs, split and ``ref/scbutterfly``). Nothing here is written into the repo.
@@ -39,12 +41,22 @@ def _parity_dir() -> Path:
     return Path(d)
 
 
+METHOD = "scbutterfly"
+REF_DIRS = {"scbutterfly": ("scbutterfly", "scButterfly"), "babel": ("babel", "BABEL")}
+
+
 def load_inputs(P: Path):
+    """Inputs as each method's reference runner gets them (contract section 2)."""
     import scanpy as sc
     import epione.translate as T
 
-    rna = sc.read_h5ad(P / "inputs" / "rna_lognorm_hvg.h5ad")
-    atac = T.prepare_atac(sc.read_h5ad(P / "inputs" / "atac_counts.h5ad"))
+    counts = sc.read_h5ad(P / "inputs" / "atac_counts.h5ad")
+    if METHOD == "babel":
+        rna = sc.read_h5ad(P / "inputs" / "rna_counts_hvg.h5ad")
+        atac = T.prepare_atac(counts, use_tfidf=False, scale=False)
+    else:
+        rna = sc.read_h5ad(P / "inputs" / "rna_lognorm_hvg.h5ad")
+        atac = T.prepare_atac(counts)
     assert np.array_equal(rna.obs_names, atac.obs_names)
     pos = {n: i for i, n in enumerate(rna.obs_names)}
     split = {}
@@ -72,8 +84,8 @@ def cmd_train(args):
             if torch.cuda.is_available():
                 torch.cuda.reset_peak_memory_stats()
             t0 = time.time()
-            model = T.fit(rna, atac, train_idx=split["train"], val_idx=split["valid"], device=args.device,
-                          seed=seed, threads=args.threads, **MODES[mode])
+            model = T.fit(rna, atac, method=METHOD, train_idx=split["train"], val_idx=split["valid"],
+                          device=args.device, seed=seed, threads=args.threads, **MODES[mode])
             train_s = time.time() - t0
             t0 = time.time()
             te = split["test"]
@@ -138,7 +150,7 @@ def cmd_gates(args):
     import scanpy as sc
 
     P = _parity_dir()
-    R = next((P / "ref" / n for n in ("scbutterfly", "scButterfly") if (P / "ref" / n).exists()), P / "ref" / "scbutterfly")
+    R = next((P / "ref" / n for n in REF_DIRS[METHOD] if (P / "ref" / n).exists()), P / "ref" / REF_DIRS[METHOD][0])
     out = Path(args.out)
     rna, atac, split = load_inputs(P)
     te = split["test"]
@@ -149,17 +161,22 @@ def cmd_gates(args):
     # ---- G0
     for d in DIRS:
         src = atac if d == "rna2atac" else rna
+        if METHOD == "babel" and d == "atac2rna":
+            import epione.translate as T
+            # BABEL scores ATAC->RNA against the test cells' counts, size-normalised to their own median
+            src = T.size_normalize(rna[te])
         t = sc.read_h5ad(R / d / f"seed{ref_seeds[0]}" / "truth.h5ad")
         positional = _positional(t.var_names)
         t = _align(t, src.var_names)
         truths[d] = t
-        mine = (atac if d == "rna2atac" else rna)[t.obs_names, t.var_names].X
+        mine = src[t.obs_names, t.var_names].X
         mine = mine.toarray() if hasattr(mine, "toarray") else np.asarray(mine)
         theirs = t.X.toarray() if hasattr(t.X, "toarray") else np.asarray(t.X)
-        ok = (np.allclose(mine, theirs, rtol=1e-5, atol=1e-7) if d == "rna2atac" else np.array_equal(mine, theirs))
+        exact = d == "atac2rna" and METHOD == "scbutterfly"
+        ok = np.array_equal(mine, theirs) if exact else np.allclose(mine, theirs, rtol=1e-5, atol=1e-7)
         res["G0"][d] = {"pass": bool(ok), "max_abs_diff": float(np.max(np.abs(mine - theirs))),
                         "reference_features_positional": positional,
-                        "shape": list(theirs.shape), "same_features": bool(t.n_vars == (atac if d == "rna2atac" else rna).n_vars)}
+                        "shape": list(theirs.shape), "same_features": bool(t.n_vars == src.n_vars)}
     labels = {d: np.asarray(truths[d].obs["cell_type"]) if "cell_type" in truths[d].obs
               else np.asarray(rna.obs["cell_type"].loc[truths[d].obs_names]) for d in DIRS}
 
@@ -255,7 +272,9 @@ def cmd_gates(args):
 
 
 def main():
+    global METHOD, MODES
     ap = argparse.ArgumentParser()
+    ap.add_argument("--method", default="scbutterfly", choices=sorted(REF_DIRS))
     sub = ap.add_subparsers(dest="cmd", required=True)
     t = sub.add_parser("train")
     t.add_argument("--out", required=True)
@@ -268,6 +287,9 @@ def main():
     g.add_argument("--json", default=None)
     g.add_argument("--fast-mode", default="fast", choices=["fast", "fast_a1"])
     a = ap.parse_args()
+    METHOD = a.method
+    if METHOD == "babel":
+        MODES = {"default": {}, "fast": {"fast": True}}
     cmd_train(a) if a.cmd == "train" else cmd_gates(a)
 
 
