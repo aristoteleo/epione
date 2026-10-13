@@ -115,13 +115,17 @@ test = [
     # (tests/test_scooby_targets.py).
     'pyarrow',
 ]
+translate = [
+    # epione.translate methods (scButterfly, ...); prepare/metrics need none of these.
+    'torch>=2.0',
+]
 scenic = [
     # cisTarget feather databases (Arrow IPC) and pycistarget-format hdf5 I/O.
     'pyarrow',
     'tables',
 ]
 full = [
-    'epione[diffexp,motif,footprint,upstream,scenic]',
+    'epione[diffexp,motif,footprint,upstream,scenic,translate]',
 ]
 
 
