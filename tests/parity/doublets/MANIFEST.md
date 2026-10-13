@@ -207,4 +207,6 @@ Given the bias above, every method was re-scored on QC-only cells: demuxlet-call
 - AMULET is weak, because these cells are shallow (median ≈ 5k fragments, against the 10–15k its authors recommend). Fisher-combining it with scDblFinder therefore lowers scDblFinder's AUPRC.
 - This is one cell-line mixture. Cell lines are more distinct than cell types, which favours simulation-based methods, so these rankings should not be generalised.
 
+The ArchR-port column was computed before the seeding fix. On the final code the executed tutorial gives 0.779 / 0.882 for Low (vs 0.790 / 0.894), with the same ranking.
+
 **Runtime on the QC-only cells, High (20.8k cells, shared node).** Tile matrix 3,907 s; scrublet 1,042 s; ArchR port 219 s; scDblFinder 891 s; AMULET 148 s.
