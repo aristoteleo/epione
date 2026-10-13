@@ -89,4 +89,36 @@ No method is declared "best" unless it leads on both datasets.
 
 ## Results
 
-None yet. The results are appended below only after the runs.
+## Results, gate A as registered (2026-10-13): **FAIL**
+
+Epione seed 1 vs ArchR seed 1. Each cell shows value / threshold, where the threshold is min(fixed, ArchR's worst seed pair).
+
+| sample | cells | A1 enrichment ρ | A2 filter Jaccard | A3 score ρ |
+|---|---|---|---|---|
+| scATAC_BMMC_R1 | 4,932 | 0.571 / 0.609 **fail** | 0.455 / 0.500 **fail** | 0.656 / 0.600 pass |
+| scATAC_CD34_BMMC_R1 | 3,275 | 0.619 / 0.636 **fail** | 0.196 / 0.132 pass | 0.564 / 0.576 **fail** |
+| scATAC_PBMC_R1 | 2,453 | 0.373 / 0.387 **fail** | 0.558 / 0.500 pass | 0.349 / 0.352 **fail** |
+
+- Every miss lies within 0.04 of ArchR's own worst seed-to-seed agreement.
+- Both sides remove the same *number* of cells (243, 107 and 60), because that number is fixed by the n²/10⁵ rule.
+- **Epione is more reproducible than ArchR.** Its own seed-to-seed enrichment ρ is 0.69–0.70 (BMMC), 0.78–0.79 (CD34) and 0.37–0.43 (PBMC). ArchR's worst pairs are 0.61, 0.64 and 0.39.
+
+**Diagnostic, run after the result and not a gate (BMMC).**
+
+| Comparison | Spearman ρ |
+|---|---|
+| ArchR's own LSI-space vs UMAP-space enrichment | 0.42 |
+| Epione vs ArchR, LSI space | 0.65 |
+| Epione vs ArchR, UMAP space | 0.57 |
+
+The disagreement is mostly the stochasticity of the score itself, compounded by UMAP. A step-by-step re-check of the port found no algorithmic difference: feature selection, number of trials, down-sampling, projection and count mapping all match.
+
+## Amendment A-1 (the one allowed), written before its run
+
+**Rationale.** The registered statistic compares a *single* Epione–ArchR draw with the *minimum* of three ArchR–ArchR draws. With ArchR's self-agreement spanning 0.39–0.79 across samples, one draw is too noisy to be the test statistic.
+
+**Amended statistic.** For each gate and sample, take the mean of the statistic over all 9 pairs (Epione seed i, ArchR seed j), with i, j ∈ {1, 2, 3}.
+
+**Threshold.** Unchanged: min(fixed, ArchR's worst seed pair).
+
+**Rule.** Pass/fail as before; all 3 samples must pass. The registered result above stays recorded as FAIL whatever A-1 shows.
