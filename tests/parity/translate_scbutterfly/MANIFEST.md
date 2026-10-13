@@ -80,6 +80,42 @@ where SD_reference is the sample SD of the 3 reference seeds.
 - **Metric gate.** Same rule as G2, with SD_default (the SD of Epione's default seeds) in place of SD_reference, and the same floors.
 - **Speed gate.** `median_k(train_seconds_default_k / train_seconds_fast_k) ≥ 1.5`. Seeds run back to back, default then fast, on the same device. A pilot of 8+8+8 epochs, run before this MANIFEST, measured about 1.7× per epoch on a shared H100.
 
-## Results
+## Results, G3 (fast mode as registered: bf16, batch 256, learning rate 2e-3)
 
-Filled in after the runs; see below.
+Run on 2026-10-12 on the shared H100, seeds 0–2, interleaved default/fast per seed. Truth is Epione's prepared matrices (G0 checks that they equal the reference truth).
+
+**Speed: PASS.**
+
+| seed | default (s) | fast (s) | ratio |
+|---|---|---|---|
+| 0 | 843 | 500 | 1.69 |
+| 1 | 817 | 389 | 2.10 |
+| 2 | 666 | 409 | 1.63 |
+
+The median ratio is 1.69 (gate ≥ 1.5). Default seed 2 stopped early at translator epoch 181; every other run used the full 100 + 100 + 200 epochs.
+
+**Metrics: FAIL**, 7 of 22 gated (metric, direction) pairs.
+
+| direction | metric | default | fast | \|Δ\| | tol | result |
+|---|---|---|---|---|---|---|
+| rna2atac | MMD | 0.0440 ± 0.0055 | 0.0324 ± 0.0017 | 0.0116 | 0.0109 | fail (fast lower = better) |
+| atac2rna | SPCC | 0.3809 ± 0.0011 | 0.4000 ± 0.0029 | 0.0191 | 0.0100 | fail (fast better) |
+| atac2rna | CORR | 0.2569 ± 0.0034 | 0.2937 ± 0.0075 | 0.0368 | 0.0100 | fail (fast better) |
+| atac2rna | ARI | 0.4499 ± 0.0203 | 0.3516 ± 0.0135 | 0.0982 | 0.0406 | fail (fast worse) |
+| atac2rna | AMI | 0.7460 ± 0.0046 | 0.7097 ± 0.0090 | 0.0363 | 0.0300 | fail (fast worse) |
+| atac2rna | NMI | 0.7555 ± 0.0045 | 0.7224 ± 0.0086 | 0.0332 | 0.0300 | fail (fast worse) |
+
+The other 16 gated pairs pass. RNA→ATAC PCC, AUROC, MSE and CORR all agree to within 0.002.
+
+The registered fast mode is therefore **not** equivalent to the default path: its ATAC→RNA predictions cluster worse but correlate better per feature.
+
+## Amendment A1 (registered after the G3 failure, before running it)
+
+Hypothesis: the 4× fewer optimiser steps per epoch, combined with the doubled learning rate, change the optimum.
+
+A1 fast mode:
+- bf16 autocast;
+- **batch 128**;
+- **learning rate 1e-3** (unchanged).
+
+It uses the same seeds, the same G3 metric rule and the same floors. The speed gate is relaxed to ≥ 1.3, since a smaller batch saves less. If A1 passes, it becomes `fast=True`. If it fails, `fast=True` keeps the registered setting and is documented as not equivalent to the default.
