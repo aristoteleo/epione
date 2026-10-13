@@ -100,7 +100,7 @@ def cmd_gates(args):
     import scanpy as sc
 
     P = _parity_dir()
-    R = P / "ref" / "scbutterfly"
+    R = next((P / "ref" / n for n in ("scbutterfly", "scButterfly") if (P / "ref" / n).exists()), P / "ref" / "scbutterfly")
     out = Path(args.out)
     rna, atac, split = load_inputs(P)
     te = split["test"]
