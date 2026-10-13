@@ -469,3 +469,64 @@ def test_scpair_single_direction_and_save_load(scpair_trained, tmp_path):
     m.save(tmp_path / "s.pt")
     m2 = T.load(tmp_path / "s.pt")
     np.testing.assert_array_equal(m.predict(r[180:]).X, m2.predict(r[180:]).X)
+
+
+# ------------------------------------------------------------------ JAMIE
+def test_geodesic_dijkstra_equals_floyd_warshall():
+    from scipy.sparse.csgraph import floyd_warshall
+    from sklearn.neighbors import NearestNeighbors
+    from epione.translate._jamie import geodesic_distances
+
+    rng = np.random.default_rng(11)
+    X = np.vstack([rng.normal(0, 1, (40, 5)), rng.normal(6, 1, (40, 5))])
+    got = geodesic_distances(X, kmax=10)
+    # UnionCom's construction with Floyd-Warshall
+    k = 5
+    from scipy.sparse.csgraph import connected_components
+    knn = NearestNeighbors(n_neighbors=k).fit(X).kneighbors_graph(X, mode="distance")
+    while connected_components(knn, directed=False)[0] != 1 and not k > max(10, 0.01 * len(X)):
+        k += 2
+        knn = NearestNeighbors(n_neighbors=k).fit(X).kneighbors_graph(X, mode="distance")
+    ref = floyd_warshall(knn, directed=False)
+    mx = np.nanmax(ref[ref != np.inf])
+    ref[ref > mx] = 2 * mx
+    np.testing.assert_allclose(got, ref, rtol=1e-10)
+
+
+def test_prime_dual_respects_marginal_constraints():
+    from epione.translate._jamie import prime_dual
+
+    rng = np.random.default_rng(12)
+    X = rng.normal(0, 1, (30, 4))
+    D = np.sqrt(((X[:, None] - X[None]) ** 2).sum(-1))
+    F = prime_dual(D, D, 4, 4, device=torch.device("cpu"), epoch_pd=300).numpy()
+    assert F.min() >= 0
+    np.testing.assert_allclose(F.sum(1), 1.0, atol=0.15)   # rows sum to ~1 (penalised constraint)
+
+
+@pytest.fixture(scope="module")
+def jamie_trained():
+    rna, atac = _synthetic()
+    r, a = T.prepare(rna, atac, n_top_genes=60, min_cells_frac=0.01, method="jamie")
+    m = T.fit(r[:180], a[:180], method="jamie", device="cpu", seed=4, threads=2, max_epochs=6, min_epochs=2,
+              epoch_pd=50, pca_dim=[20, 20])
+    return m, r, a
+
+
+def test_jamie_prepare_zscores_atac():
+    rna, atac = _synthetic()
+    r, a = T.prepare(rna, atac, n_top_genes=60, method="jamie")
+    assert isinstance(a.X, np.ndarray)
+    np.testing.assert_allclose(a.X.mean(0), 0, atol=1e-5)
+    assert np.allclose(r.X.data, np.round(r.X.data))
+
+
+def test_jamie_predicts_and_roundtrips(jamie_trained, tmp_path):
+    m, r, a = jamie_trained
+    pa, pr = m.predict(r[180:]), m.predict(a[180:])
+    assert pa.shape == (60, a.n_vars) and pr.shape == (60, r.n_vars)
+    assert np.isfinite(pa.X).all() and np.isfinite(pr.X).all()
+    assert m.history["epochs"] == 6
+    m.save(tmp_path / "j.pt")
+    m2 = T.load(tmp_path / "j.pt")
+    np.testing.assert_array_equal(m.predict(a[180:]).X, m2.predict(a[180:]).X)
