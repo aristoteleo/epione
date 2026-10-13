@@ -8,6 +8,7 @@ Example data, QC, dimensionality reduction, batch correction and label transfer.
 
 t_archr_heme_data
 t_preprocess
+t_doublets
 t_iterative_lsi
 t_harmony
 t_integrate

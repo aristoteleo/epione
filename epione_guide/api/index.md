@@ -87,6 +87,8 @@ linked above.
 |---|---|
 | Import scATAC fragments | {func}`epione.pp.import_fragments`, {func}`epione.pp.ensure_tabix_index` |
 | Per-cell QC | {func}`epione.pp.qc`, {func}`epione.pp.tss_enrichment` (alias `tsse`), {func}`epione.pp.nucleosome_signal`, {func}`epione.pp.frag_size_distr`, {func}`epione.pp.scrublet` |
+| Doublet scores | {func}`epione.pp.archr_doublets` (ArchR `addDoubletScores` port), {func}`epione.pp.scdblfinder`, {func}`epione.pp.amulet`, {func}`epione.pp.clamulet` (pyscdblfinder), {func}`epione.pp.combine_doublet_scores`, {func}`epione.pp.scrublet` |
+| Remove doublets | {func}`epione.pp.filter_doublets` |
 | Concatenate samples | {func}`epione.pp.concat_samples` |
 | Tile-matrix / peak-matrix / gene-activity matrix | {func}`epione.pp.add_tile_matrix`, {func}`epione.pp.make_peak_matrix`, {func}`epione.pp.make_gene_matrix` |
 | Feature selection | {func}`epione.pp.select_features` |
@@ -275,7 +277,7 @@ RNA → ATAC and ATAC → RNA translators learned from paired multiome cells, be
 | Task | Functions |
 |---|---|
 | Pre-built `Genome` instances | {data}`epione.data.GRCh37`, {data}`epione.data.GRCh38`, {data}`epione.data.GRCm38`, {data}`epione.data.GRCm39`, {data}`epione.data.hg19`, {data}`epione.data.hg38`, {data}`epione.data.mm10`, {data}`epione.data.mm39` |
-| Example datasets | {func}`epione.datasets.archr_hematopoiesis` (ArchR Hematopoiesis tutorial fragments) |
+| Example datasets | {func}`epione.datasets.archr_hematopoiesis` (ArchR Hematopoiesis tutorial fragments), {func}`epione.datasets.granja2021_cellline_mix` (cell-line mixture with genotype doublet calls) |
 | Example bulk ATAC-seq | {func}`epione.datasets.corces2016_bulk_atac` (Corces 2016 sorted hematopoietic populations, GSE74912) |
 
 ## Plotting helpers (overview)

@@ -13,6 +13,10 @@ from ._qc import (
 from ._neighbors import (
     neighbors,
 )
+from ._doublets import (
+    archr_doublets, filter_doublets, scdblfinder, amulet, clamulet,
+    combine_doublet_scores,
+)
 
 
 
@@ -31,4 +35,11 @@ __all__ = [
     "qc",
     "scrublet",
     "neighbors",
+    # doublets
+    "archr_doublets",
+    "filter_doublets",
+    "scdblfinder",
+    "amulet",
+    "clamulet",
+    "combine_doublet_scores",
 ]
