@@ -7,5 +7,6 @@ Predict chromatin accessibility from gene expression and expression from accessi
 :titlesonly: true
 
 t_translate_scbutterfly
+t_translate_multidgd
 t_translate_benchmark
 ```
