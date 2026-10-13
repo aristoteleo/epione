@@ -186,3 +186,11 @@ That is a property of the model and its optimisation, not of the schedule.
 It does **not** reproduce the reference within tolerance. Use the original package for results comparable to published scTranslation tables.
 
 `fast=True` (bf16, batch 256) is **not equivalent** to the default (G3 metrics fail).
+
+## Note: documented reference deviation (agent A's final report, contract §8)
+
+scTranslation's vendored BABEL **drops upstream BABEL's per-chromosome ATAC encoder and decoder**: its `_infer_input_dim2` returns the total peak dimension. Epione follows the paper, with per-chromosome blocks. This plausibly explains why Epione's RNA→ATAC is *better* than the reference. Against the paper's PBMC numbers, the reference's RNA→ATAC is weak (NMI 0.56 vs 71.9, AUROC about 0.53).
+
+This is recorded as a **documented deviation of the reference from the paper**, not a pass. G2 stays FAIL (6/23).
+
+The ATAC→RNA side, where Epione is worse (ARI 0.28 vs 0.39, MSE 3.0 vs 1.7), is **still unexplained**. The reference's ATAC→RNA matches the paper (PCC 0.967 vs 96.71; MSE 1.68 vs 1.74).
