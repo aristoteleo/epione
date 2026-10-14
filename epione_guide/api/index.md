@@ -146,6 +146,16 @@ linked above.
 | HOMER motif results table plot | {func}`epione.pl.homer_motif_table` |
 | scATAC motif sequence annotation | {func}`epione.single.atac.add_dna_sequence`, {func}`epione.single.atac.match_motif` |
 
+### Pando gene regulatory networks (`epione.grn`)
+
+Pando (Fleck et al., *Nature* 2023) through the omicverse port [py-Pando](https://github.com/omicverse/py-Pando) (`pip install 'epione[pando]'`), parity-tested against R Pando 1.1.1. `epione.grn.scenic` is the SCENIC+ module below.
+
+| Function | Epione |
+|---|---|
+| Pando GRN: candidate regions, motif scan, per-gene models, TF modules (Pando `initiate_grn`, `find_motifs`, `infer_grn`, `find_modules`) | {func}`epione.grn.pando` |
+| Signac-style gene annotation from a GENCODE GFF3/GTF (Signac `GetGRangesFromEnsDb`) | {func}`epione.grn.pando_annotation` |
+| Signac TF-IDF (Signac `RunTFIDF`, method 1) and Seurat log-normalisation (Seurat `NormalizeData`) | {func}`epione.grn.signac_tfidf`, {func}`epione.grn.seurat_lognormalize` |
+
 ### SCENIC+ enhancer-driven GRNs (`epione.scenic`)
 
 In pipeline order: topics → cisTarget / DEM → region-to-gene and TF-to-gene links → eRegulons, AUCell and RSS.

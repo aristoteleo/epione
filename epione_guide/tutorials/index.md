@@ -63,11 +63,11 @@ Peak-to-gene links, TF motif activity, TF regulators and trajectories.
 TF footprinting, PRINT and sequence-to-profile deep learning models.
 :::
 
-:::{grid-item-card} SCENIC+
+:::{grid-item-card} Gene regulatory networks
 :link: single/scenic
 :link-type: doc
 
-The full SCENIC+ pipeline, from topics to eRegulons, with bit-exact parity to the reference implementation.
+SCENIC+ eRegulons (topics to eRegulons, bit-exact with the reference) and Pando TF x binding-site models.
 :::
 
 :::{grid-item-card} Multimodal analysis
