@@ -528,6 +528,19 @@ def gc_matched_nonpeaks(peaks, genome, fold, chrom_sizes, *, inputlen: int = 211
         return g
 
     fg = _peak_gc(peaks, genome, sizes, inputlen)
+    # Upstream loops forever when a split has fewer candidates than the
+    # negatives it must draw; fail clearly instead.
+    need: Dict[str, int] = {}
+    for c in fg["chr"]:
+        key = remap(c)
+        if key != "ignore":
+            need[key] = need.get(key, 0) + (neg_to_pos_ratio_train
+                                            if key in ("chrom_train", "chrom_valid") else 1)
+    for key, n_need in need.items():
+        have = sum(len(v) for v in negatives.get(key, {}).values())
+        if have < n_need:
+            raise ValueError(f"{key}: {have} candidate background bins for {n_need} "
+                             "non-peaks; lower neg_to_pos_ratio_train or the stride")
     out = []
     for c, s, e, gc in fg.itertuples(index=False):
         key = remap(c)
@@ -548,7 +561,6 @@ def gc_matched_nonpeaks(peaks, genome, fold, chrom_sizes, *, inputlen: int = 211
     for col in ["1", "2", "3", "4", "5", "6"]:
         res[col] = "."
     res["summit"] = inputlen // 2
-    res.attrs["gc"] = neg["gc"].to_numpy()
     return res
 
 
