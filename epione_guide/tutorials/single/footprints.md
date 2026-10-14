@@ -1,6 +1,6 @@
 # Footprints and sequence models
 
-TF footprinting, PRINT and sequence-to-profile deep learning models.
+TF footprinting, PRINT, ChromBPNet and sequence-to-profile deep learning models.
 
 ```{toctree}
 :maxdepth: 1
@@ -9,5 +9,6 @@ TF footprinting, PRINT and sequence-to-profile deep learning models.
 t_footprint
 t_print_footprint
 t_seq2print
+t_chrombpnet
 t_scooby_bridge
 ```

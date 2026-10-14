@@ -227,6 +227,19 @@ RNA → ATAC and ATAC → RNA translators learned from paired multiome cells, be
 | Multi-scale footprint (scPrinter-style) | {func}`epione.pl.plot_multi_scale_footprint`, {func}`epione.pl.plot_multi_scale_footprint_region` |
 | TOBIAS-style BINDetect (in-package port) | {class}`epione.tl.FootprintPlotter`, {class}`epione.tl.PlotTracks`, {func}`epione.tl.plot_tracks`, {func}`epione.tl.plot_heatmap` |
 
+### Sequence models (`epione.models`, needs torch)
+
+Imported on demand, never by `import epione`; listed here without autodoc pages because they need torch.
+
+| Task | Functions |
+|---|---|
+| ChromBPNet in PyTorch (official Keras layers, no TensorFlow) | `epione.models.chrombpnet.BPNet`, `ChromBPNet`, `build_bpnet` |
+| Official `.h5` weights and ENCODE releases (md5-pinned) | `epione.models.chrombpnet.load_keras_h5`, `load_pretrained`, `PRETRAINED` |
+| Official data recipe: GC-matched non-peaks, hyper-parameter steps, signal from fragments or bigWig | `epione.models.chrombpnet.gc_matched_nonpeaks`, `bias_hyperparams`, `chrombpnet_hyperparams`, `InsertionSignal`, `BigWigSignal` |
+| Official training recipe | `epione.models.chrombpnet.train_bias`, `train_chrombpnet` |
+| Prediction, official metrics, interpretation | `epione.models.chrombpnet.predict_regions`, `evaluate`, `contribution_scores`, `ism`, `marginal_footprint` |
+| ChromBPNet bias as a Tn5 bias backend for footprinting | `epi.tl.tn5_bias(method="chrombpnet")`, {class}`epione.tl.ChromBPNetBias` |
+
 ### BigWig matrix tooling (bulk)
 
 | Task | Functions |
