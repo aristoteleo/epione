@@ -37,6 +37,32 @@ def _grelu():
     return grelu
 
 
+class _no_lightning_logs:
+    """gReLU predicts through ``pl.Trainer(logger=None)``, which Lightning
+    reads as "default TensorBoard logger" and writes ``lightning_logs/`` into
+    the working directory. Inside this context ``logger=None`` becomes
+    ``logger=False`` and checkpointing is off; predictions are unaffected."""
+
+    def __enter__(self):
+        import pytorch_lightning as pl
+
+        self._pl = pl
+        self._orig = orig = pl.Trainer.__init__
+
+        def init(trainer, *args, **kwargs):
+            if kwargs.get("logger", None) is None:
+                kwargs["logger"] = False
+            kwargs.setdefault("enable_checkpointing", False)
+            orig(trainer, *args, **kwargs)
+
+        pl.Trainer.__init__ = init
+        return self
+
+    def __exit__(self, *exc):
+        self._pl.Trainer.__init__ = self._orig
+        return False
+
+
 # ---------------------------------------------------------------------------
 # heads: Epione model output -> (N, tasks, length) tensor
 # ---------------------------------------------------------------------------
@@ -239,9 +265,11 @@ def predict_variant_effects(model, variants: pd.DataFrame, genome, *, head=None,
     from grelu.variant import predict_variant_effects as _pve
 
     lm = wrap(model, head=head, seq_len=seq_len, **wrap_kwargs)
-    return _pve(variants, lm, devices=devices, seq_len=seq_len, batch_size=batch_size,
-                num_workers=num_workers, genome=_genome_arg(genome), rc=rc,
-                max_seq_shift=max_seq_shift, compare_func=compare_func, return_ad=return_ad)
+    with _no_lightning_logs():
+        return _pve(variants, lm, devices=devices, seq_len=seq_len, batch_size=batch_size,
+                    num_workers=num_workers, genome=_genome_arg(genome), rc=rc,
+                    max_seq_shift=max_seq_shift, compare_func=compare_func,
+                    return_ad=return_ad)
 
 
 def ism(model, seqs, *, genome=None, head=None, start_pos: int = 0,
@@ -254,9 +282,10 @@ def ism(model, seqs, *, genome=None, head=None, start_pos: int = 0,
     from grelu.interpret.score import ISM_predict
 
     lm = wrap(model, head=head, **wrap_kwargs)
-    return ISM_predict(seqs, lm, genome=None if genome is None else _genome_arg(genome),
-                       start_pos=start_pos, end_pos=end_pos, compare_func=compare_func,
-                       devices=devices, batch_size=batch_size, return_df=return_df)
+    with _no_lightning_logs():
+        return ISM_predict(seqs, lm, genome=None if genome is None else _genome_arg(genome),
+                           start_pos=start_pos, end_pos=end_pos, compare_func=compare_func,
+                           devices=devices, batch_size=batch_size, return_df=return_df)
 
 
 def attributions(model, seqs, *, genome=None, head=None, method: str = "deepshap",
@@ -269,9 +298,10 @@ def attributions(model, seqs, *, genome=None, head=None, method: str = "deepshap
     from grelu.interpret.score import get_attributions
 
     lm = wrap(model, head=head, **wrap_kwargs)
-    return get_attributions(lm, seqs, genome=None if genome is None else _genome_arg(genome),
-                            device=device, method=method, n_shuffles=n_shuffles, seed=seed,
-                            hypothetical=hypothetical)
+    with _no_lightning_logs():
+        return get_attributions(lm, seqs, genome=None if genome is None else _genome_arg(genome),
+                                device=device, method=method, n_shuffles=n_shuffles,
+                                seed=seed, hypothetical=hypothetical)
 
 
 def pseudobulk_anndata(adata, groupby: str, *, layer: Optional[str] = None,
