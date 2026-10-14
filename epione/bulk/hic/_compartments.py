@@ -203,9 +203,11 @@ def saddle(
 
     Returns:
         ``(saddle_matrix, edges, sum_count)`` — the ``n_bins × n_bins``
-        observed-over-expected matrix, the quantile edges in
-        eigenvector units, and the ``n_bins × n_bins`` count of
-        contributing bin-pairs (lets you mask sparsely-sampled cells).
+        observed-over-expected matrix (``NaN`` where no bin pair
+        contributes), the ``n_bins + 1`` quantile levels spanning
+        ``qrange`` that delimit the bins, and the ``n_bins × n_bins``
+        count of contributing bin-pairs (lets you mask sparsely-sampled
+        cells).
     """
     import cooler
     import cooltools
@@ -247,6 +249,8 @@ def saddle(
     )
     # Observed-over-expected average per quantile cell.
     with np.errstate(divide="ignore", invalid="ignore"):
-        saddle_mat = np.divide(sum_, count, where=count > 0)
+        # cells without contributing pairs are NaN (without ``out=`` they held
+        # uninitialised memory)
+        saddle_mat = np.divide(sum_, count, out=np.full(np.shape(sum_), np.nan), where=count > 0)
     edges = np.linspace(Q_LO, Q_HI, n_bins + 1)
     return saddle_mat, edges, count
