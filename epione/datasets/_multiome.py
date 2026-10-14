@@ -101,3 +101,51 @@ def pbmc10k_multiome_10x(
         pooch.retrieve(url=TENX_BASE_URL + fname, known_hash=known_hash, fname=fname,
                        path=str(data_dir), progressbar=progressbar)
     return data_dir
+
+
+PBMC3K_BASE_URL = "https://cf.10xgenomics.com/samples/cell-arc/2.0.0/pbmc_granulocyte_sorted_3k/"
+
+PBMC3K_ATAC = {
+    "fragments": ("pbmc_granulocyte_sorted_3k_atac_fragments.tsv.gz",
+                  "sha256:cb7725f828fe99c3660cdf24843347e91aec72507ae3ace3030a0c49e50352ee"),
+    "fragments_index": ("pbmc_granulocyte_sorted_3k_atac_fragments.tsv.gz.tbi",
+                        "sha256:365aa0ddb3d51e3618954752fd7e41a52c489591bd38c0c023e42475653fb7a2"),
+    "peaks": ("pbmc_granulocyte_sorted_3k_atac_peaks.bed",
+              "sha256:1b3fb82546659d51faf25957aec01abeb88b89d7c91f3019b3bce55f33a18ddb"),
+    "per_barcode_metrics": ("pbmc_granulocyte_sorted_3k_per_barcode_metrics.csv",
+                            "sha256:d8361253c64a67fd31ed9a226623d1d824b9acbc1bfe18c7c4b897de9d02c4f7"),
+}
+
+
+def pbmc3k_multiome_atac(
+    data_dir: Optional[Union[str, os.PathLike]] = None,
+    *,
+    progressbar: bool = False,
+) -> dict:
+    """ATAC files of the 10x Multiome PBMC 3k sample (cellranger-arc 2.0.0).
+
+    Downloads the fragments file (468 MB) with its tabix index, the called
+    peaks (2.3 MB) and the per-barcode metrics (with 10x's cell calls) from
+    10x Genomics, verified against pinned sha256 sums. A small bulk-like
+    ATAC sample used by the ChromBPNet tutorial.
+
+    Arguments:
+        data_dir: Folder for the files. Defaults to
+            ``<pooch cache>/epione/pbmc3k_multiome``.
+        progressbar: Show a download progress bar.
+
+    Returns:
+        ``{"fragments", "fragments_index", "peaks", "per_barcode_metrics"}``
+        -> local paths.
+    """
+    import pooch
+
+    if data_dir is None:
+        data_dir = Path(pooch.os_cache("epione")) / "pbmc3k_multiome"
+    data_dir = Path(data_dir)
+    data_dir.mkdir(parents=True, exist_ok=True)
+    out = {}
+    for key, (fname, known_hash) in PBMC3K_ATAC.items():
+        out[key] = Path(pooch.retrieve(url=PBMC3K_BASE_URL + fname, known_hash=known_hash,
+                                       fname=fname, path=str(data_dir), progressbar=progressbar))
+    return out
