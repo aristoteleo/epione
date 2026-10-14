@@ -222,6 +222,7 @@ RNA → ATAC and ATAC → RNA translators learned from paired multiome cells, be
 
 | Task | Functions |
 |---|---|
+| HINT-ATAC footprints from BAMs (port of RGT `rgt-hint`): bias-corrected strand-specific signal, HMM footprint calls, motif sites, differential TF activity | {func}`epione.tl.hint_footprints`, {func}`epione.tl.hint_signal`, {func}`epione.tl.hint_match_motifs`, {func}`epione.tl.hint_differential`, {class}`epione.tl.HintBias` (`epi.tl.tn5_bias(method="hint")`), {func}`epione.tl.load_hint_hmm` |
 | ArchR-style footprint pipeline | {func}`epione.bulk.atac.footprint_archr`, {func}`epione.bulk.atac.bam_to_fragments_bulk` |
 | TF aggregate footprint plot | {func}`epione.pl.plot_footprints` |
 | Multi-scale footprint (scPrinter-style) | {func}`epione.pl.plot_multi_scale_footprint`, {func}`epione.pl.plot_multi_scale_footprint_region` |
@@ -322,6 +323,7 @@ Imported on demand, never by `import epione`; listed here without autodoc pages 
 | Volcano / MA / cumulative distance | {func}`epione.pl.volcano`, {func}`epione.pl.ma_plot`, {func}`epione.pl.cumulative_distance` |
 | Fragment QC | {func}`epione.pl.frag_size_distr`, {func}`epione.pl.fragment_histogram`, {func}`epione.pl.tss_enrichment`, {func}`epione.pl.plot_joint` |
 | Footprint (per-TF, multi-scale) | {func}`epione.pl.plot_footprints`, {func}`epione.pl.plot_multi_scale_footprint`, {func}`epione.pl.plot_multi_scale_footprint_region` |
+| HINT differential footprinting (TF activity, per-TF profiles) | {func}`epione.pl.plot_hint_differential`, {func}`epione.pl.plot_hint_profile` |
 | Peak-to-gene arc plot | {func}`epione.pl.plot_peak2gene` |
 | Grouped genome browser track (ArchR `plotBrowserTrack`) | {func}`epione.pl.plot_browser_track`, {func}`epione.pl.browser_track_coverage` |
 | Marker / peak-to-gene heatmaps (ArchR) | {func}`epione.pl.marker_heatmap`, {func}`epione.pl.peak2gene_heatmap` |
