@@ -17,6 +17,13 @@ stopping and the imputation procedure follow upstream. Differences:
   *effective* behaviour: the sampler's ``pair_ratio`` is fixed when a stage
   starts (stage 1: 0.0, stages 2/3: 0.5). Verified on the reference run
   (``tests/parity/higashi/MANIFEST.md``);
+* the stage-1/2 optimisers receive the embedding parameters twice, as
+  upstream. With ``optimizer="sequential"`` (default) the duplicates get two
+  plain Adam steps, which is what upstream does under torch < 2.0 and under
+  current torch (2.6). Under torch 2.0.x, upstream's default CUDA ``foreach``
+  Adam updates them differently, in a launch-dependent way that cannot be
+  reproduced; ``optimizer="torch20_foreach"`` (:class:`ListwiseAdam`) is its
+  deterministic list-wise approximation. See ``tests/parity/higashi/MANIFEST.md``;
 * seeded random streams (upstream draws from fresh OS entropy).
 """
 from __future__ import annotations
@@ -34,6 +41,75 @@ from scipy.sparse import csr_matrix, vstack
 from ._modules import (GraphSageEncoder_with_weights, Hyper_SAGNN, MultipleEmbedding, log_zinb_positive)
 from ._process import HigashiInput
 from ._sampler import BatchMaker, ContactIndex, DataGenerator, NegativeSampler, NeighborMaskBuilder
+
+
+class ListwiseAdam(torch.optim.Optimizer):
+    """Adam with torch-2.0's multi-tensor (``foreach``) update order.
+
+    Upstream builds its stage-1/2 optimisers from a parameter list in which the
+    embedding parameters appear twice. torch 2.0.x's default CUDA
+    ``_multi_tensor_adam`` applies each list-wide op to every list entry before
+    the next op. For a duplicated parameter the step counter therefore advances
+    by 2, the moments become ``m <- b1^2 m + 2 (1 - b1) g`` and
+    ``v <- b2^2 v + 2 (1 - b2) g^2``, and the bias-corrected update is applied
+    twice. Later torch releases instead give two sequential Adam steps.
+
+    This class reproduces the torch-2.0 arithmetic with plain tensor ops, so it
+    does not depend on the installed torch. One exception: when both copies
+    happen to land in the same CUDA launch, torch 2.0 races, and the result
+    is not reproducible even there. This class gives the list-wise result in
+    that case too. On the reference parameter layouts, after 3 steps with random
+    gradients, it matches torch 2.0.1 to 1e-6 for all but 5 (stage 1) and 10
+    (stage 2) of the roughly 150 tensors. Those differ by up to 3e-4, against
+    updates of about 6e-3. Without duplicates it is standard Adam (no weight
+    decay, no amsgrad).
+    """
+
+    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8):
+        super().__init__(params, dict(lr=lr, betas=betas, eps=eps))
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        for group in self.param_groups:
+            b1, b2 = group['betas']
+            lr, eps = group['lr'], group['eps']
+            params, grads, m, v, steps = [], [], [], [], []
+            for p in group['params']:
+                if p.grad is None:
+                    continue
+                st = self.state[p]
+                if len(st) == 0:
+                    st['step'] = torch.tensor(0.0)
+                    st['exp_avg'] = torch.zeros_like(p, memory_format=torch.preserve_format)
+                    st['exp_avg_sq'] = torch.zeros_like(p, memory_format=torch.preserve_format)
+                params.append(p); grads.append(p.grad); m.append(st['exp_avg'])
+                v.append(st['exp_avg_sq']); steps.append(st['step'])
+            # each op over the whole list, in torch 2.0's order
+            for t in steps:
+                t.add_(1)
+            for a in m:
+                a.mul_(b1)
+            for a, g in zip(m, grads):
+                a.add_(g, alpha=1 - b1)
+            for a in v:
+                a.mul_(b2)
+            for a, g in zip(v, grads):
+                a.addcmul_(g, g, value=1 - b2)
+            bc1 = [1 - b1 ** t.item() for t in steps]
+            bc2 = [1 - b2 ** t.item() for t in steps]
+            denom = [a.sqrt() / math.sqrt(c) + eps for a, c in zip(v, bc2)]
+            for p, a, dn, c in zip(params, m, denom, bc1):
+                p.addcdiv_(a, dn, value=-lr / c)
+        return None
+
+
+def _make_adam(params, lr, semantics):
+    import warnings
+    if semantics == "torch20_foreach":
+        return ListwiseAdam(params, lr=lr)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # duplicate parameters, as upstream
+        return torch.optim.Adam(params, lr=lr)
 
 
 def _standardize_scalar(a):
@@ -90,7 +166,7 @@ class Higashi:
                  maximum_distance: int = -1, embedding_epoch: int = 60, no_nbr_epoch: int = 45,
                  with_nbr_epoch: int = 30, impute_list: Optional[Sequence[str]] = None, device=None, seed: int = 0,
                  update_num_per_training_epoch: int = 1000, update_num_per_eval_epoch: int = 10,
-                 verbose: bool = True):
+                 optimizer: str = "sequential", verbose: bool = True):
         if loss_mode not in ("zinb", "classification", "rank", "regression"):
             raise ValueError(f"unknown loss_mode {loss_mode!r}")
         self.data = data
@@ -112,6 +188,9 @@ class Higashi:
         self.seed = int(seed)
         self.update_num_per_training_epoch = int(update_num_per_training_epoch)
         self.update_num_per_eval_epoch = int(update_num_per_eval_epoch)
+        if optimizer not in ("torch20_foreach", "sequential"):
+            raise ValueError("optimizer must be 'torch20_foreach' or 'sequential'")
+        self.optimizer_semantics = optimizer
         self.verbose = verbose
         self.rng = np.random.default_rng(seed)
         torch.manual_seed(seed)
@@ -428,11 +507,8 @@ class Higashi:
         t0 = time.time()
         params = list(self.higashi_model.parameters()) + list(self.node_embedding_init.parameters())
         # upstream passes the embedding parameters twice (they are also inside
-        # the model); the duplicates get two Adam updates per step. Kept as is.
-        import warnings
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            optimizer = torch.optim.Adam(params, lr=1e-3)
+        # the model); see ListwiseAdam for how the duplicates are updated
+        optimizer = _make_adam(params, 1e-3, self.optimizer_semantics)
         self.alpha, self.beta = 1.0, 1e-2
         self.steps = 1
         self.pair_ratio = 0.0
@@ -468,11 +544,8 @@ class Higashi:
             feature_dim=self.dimensions, embed_dim=self.dimensions, num_sample=8, gcn=False,
             num_list=self.num_list, transfer_range=0, device=self.device).to(self.device)
         self.higashi_model.encode1.dynamic_nn = node_embedding2
-        import warnings
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            optimizer = torch.optim.Adam(list(self.higashi_model.parameters())
-                                         + list(self.node_embedding_init.parameters()), lr=1e-3)
+        optimizer = _make_adam(list(self.higashi_model.parameters())
+                               + list(self.node_embedding_init.parameters()), 1e-3, self.optimizer_semantics)
         self.steps = 2
         self.nbr_builder.set_matrices(self.sparse_chrom_list)
         self.train([optimizer], self.no_nbr_epoch, stage=2)
@@ -519,7 +592,7 @@ class Higashi:
                 mats.append(csr_matrix(mtx))
             weighted.append(mats)
         self.nbr_builder.set_matrices(weighted)
-        optimizer = torch.optim.Adam(self.higashi_model.parameters(), lr=1e-3)
+        optimizer = _make_adam(list(self.higashi_model.parameters()), 1e-3, self.optimizer_semantics)
         self.steps = 3
         self.train([optimizer], self.with_nbr_epoch, stage=3)
         self._snapshot("stage3")

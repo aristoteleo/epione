@@ -26,6 +26,7 @@ HIGASHI_DEFAULTS = dict(
     embedding_epoch=60,
     no_nbr_epoch=45,
     with_nbr_epoch=30,
+    optimizer="sequential",    # or "torch20_foreach" (see _higashi._model.ListwiseAdam)
 )
 
 

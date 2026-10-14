@@ -139,3 +139,5 @@ Note: under torch < 2.0, where `foreach` was not the default, upstream itself be
 So the torch-2.0.1 behaviour that drives the gap is a launch-dependent race. It can be neither emulated deterministically nor reproduced under torch 2.6. The A2 reruns continue as registered and are reported. A2 does **not** achieve its purpose.
 
 **D1 (diagnostic, not a gate).** One full reference run, seed 0, with the reference's Adam forced to `foreach=False`, which gives two sequential steps for the duplicates as under torch < 2.0. It is evaluated with the same G2 metrics. If D1's imputation metrics fall to Epione's level, the G2 imputation gap is attributed to this torch-2.0-specific optimiser artefact of the reference, not to the port.
+
+**Default after A2.** The emulation is not exact. In effect it behaves like sequential Adam (see the check above). Epione's default is therefore `optimizer="sequential"`, the behaviour of upstream's own code under torch < 2.0 and under torch 2.6. `optimizer="torch20_foreach"` (list-wise) stays available. This choice follows from the emulation check, not from the A2 metrics.
