@@ -224,3 +224,60 @@ def test_parity_tads_and_conversion(tmp_path):
     res = json.loads(out.read_text())
     failed = [k for k, v in res.items() if isinstance(v, dict) and v.get("pass_") is False]
     assert not failed, failed
+
+
+def test_balance_cool_stores_cooler_attrs_and_insulation_defaults_work(tmp_path):
+    pytest.importorskip("cooltools")
+    import h5py
+    import epione.bulk.hic as h
+
+    cool = _write_cool(tmp_path / "bal.cool", _dense(seed=8), weight=False)
+    h.balance_cool(cool, mad_max=10, min_nnz=1)
+    with h5py.File(cool, "r") as f:
+        attrs = dict(f["bins/weight"].attrs)
+    assert attrs["ignore_diags"] == 2 and "converged" in attrs
+    # cooltools reads ignore_diags from those attributes when none is passed
+    df = h.insulation(cool, window_bp=100_000)
+    assert df["log2_insulation_score_100000"].notna().any()
+
+
+def test_saddle_empty_cells_are_nan(tmp_path):
+    pytest.importorskip("cooltools")
+    import epione.bulk.hic as h
+
+    cool = _write_cool(tmp_path / "sad.cool", _dense(seed=9), weight=False)
+    h.balance_cool(cool, mad_max=10, min_nnz=1)
+    n = SIZE // BIN
+    track = pd.DataFrame({"chrom": "chrT", "start": np.arange(n) * BIN, "end": (np.arange(n) + 1) * BIN,
+                          "E1": np.where(np.arange(n) < n // 2, -1.0, 1.0)})  # two values -> empty quantiles
+    sad, edges, cnt = h.saddle(cool, track, n_bins=10)
+    assert (cnt == 0).any()
+    assert np.isnan(sad[cnt == 0]).all()
+    assert len(edges) == 11
+
+
+def test_balance_cool_stores_cooler_weight_attrs(tmp_path):
+    """Regression: cooltools reads ignore_diags from the weight column's attrs."""
+    import h5py
+    import epione.bulk.hic as h
+
+    p = _write_cool(tmp_path / "w.cool", _dense(seed=8), weight=False)
+    h.balance_cool(p, ignore_diags=2)
+    with h5py.File(p, "r") as f:
+        attrs = dict(f["bins/weight"].attrs)
+    assert attrs["ignore_diags"] == 2 and "mad_max" in attrs and "converged" in attrs
+    ins = h.insulation(p, window_bp=200_000)  # default ignore_diags=None
+    assert ins["log2_insulation_score_200000"].notna().any()
+
+
+def test_saddle_cells_without_pairs_are_nan(tmp_path, tads_cool):
+    """Regression: np.divide(where=...) without out= left uninitialised cells."""
+    import epione.bulk.hic as h
+
+    eig = h.compartments(tads_cool, n_eigs=1)
+    # a track with only two values leaves most quantile bins empty
+    eig["E1"] = np.where(eig["E1"] > eig["E1"].median(), 1.0, -1.0)
+    mat, edges, cnt = h.saddle(tads_cool, eig, n_bins=10)
+    assert (cnt == 0).any()
+    assert np.isnan(mat[cnt == 0]).all()
+    assert len(edges) == 11
