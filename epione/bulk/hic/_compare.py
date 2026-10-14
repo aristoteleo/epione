@@ -118,7 +118,10 @@ def correlate_matrices(
     zeroed, and only the upper triangle within ``distance_range`` is kept.
     Pixels are compared over the union of non-zero positions (a pixel that is
     zero in one matrix counts as zero), excluding bins masked in any input and
-    positions where both values sum to at most 1 -- HiCExplorer's rule.
+    positions where both values sum to at most 1 -- HiCExplorer's rule. That
+    rule assumes count-scale matrices: on matrices stored as normalised
+    fractions (all values below 1) no pixel survives and a ``ValueError`` is
+    raised.
 
     Arguments:
         cool_paths: two or more ``.cool`` files with identical bins.
@@ -193,6 +196,9 @@ def correlate_matrices(
             continue
         sub = big[:, [r, c]]
         sub = sub[sub.sum(axis=1) > 1, :]
+        if sub.shape[0] < 2:
+            raise ValueError(f"fewer than 2 pixel pairs of {labels[r]!r} and {labels[c]!r} sum to more than 1; "
+                             "correlate_matrices (like hicCorrelate) needs count-scale matrices")
         res[r, c] = corr(sub[:, 0], sub[:, 1])[0]
     res = res + np.triu(res, 1).T
     return pd.DataFrame(res, index=list(labels), columns=list(labels))
