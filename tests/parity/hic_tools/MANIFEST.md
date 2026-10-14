@@ -73,6 +73,26 @@ must be an exact rewrite (same floating-point operations in the same order) or c
 bound derived here before it is used; none is planned beyond vectorising Python loops
 whose summation order is preserved.
 
+## Amendment 1 (2026-10-13, before any gate-A or B8-on-C comparison)
+
+Fixture C as downloaded names its chromosomes `1`..`22`, `X`, `Y`, `MT` (no `chr` prefix) and
+has no `weight` column. The first gate-A run stopped at fixture loading (empty chromosome list),
+before any comparison. Changes, gates and thresholds unchanged:
+
+- chromosomes for A are `17`..`22`; for B8 on C, `21` and `22`;
+- a copy of C is ICE-balanced once with `epione.bulk.hic.balance_cool` (cooler's
+  `balance_cooler`, default parameters) to provide the `weight` column; both sides read
+  that copy. B8 on C reads the same balanced copy.
+
+## Amendment 2 (2026-10-13, before any B8 comparison)
+
+"Its test-suite parameters" for B8 on G is made concrete as the parameters of
+`test_hicDetectLoops.py::test_main_cool_chromosomes_single_core` (HiCExplorer 3.7.6):
+`--maxLoopDistance 3000000 -pit 1 -w 5 -pw 2 -p 0.5 -pp 0.55 --chromosomes 1 2`. The first run
+used the suite's other parameter set, whose default `--maxLoopDistance` (2 Mb) is below G's
+2.5 Mb bin size, so HiCExplorer filtered out every pixel and wrote no file; the run stopped
+there, before any comparison. Gate unchanged.
+
 ## Results
 
 (to be filled in after the runs)
