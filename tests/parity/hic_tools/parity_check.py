@@ -26,11 +26,14 @@ import pandas as pd
 import hicexplorer  # noqa: F401  (sets the multiprocessing start method; must come first)
 
 RESULTS = {}
+OUT = None
 
 
 def record(gate, **kw):
     RESULTS.setdefault(gate, {}).update(kw)
     print(gate, json.dumps(kw, default=str)[:400], flush=True)
+    if OUT is not None:  # keep results even if a later gate fails
+        OUT.write_text(json.dumps(RESULTS, indent=1, default=str))
 
 
 def maxabs(a, b):
@@ -80,14 +83,31 @@ def prepare(data, src, work):
     fx["R_c"] = td / "hicDifferentialTAD" / "GSM2644947_Auxin2days-R1.100000_chr1.cool"
     fx["G"] = td / "hicDetectLoops" / "GSE63525_GM12878_insitu_primary_2_5mb.cool"
     fx["P"] = td / "hicPCA" / "mm9_reduced_chr1.cool"
+    fx["K_raw"] = td / "hicCorrectMatrix" / "gm12878_raw_values.cool"   # amendment 4
+    fx["K_kr"] = td / "hicCorrectMatrix" / "gm12878_KR.cool"
     fx["genes_dm3"] = data / "dm3_genes.bed"
     fx["genes_mm9"] = td / "hicPCA" / "mm9_genes_sorted.bed12"
     # Amendment 1: C has no weight column; balance a copy once
-    fx["C"] = work / "C_balanced.cool"
+    # Amendment 3: chromosomes 17-22 only, then balanced (amendment 5: also kept unbalanced)
+    fx["C"] = work / "C_chr17_22_balanced.cool"
+    fx["C_raw"] = work / "C_chr17_22_raw.cool"
     if not fx["C"].exists():
-        import shutil
+        import cooler
         from epione.bulk.hic import balance_cool
-        shutil.copy(data / "GM12878_25kb_cooler_coarsen.cool", fx["C"])
+        src_c = cooler.Cooler(str(data / "GM12878_25kb_cooler_coarsen.cool"))
+        keep = ["17", "18", "19", "20", "21", "22"]
+        b = src_c.bins()[:]
+        sel = np.flatnonzero(b["chrom"].astype(str).isin(keep).to_numpy())
+        lo, hi = int(sel.min()), int(sel.max()) + 1
+        assert np.array_equal(sel, np.arange(lo, hi)), "chromosomes 17-22 must be contiguous"
+        pix = src_c.matrix(balance=False, as_pixels=True)[lo:hi, lo:hi]
+        pix = pix[pix["bin2_id"] >= pix["bin1_id"]]
+        pix = pix.assign(bin1_id=pix["bin1_id"] - lo, bin2_id=pix["bin2_id"] - lo)[["bin1_id", "bin2_id", "count"]]
+        bins_new = b.iloc[lo:hi][["chrom", "start", "end"]].reset_index(drop=True)
+        bins_new["chrom"] = bins_new["chrom"].astype(str)
+        cooler.create_cooler(str(fx["C"]), bins=bins_new, pixels=pix, ordered=True)
+        if not fx["C_raw"].exists():
+            cooler.create_cooler(str(fx["C_raw"]), bins=bins_new, pixels=pix, ordered=True)
         balance_cool(fx["C"])
     return fx
 
@@ -240,11 +260,11 @@ def gate_B6(fx):
 
     hc.plot_correlation = grab
     cases = [("pearson", False, None), ("spearman", False, None), ("pearson", True, None),
-             ("pearson", False, (200000, 5000000)), ("spearman", True, (200000, 5000000))]
+             ("pearson", False, (5000000, 50000000)), ("spearman", True, (5000000, 50000000))]
     try:
         for method, log1p, rng in cases:
             with tempfile.TemporaryDirectory() as tmp:
-                args = ["--matrices", str(fx["R_t"]), str(fx["R_c"]), "--method", method,
+                args = ["--matrices", str(fx["K_raw"]), str(fx["K_kr"]), "--method", method,
                         "--outFileNameHeatmap", f"{tmp}/h.png", "--outFileNameScatter", f"{tmp}/s.png"]
                 if log1p:
                     args.append("--log1p")
@@ -252,7 +272,7 @@ def gate_B6(fx):
                     args += ["--range", f"{rng[0]}:{rng[1]}"]
                 hc.main(args)
             ref = captured["r"]
-            epi = h.correlate_matrices([str(fx["R_t"]), str(fx["R_c"])], method=method, log1p=log1p,
+            epi = h.correlate_matrices([str(fx["K_raw"]), str(fx["K_kr"])], method=method, log1p=log1p,
                                        distance_range=rng).to_numpy()
             err = maxabs(ref, epi)
             record(f"B6_{method}_log1p{int(log1p)}_range{int(bool(rng))}", r_ref=float(ref[0, 1]),
@@ -343,7 +363,7 @@ def gate_B8(fx, name, path, kw, chromosomes=None):
 
 
 # -------------------------------------------------------------------- A
-def gate_A(fx, work):
+def gate_A(fx, work, only_pileup=False):
     import cooler
     import cooltools
     from cooltools.api.expected import expected_cis
@@ -356,11 +376,24 @@ def gate_A(fx, work):
            has_weight="weight" in clr.bins().columns)
     view = pd.DataFrame({"chrom": chroms, "start": 0, "end": [int(clr.chromsizes[c]) for c in chroms],
                          "name": chroms})
+    if only_pileup:
+        _gate_A56(fx, clr, uri, chroms, view)
+        return
     # A1
     e_epi = h.compartments(uri, chromosomes=chroms, n_eigs=3)
     _, e_ref = cooltools.eigs_cis(clr=clr, phasing_track=None, view_df=view, n_eigs=3, ignore_diags=2)
     err = max(maxabs(e_ref[f"E{k}"], e_epi[f"E{k}"]) for k in (1, 2, 3))
-    record("A1", max_abs_err=err, pass_=bool(err <= 1e-13))
+    # supplementary (amendment 5 note): per chromosome and eigenvector, best of +/- sign
+    al = 0.0
+    for c in chroms:
+        m = e_ref["chrom"] == c
+        for k in (1, 2, 3):
+            a, b = e_ref.loc[m, f"E{k}"].to_numpy(), e_epi.loc[m, f"E{k}"].to_numpy()
+            al = max(al, min(maxabs(a, b), maxabs(a, -b)))
+    _, e_ref2 = cooltools.eigs_cis(clr=clr, phasing_track=None, view_df=view, n_eigs=3, ignore_diags=2)
+    self_err = max(maxabs(e_ref[f"E{k}"], e_ref2[f"E{k}"]) for k in (1, 2, 3))
+    record("A1", max_abs_err=err, pass_=bool(err <= 1e-13), sign_aligned_max_abs_err=al,
+           cooltools_vs_itself_max_abs_err=self_err)
     # A2
     sad, edges, cnt = h.saddle(uri, e_epi, chromosomes=chroms)
     exp = expected_cis(clr=clr, view_df=view, ignore_diags=2, chunksize=1_000_000)
@@ -388,6 +421,13 @@ def gate_A(fx, work):
     r = ins_ref[ins_ref["is_boundary_100000"].astype(bool)]
     same = set(zip(r["chrom"], r["start"], r["end"])) == set(zip(b_epi["chrom"], b_epi["start"], b_epi["end"]))
     record("A4", n=(len(r), len(b_epi)), identical=bool(same), pass_=bool(same))
+    _gate_A56(fx, clr, uri, chroms, view)
+
+
+def _gate_A56(fx, clr, uri, chroms, view):
+    import cooltools
+    from cooltools.api.expected import expected_cis
+    import epione.bulk.hic as h
     # A5 (dots) on two chromosomes to bound runtime
     sub = chroms[-2:]
     vsub = view[view["chrom"].isin(sub)].reset_index(drop=True)
@@ -406,9 +446,19 @@ def gate_A(fx, work):
     record("A5", n=(len(a), len(b)), identical_set=bool(same), max_abs_err=err,
            pass_=bool(same and err <= 1e-13), seconds_epione=round(t_e, 2))
     # A6 pile-up on the A5 dots
-    feats = a[key].head(200)
+    # dots whose flank-padded window stays inside the chromosome (cooltools treats a
+    # window that leaves its region as trans and refuses it)
+    size = clr.chromsizes
+    chrom_len = a["chrom2"].astype(str).map(lambda c: int(size[c])).to_numpy()
+    inside = (a["start1"].to_numpy() >= 100_000) & (a["end2"].to_numpy() + 100_000 <= chrom_len)
+    feats = a.loc[inside, key].head(200)
+    for c in ("chrom1", "chrom2"):
+        feats[c] = feats[c].astype(str)
     p_epi = h.pileup(uri, feats, chromosomes=sub, flank=100_000)
-    stack = np.asarray(cooltools.pileup(clr=clr, features_df=feats, view_df=vsub, expected_df=exp2,
+    # same region names as the wrapper (cooltools 0.7.1 splits 2-character names)
+    vname = vsub.assign(name=[f"{c}:0-{e}" for c, e in zip(vsub["chrom"], vsub["end"])])
+    exp_n = expected_cis(clr=clr, view_df=vname, ignore_diags=2, chunksize=1_000_000)
+    stack = np.asarray(cooltools.pileup(clr=clr, features_df=feats, view_df=vname, expected_df=exp_n,
                                         flank=100_000, nproc=1))
     record("A6_shape", cooltools_stack_shape=list(stack.shape))
     # cooltools 0.7 stacks features on the first axis
@@ -425,6 +475,8 @@ def main():
     ap.add_argument("--work", type=Path, default=None)
     ap.add_argument("--gates", default="B0,B1,B4,B5,B6,B7,A")
     a = ap.parse_args()
+    global OUT
+    OUT = a.out
     work = a.work or Path(tempfile.mkdtemp())
     work.mkdir(parents=True, exist_ok=True)
     gates = set(a.gates.split(","))
@@ -464,8 +516,12 @@ def main():
                 chromosomes=["1", "2"])
         gate_B8(fx, "C_defaults_chr21_22", fx["C"], dict(pit=10, p=0.025, pp=0.1, w=5, pw=2, max=2000000),
                 chromosomes=["21", "22"])
+        gate_B8(fx, "C_raw_defaults_chr21_22", fx["C_raw"], dict(pit=10, p=0.025, pp=0.1, w=5, pw=2, max=2000000),
+                chromosomes=["21", "22"])
     if "A" in gates:
         gate_A(fx, work)
+    if "A6" in gates:
+        gate_A(fx, work, only_pileup=True)
     a.out.write_text(json.dumps(RESULTS, indent=1, default=str))
 
 

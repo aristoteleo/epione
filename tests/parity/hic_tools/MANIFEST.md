@@ -93,6 +93,48 @@ used the suite's other parameter set, whose default `--maxLoopDistance` (2 Mb) i
 2.5 Mb bin size, so HiCExplorer filtered out every pixel and wrote no file; the run stopped
 there, before any comparison. Gate unchanged.
 
+## Amendment 3 (2026-10-13, before any gate-A or B8-on-C comparison)
+
+Balancing the whole 1 GB fixture C (25 kb, genome-wide) with cooler's sequential
+`balance_cooler` did not finish in 30 min, and both runs were stopped before any comparison.
+Fixture C is redefined as the sub-matrix of chromosomes `17`..`22` (cis and trans pixels among
+them), written to a new `.cool` and ICE-balanced once with `balance_cool` defaults. Gates A and
+B8-on-C read that file. Gates and thresholds unchanged.
+
+## Amendment 4 (2026-10-13, before any B6 comparison)
+
+Fixture R stores normalised values (median 1.7e-4, none above 1). `hicCorrelate` keeps only
+pixel pairs whose two values sum to more than 1, so on R it keeps nothing and HiCExplorer itself
+cannot compute a correlation. B6 moves to fixture **K**: HiCExplorer test data at tag 3.7.6,
+`hicCorrectMatrix/gm12878_raw_values.cool` vs `hicCorrectMatrix/gm12878_KR.cool` (GM12878, 2.5 Mb,
+1,254 identical bins; raw counts vs KR-corrected). Same cases and threshold. B5 stays on R.
+
+## Amendment 5 (2026-10-13, after the two registered B8 cases, before the added one)
+
+Both registered B8 cases were degenerate: HiCExplorer and Epione each found 0 loops, so the
+gate passed without testing anything. On G, HiCExplorer 3.7.6 in this environment finds no loop
+with `test_main_cool_chromosomes_single_core`'s parameters, although that test's expected file
+holds one. On C, the cooler-balanced values (rows summing to about 1, single pixels far below 1)
+all fall under `hicDetectLoops`' default `--peakInteractionsThreshold 10`, which assumes
+count-scale input. Added case, same gate: **C_raw** = fixture C chromosomes `21`, `22`
+**without** balancing (raw counts, no `weight` column), HiCExplorer default parameters.
+The two degenerate results are reported as such.
+
+A1 note recorded at the same time (gate unchanged): cooltools 0.7.1 `eigs_cis` without a phasing
+track returns eigenvectors of arbitrary sign that change between repeated calls in one process
+(two direct cooltools calls differ by up to 5.0; after sign alignment by about 4e-15). A1 as
+registered therefore compares two random signs. A sign-aligned comparison is reported alongside.
+
+## Note on A6 (2026-10-13, before any A6 comparison)
+
+A6 piles up "the A5 dots". The first attempt failed in both the wrapper and the direct cooltools
+call with "ObsExpSnipper is implemented for cis contacts only". The cause is a cooltools 0.7.1
+bug: `snipping._extract_stack` unpacks any 2-character region name (here the view names `21`,
+`22`) as a `(region1, region2)` pair. Epione's `pileup` now names its view regions
+`chrom:0-size`, which avoids the bug and does not change any value; the reference call uses the
+same names. A6 uses the first 200 A5 dots whose flank-padded window stays inside the chromosome.
+Gate unchanged.
+
 ## Results
 
 (to be filled in after the runs)
