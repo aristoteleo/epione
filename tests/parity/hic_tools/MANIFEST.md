@@ -135,6 +135,39 @@ bug: `snipping._extract_stack` unpacks any 2-character region name (here the vie
 same names. A6 uses the first 200 A5 dots whose flank-padded window stays inside the chromosome.
 Gate unchanged.
 
-## Results
+## Results (2026-10-13, environment: HiCExplorer 3.7.6, HiCMatrix 17.2, cooltools 0.7.1, cooler 0.10.4, numpy 1.26.4, scipy 1.17.1)
 
-(to be filled in after the runs)
+### A. Existing wrappers vs cooltools 0.7.1 (fixture C = GM12878 25 kb, chr17–22)
+
+| Gate | Result | Notes |
+|---|---|---|
+| A1 compartments | **FAIL as registered** (max abs err 5.45) | cooltools `eigs_cis` without a phasing track gives a random sign per call: two direct cooltools calls also differ by 5.45. Sign-aligned Epione vs cooltools: 1.7e-14. The wrapper only delegates. |
+| A2 saddle | PASS after fix | First run: cells with count 0 held uninitialised memory (6.5e-320). Fixed with `out=np.full(..., nan)`; finite cells were already exact (0). |
+| A3 insulation | PASS (0; boundary flags identical) after fix | First run crashed: `balance_cool` did not store cooler's weight attributes (`ignore_diags`, ...), so `insulation(ignore_diags=None)` failed on any Epione-balanced cool. Fixed. |
+| A4 tad_boundaries | PASS (753 / 753 identical) | |
+| A5 loops (dots) | PASS (136 / 136 identical, values 0 err) | |
+| A6 pileup | PASS (0) after fix | cooltools 0.7.1 bug: 2-character region names are unpacked as a region pair. Epione's `pileup` now names view regions `chrom:0-size`. Stack shape (n, D, D) confirms the wrapper's averaging axis. |
+
+### B. HiCExplorer 3.7.6 ports
+
+| Gate | Fixture | Result | Epione / HiCExplorer seconds |
+|---|---|---|---|
+| B0 h5_to_cool | D | PASS: identical bins, weights, 6,182,500 pixels | — |
+| B1 TAD-separation score | D / R / R (Bonferroni) | PASS, max abs err 0 (11,189 / 1,889 rows) | 4.5 / 6.9 (D) |
+| B2 boundaries | D / R / R (Bonferroni) | PASS, identical (820 / 141 / 119), p-value and delta err 0 | 5.2 / 7.7 (D) |
+| B3 domains | D / R / R (Bonferroni) | PASS, identical (815 / 140 / 118) | — |
+| B4 hicPCA | P dist_norm, P lieberman, P dist_norm + genes, D dist_norm + genes | PASS, identical to the 12 printed decimals | 1,080 / 910; 1,397 / 1,751; 646 / 964; 36 / 53 (96% of the time is the same `scipy.linalg.eig`; the run-to-run spread on the shared node is larger than any difference) |
+| B5 compare_matrices | R, diff / ratio / log2ratio | PASS, max abs err 0 | 0.5 / 1.6–1.9 |
+| B6 correlate_matrices | K, 5 cases | PASS, max abs err 0 | — |
+| B7 differential_tads | R, 4 modes | PASS: 140 TADs, identical accept/reject flags, p-values within 9.5e-13 (text output) | 7.5–9 / 9–11 |
+| B8 loops | G (test suite) / C balanced, defaults / C raw, defaults | PASS / PASS / PASS: 0 vs 0, 0 vs 0 (**both degenerate**, see amendment 5) and **140 vs 140 identical** | 0.5 / 2.0; 11 / 25; ~ / 31 |
+
+B7 first run: the flags matched, but one p-value differed (the last TAD's left inter-TAD test,
+0.728 vs 0.919). Cause: `hicDifferentialTAD` does not recompute the right-boundary index for a
+chromosome's last TAD and reuses the previous TAD's value. The port now reproduces this; gate
+unchanged; rerun passes.
+
+Text-output precision: B7 and B8 p-values are read from HiCExplorer's text files, which hold
+about 12 significant digits (relative differences 1e-13). An in-process check on B8 (chr21) gives
+identical p-values and identical intermediate obs/exp matrices.
+
