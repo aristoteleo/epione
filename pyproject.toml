@@ -130,7 +130,7 @@ translate = [
 ]
 pando = [
     # epione.grn.pando: the omicverse port of Pando (R) with its parity tests.
-    'pypando>=0.1.0',
+    'pypando>=0.1.1',
 ]
 grelu = [
     # epione.models.grelu: variant effects / ISM / attributions via gReLU.
