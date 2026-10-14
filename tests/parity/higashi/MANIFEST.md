@@ -109,3 +109,19 @@ Not applicable: no fast mode is added. Fast-Higashi (ma-compbio/Fast-Higashi, a 
 ## Amendment A1 (registered before G1b was run, after the G0 result)
 
 G0 showed that the cell-node attributes are not identical across the two environments (see Results). Every G1b quantity passes through those attributes, so the original G1b also tests the G0 discrepancy. **G1b-A1** repeats G1b with one change: Epione's `HigashiInput.cell_feats` is replaced by the reference's stored attributes (`node_feats.hdf5:/cell/<i>`). This isolates the network and imputation code. Same tolerance, max |Δ| ≤ 1e-4. The original G1b is still run and reported as specified.
+
+## Amendment A2 (registered after seed 0 of the original G2 and before any rerun)
+
+**Finding.** Epione seed 0 matched the reference on the embedding metrics but was lower on held-out AUROC (nbr-0: 0.722 vs 0.733; nbr-5: 0.646 vs 0.688). The diagnosis, step by step:
+
+- **Forward pass, loss and gradients are the same.** With the reference's weights on the same batch, outputs agree to ≤ 8e-6 and gradients to ≤ 4e-4 relative.
+- **The batch distributions are the same.** Negatives and neighbour masks match statistically, and the masks match exactly without removal.
+- **Stage-2 training diverges early.** From the reference's own stage-1 weights, Epione's stage-2 training loss after epochs 1–3 is 0.570 / 0.525 / 0.508. The reference reproducibly gets 0.566 / 0.519 / 0.501 (two runs).
+- **The cause is the optimiser's duplicated parameters (see "Known effective behaviours", point 2).**
+  - Under the reference's torch 2.0.1, Adam's CUDA `foreach` path applies each list-wide op to both copies before computing the update. So the moments are updated twice (`m ← β1²m + 2(1−β1)g`), the step counter advances by 2, and the bias-corrected update is applied twice. The result is about 5–10% larger than two sequential Adam steps.
+  - torch 2.6 (Epione's env) gives exactly two sequential steps, as `foreach=False` does.
+  - Running the *reference* code with `foreach=False` reproduces Epione's numbers (0.568 / 0.523 / 0.507).
+
+**A2.** Epione's stage-1 and stage-2 optimisers emulate the torch-2.0 list-wise `foreach` Adam update in plain tensor ops. It is checked against torch 2.0.1 on the reference's parameter layout. Stage 3 has no duplicated parameters, so there the emulation is plain Adam. G2 is re-run with 3 new Epione seeds, with the same rule, floors and reference runs. The original G2, run with the pre-A2 code on Epione seeds 0–2, is reported as specified.
+
+Note: under torch < 2.0, where `foreach` was not the default, upstream itself behaves like the pre-A2 Epione code. The pre-A2 behaviour therefore stays available as `optimizer="sequential"`.
