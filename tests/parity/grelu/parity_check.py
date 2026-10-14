@@ -86,13 +86,15 @@ def v2():
     lm = eg.wrap(m)
     var = _variants()
     a = eg.predict_variant_effects(m, var, FASTA, return_ad=False)
-    from epione.models.grelu._bridge import _genome_arg
-    b = grelu.variant.predict_variant_effects(var, lm, genome=_genome_arg(FASTA), compare_func="subtract",
-                                              return_ad=False)
+    from epione.models.grelu._bridge import _genome_arg, _no_lightning_logs
+    with _no_lightning_logs():
+        b = grelu.variant.predict_variant_effects(var, lm, genome=_genome_arg(FASTA),
+                                                  compare_func="subtract", return_ad=False)
     rng = np.random.RandomState(1)
     seq = "".join(rng.choice(list("ACGT"), m.input_len))
     i1 = eg.ism(m, seq, return_df=False)
-    i2 = ISM_predict(seq, lm, compare_func="subtract", return_df=False)
+    with _no_lightning_logs():
+        i2 = ISM_predict(seq, lm, compare_func="subtract", return_df=False)
     seqs = ["".join(rng.choice(list("ACGT"), m.input_len)) for _ in range(3)]
     s1 = eg.attributions(m, seqs, method="saliency")
     s2 = get_attributions(lm, seqs, method="saliency", seed=0)
