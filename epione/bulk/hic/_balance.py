@@ -94,6 +94,9 @@ def balance_cool(
         if "weight" in f["bins"]:
             del f["bins/weight"]
         f.create_dataset("bins/weight", data=bias)
+        # Store the balancing parameters as cooler's CLI does (``ignore_diags``,
+        # ``mad_max``, ``converged``, ...): cooltools reads ``ignore_diags`` from here.
+        f["bins/weight"].attrs.update({k: v for k, v in stats.items() if v is not None})
     return {
         "converged": bool(stats.get("converged", True)),
         "n_iters": int(stats.get("n_iters", 0) or 0),
