@@ -510,8 +510,16 @@ def tn5_bias(
     >>> bias = epi.tl.tn5_bias(epi.data.mm10)                # PRINT CNN
     >>> bias.track("chr19", 41_829_000, 41_830_000).shape
     (1000,)
+    >>> hint = epi.tl.tn5_bias("genome.fa", method="hint")   # HINT-ATAC
+
+    ``method='hint'`` builds :class:`~epione.tl.HintBias`, HINT-ATAC's
+    strand-specific 8-mer tables (pass ``table_f=`` / ``table_r=`` to use
+    an ``rgt-hint estimation`` pair instead).
     """
     method = method.lower()
+    if method == "hint":
+        from ._hint import HintBias
+        return HintBias(genome, **kwargs)
     if method == "print":
         return PrintBias(genome, **kwargs)
     if method in ("precomputed", "h5"):

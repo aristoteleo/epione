@@ -55,8 +55,19 @@ def plot_tf_binding_score(*args, **kwargs):
     from ..tl._print_plot import plot_tf_binding_score as _fp
     return _fp(*args, **kwargs)
 
+
+def plot_hint_differential(*args, **kwargs):
+    from ..tl._hint_plot import plot_hint_differential as _fp
+    return _fp(*args, **kwargs)
+
+
+def plot_hint_profile(*args, **kwargs):
+    from ..tl._hint_plot import plot_hint_profile as _fp
+    return _fp(*args, **kwargs)
+
 __all__ = [
     "plot_tf_binding_score",
+    "plot_hint_differential", "plot_hint_profile",
     "frag_size_distr", "tss_enrichment", "fragment_histogram", "plot_joint",
     "cumulative_distance",
     "homer_motif_table",
