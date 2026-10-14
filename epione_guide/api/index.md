@@ -235,6 +235,13 @@ RNA → ATAC and ATAC → RNA translators learned from paired multiome cells, be
 | Contact-matrix heatmap | {func}`epione.pl.plot_contact_matrix` |
 | P(s) decay curve | {func}`epione.pl.plot_decay_curve` |
 | Per-bin coverage / weight diagnostics | {func}`epione.pl.plot_coverage` |
+| HiCExplorer `.h5` → `.cool` (same file as `hicConvertFormat`) | {func}`epione.bulk.hic.h5_to_cool` |
+| A/B compartments: `method="cooltools"` (`eigs_cis`) or `"hicexplorer"` (`hicPCA`); saddle | {func}`epione.bulk.hic.compartments`, {func}`epione.bulk.hic.saddle`, {func}`epione.pl.plot_compartments`, {func}`epione.pl.plot_saddle` |
+| TADs: insulation (`cooltools`) or TAD-separation score (`hicexplorer`, `hicFindTADs`); boundaries; domains | {func}`epione.bulk.hic.insulation`, {func}`epione.bulk.hic.tad_boundaries`, {func}`epione.bulk.hic.tad_domains`, {func}`epione.pl.plot_insulation`, {func}`epione.pl.plot_contact_triangle` |
+| Loops: HICCUPS-style dots (`cooltools`) or `hicDetectLoops` (`hicexplorer`); APA pile-up | {func}`epione.bulk.hic.loops`, {func}`epione.bulk.hic.pileup`, {func}`epione.pl.plot_loops`, {func}`epione.pl.plot_apa` |
+| Compare / correlate matrices (`hicCompareMatrices`, `hicCorrelate`) | {func}`epione.bulk.hic.compare_matrices`, {func}`epione.bulk.hic.correlate_matrices` |
+| Differential TADs between conditions (`hicDifferentialTAD`) | {func}`epione.bulk.hic.differential_tads` |
+| Example data: Galaxy HiCExplorer lesson (Drosophila S2), HiCExplorer test matrices | {func}`epione.datasets.drosophila_s2_hic`, {func}`epione.datasets.hicexplorer_test_matrices` |
 
 ### Hi-C — single-cell (scHiCluster)
 

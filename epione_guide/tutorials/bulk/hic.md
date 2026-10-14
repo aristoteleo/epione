@@ -1,6 +1,6 @@
 # Bulk Hi-C
 
-Contact matrices, normalization and a published case study.
+Contact matrices, TADs, compartments, loops and differential analysis — with cooltools or HiCExplorer-equivalent methods — and a published case study.
 
 ```{toctree}
 :maxdepth: 1
