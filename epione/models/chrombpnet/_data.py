@@ -98,6 +98,12 @@ def _fasta(genome):
     return pyfaidx.Fasta(str(fasta))
 
 
+def get_seq_onehot(regions, genome, width: int) -> np.ndarray:
+    """One-hot ``(N, width, 4)`` sequences centred on the summits of a
+    narrowPeak table (public alias of :func:`get_seq`)."""
+    return get_seq(read_narrowpeak(regions), genome, width)
+
+
 def get_seq(regions: pd.DataFrame, genome, width: int) -> np.ndarray:
     """``data_utils.get_seq``: one-hot ``(N, width, 4)`` centred on summits."""
     fa = _fasta(genome)

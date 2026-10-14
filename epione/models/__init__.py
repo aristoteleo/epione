@@ -12,6 +12,11 @@ Currently:
     scPrinter's sequence -> multi-scale footprint model, with cell-state
     LoRA. Model blocks and training targets match scPrinter exactly.
 
+``chrombpnet``
+    ChromBPNet's bias-factorised base-resolution accessibility model,
+    rewritten in PyTorch from the official TensorFlow code; official
+    ``.h5`` weights and ENCODE releases load without TensorFlow.
+
 ``scooby``
     Single-cell sequence→profile prediction (Borzoi backbone, LoRA,
     cell-state-conditioned decoder). The target and fold-preparation
@@ -23,7 +28,7 @@ from __future__ import annotations
 import importlib
 from typing import TYPE_CHECKING
 
-_SUBPACKAGES = ("scooby", "seq2print")
+_SUBPACKAGES = ("chrombpnet", "scooby", "seq2print")
 
 __all__ = list(_SUBPACKAGES)
 
