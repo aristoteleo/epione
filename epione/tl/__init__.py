@@ -42,6 +42,13 @@ _PRINT_ATTRS = {
     "fetch_print_model", "PRINT_SCALES",
 }
 _PRINT_PLOT_ATTRS = {"plot_tf_binding_score"}
+# HINT-ATAC (RGT rgt-hint): bias-corrected signal, HMM footprints, differential.
+_HINT_ATTRS = {
+    "HintBias", "HintHMM", "HintDifferentialResult", "fetch_hint_file",
+    "hint_differential", "hint_footprints", "hint_match_motifs", "hint_signal",
+    "load_hint_bias_table", "load_hint_hmm",
+}
+_HINT_PLOT_ATTRS = {"plot_hint_differential", "plot_hint_profile"}
 
 
 def __getattr__(name):
@@ -71,6 +78,12 @@ def __getattr__(name):
         return getattr(mod, name)
     if name in _PRINT_PLOT_ATTRS:
         mod = importlib.import_module("._print_plot", __name__)
+        return getattr(mod, name)
+    if name in _HINT_ATTRS:
+        mod = importlib.import_module("._hint", __name__)
+        return getattr(mod, name)
+    if name in _HINT_PLOT_ATTRS:
+        mod = importlib.import_module("._hint_plot", __name__)
         return getattr(mod, name)
     if name in _SCORE_BIGWIG_ATTRS:
         mod = importlib.import_module("._score_bigwig", __name__)
@@ -169,6 +182,10 @@ __all__ = [
     "print_footprint_score", "print_footprint_pvalues",
     "fetch_print_model", "PRINT_SCALES", "plot_tf_binding_score",
     "rank_sites_by_cut_density", "MultiScaleRegion",
+    "HintBias", "HintHMM", "HintDifferentialResult", "fetch_hint_file",
+    "hint_differential", "hint_footprints", "hint_match_motifs", "hint_signal",
+    "load_hint_bias_table", "load_hint_hmm",
+    "plot_hint_differential", "plot_hint_profile",
     "lsi",
     "iterative_lsi",
     "integrate",
