@@ -1,0 +1,33 @@
+{
+ "ARI": {
+  "metrics_py": 0.14831681384664083,
+  "scratch": 0.14831681384664086,
+  "abs_diff": 2.7755575615628914e-17,
+  "pass": 1.0
+ },
+ "AMI": {
+  "metrics_py": 0.25801640120526637,
+  "scratch": 0.2580164012052672,
+  "abs_diff": 8.326672684688674e-16,
+  "pass": 1.0
+ },
+ "kNN_acc": {
+  "metrics_py": 0.8755244755244755,
+  "scratch": 0.8755244755244755,
+  "abs_diff": 0.0,
+  "pass": true
+ },
+ "AUROC_nbr0": {
+  "metrics_py": 0.7338802741475383,
+  "scratch": 0.7338802741475383,
+  "abs_diff": 0.0,
+  "pass": true
+ },
+ "PB_r_nbr0": {
+  "metrics_py": 0.6830970092000913,
+  "scratch": 0.6830970092000915,
+  "abs_diff": 2.220446049250313e-16,
+  "pass": true
+ },
+ "G1_pass": true
+}
