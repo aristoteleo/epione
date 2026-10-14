@@ -1,4 +1,4 @@
-"""scHiCluster (Zhou et al. 2019, PNAS) imputation for sc-Hi-C.
+"""sc-Hi-C imputation: scHiCluster (Zhou et al. 2019, PNAS; default) or Higashi.
 
 This module is a thin wrapper around the upstream `schicluster` package
 (``pip install schicluster``). The actual algorithm — Gaussian convolution
@@ -214,9 +214,21 @@ def impute_cells(
     n_iter: Optional[int] = None,
     use_sparse: Optional[bool] = None,
     sparse_keep_pct: Optional[float] = None,
+    # method selection (default keeps the scHiCluster behaviour)
+    method: str = "schicluster",
+    random_state: int = 0,
+    device=None,
+    higashi_params: Optional[dict] = None,
+    higashi_neighbors: bool = True,
 ) -> Path:
-    """scHiCluster-impute every cell × chromosome via the upstream
-    `schicluster` package.
+    """Impute every cell × chromosome: scHiCluster (default) or Higashi.
+
+    ``method="schicluster"`` (default) runs the upstream `schicluster`
+    package as described below. ``method="higashi"`` trains Higashi
+    (Zhang, Zhou & Ma 2022; PyTorch port of ma-compbio/Higashi, see
+    :mod:`epione.single.hic._higashi`) on all cells jointly and writes its
+    imputation in the same ``<out_dir>/<cell_id>.npz`` layout; the
+    scHiCluster-specific arguments are then ignored.
 
     Reads each cell's ``cool_path`` (from ``adata.obs``), runs
     :func:`schicluster.impute.impute_chromosome.impute_chromosome` per
@@ -241,10 +253,33 @@ def impute_cells(
         rwr_alpha, top_pct, n_iter, use_sparse, sparse_keep_pct:
             deprecated v0.4 parameters. ``rwr_alpha`` is silently
             mapped to ``rp`` if ``rp`` is at its default.
+        method: ``"schicluster"`` (default) or ``"higashi"``.
+        random_state: Higashi seed (preprocessing SVD, train/test split,
+            sampling, initialisation). GPU training is not bit-reproducible.
+        device: torch device for Higashi (default: CUDA if available).
+        higashi_params: overrides of Higashi's upstream defaults —
+            ``dimensions`` (64), ``loss_mode`` (``"zinb"``),
+            ``neighbor_num`` (5), ``local_transfer_range`` (1),
+            ``minimum_distance`` (one bin, bp), ``maximum_distance``
+            (-1 = none), ``embedding_epoch`` (60), ``no_nbr_epoch`` (45),
+            ``with_nbr_epoch`` (30). An epoch is 1,000 mini-batches.
+        higashi_neighbors: write Higashi's imputation that borrows from the
+            ``neighbor_num`` nearest cells (stage 3, upstream's final
+            output; default) instead of the cell-only one (stage 2).
 
     Returns:
-        ``Path`` to ``out_dir``.
+        ``Path`` to ``out_dir``. With ``method="higashi"`` also sets
+        ``adata.obsm['X_higashi']`` (the stage-1 cell embedding) and saves
+        the trained model as ``<out_dir>/higashi_model.pt``, which
+        :func:`embedding` (``method="higashi"``) reuses.
     """
+    if method == "higashi":
+        from ._higashi_api import higashi_impute
+        return higashi_impute(adata, out_dir, chromosomes=chromosomes, random_state=random_state,
+                              device=device, higashi_params=higashi_params, neighbors=higashi_neighbors,
+                              overwrite=overwrite, progress=progress)
+    if method != "schicluster":
+        raise ValueError(f"method must be 'schicluster' or 'higashi', got {method!r}")
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 

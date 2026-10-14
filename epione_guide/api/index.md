@@ -276,7 +276,8 @@ Imported on demand, never by `import epione`; listed here without autodoc pages 
 |---|---|
 | Index per-cell .cool / .scool | {func}`epione.single.hic.load_cool_collection`, {func}`epione.single.hic.load_scool_cells` |
 | scHiCluster impute (linear conv + RWR + top-k) | {func}`epione.single.hic.impute_cells`, {func}`epione.single.hic.impute_cell_chromosome` |
-| Cell embedding (PCA on flattened imputed contacts) | {func}`epione.single.hic.embedding` |
+| Higashi hypergraph impute (Hyper-SAGNN + cell-dependent GNN, PyTorch) | {func}`epione.single.hic.impute_cells` (`method="higashi"`) |
+| Cell embedding (PCA on flattened imputed contacts, or Higashi) | {func}`epione.single.hic.embedding` (`method="pca"` / `"higashi"`) |
 | Cell scatter / per-cell heatmap | {func}`epione.pl.plot_embedding`, {func}`epione.pl.plot_cell_contacts` |
 
 ### TF networks (pySCENIC bridge)

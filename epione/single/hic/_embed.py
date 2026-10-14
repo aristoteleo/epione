@@ -51,8 +51,22 @@ def embedding(
     chromosomes: Optional[Sequence[str]] = None,
     standardise: bool = True,
     random_state: int = 0,
+    method: str = "pca",
+    device=None,
+    higashi_params: Optional[dict] = None,
+    work_dir=None,
 ):
-    """PCA embedding of imputed sc-Hi-C contacts.
+    """Cell embedding: PCA on imputed contacts (default) or Higashi.
+
+    ``method="pca"`` (default) is described below. ``method="higashi"``
+    returns Higashi's stage-1 hypergraph cell embedding
+    (``obsm['X_higashi']``, ``higashi_params['dimensions']`` wide, also in
+    ``X``). It needs no prior :func:`impute_cells`; when
+    :func:`impute_cells` (``method="higashi"``) already trained a model
+    with the same settings that model is reused. ``n_components`` and
+    ``standardise`` are ignored for Higashi; ``random_state``, ``device``
+    and ``higashi_params`` are as in :func:`impute_cells`, and ``work_dir``
+    (optional) is where ``higashi_model.pt`` is saved.
 
     Arguments:
         adata: AnnData from :func:`load_cool_collection` after
@@ -72,6 +86,12 @@ def embedding(
         ``adata.obsm['X_pca']``, ``adata.varm['PCs']``,
         ``adata.uns['pca']`` (variance / explained-ratio).
     """
+    if method == "higashi":
+        from ._higashi_api import higashi_embedding
+        return higashi_embedding(adata, chromosomes=chromosomes, random_state=random_state, device=device,
+                                 higashi_params=higashi_params, work_dir=work_dir)
+    if method != "pca":
+        raise ValueError(f"method must be 'pca' or 'higashi', got {method!r}")
     from sklearn.decomposition import PCA
 
     info = adata.uns.get("hic", {})

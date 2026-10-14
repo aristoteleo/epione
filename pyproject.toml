@@ -92,6 +92,11 @@ hic = [
     'bioframe',
     'tables',        # epione.bulk.hic.h5_to_cool (HiCExplorer .h5 matrices)
 ]
+higashi = [
+    # epione.single.hic impute_cells / embedding with method="higashi"
+    'torch>=2.0',
+    'cooler>=0.10',
+]
 test = [
     'pytest>=7',
     'pytest-timeout',
@@ -149,7 +154,7 @@ doublets = [
     'igraph',
 ]
 full = [
-    'epione[diffexp,motif,footprint,upstream,scenic,pando,translate,multimodal,doublets]',
+    'epione[diffexp,motif,footprint,upstream,scenic,pando,translate,multimodal,doublets,higashi]',
 ]
 
 
