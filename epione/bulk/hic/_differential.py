@@ -8,7 +8,8 @@ neighbour, and between the TAD and its right neighbour.
 
 HiCExplorer splits each chromosome's TADs across ``--threads`` workers and
 handles the edges of every chunk differently, so its output depends on the
-thread count. This port reproduces ``--threads 1``.
+thread count. This port reproduces ``--threads 1``, including its reuse of the
+previous TAD's right-boundary index in the last TAD's left inter-TAD test.
 """
 from __future__ import annotations
 
@@ -76,6 +77,10 @@ def differential_tads(
     recs = []
     for chrom_list in per_chrom:
         n = len(chrom_list)
+        # HiCExplorer recomputes the right-boundary index only when a right
+        # neighbour exists, so the last TAD's left inter-TAD slice reuses the
+        # index left over from the previous TAD (per chromosome). Reproduced.
+        rt = rc = None
         for i, row in enumerate(chrom_list):
             if i - 1 >= 0:
                 chromosom, start = chrom_list[i - 1][0], chrom_list[i - 1][1]
@@ -91,7 +96,6 @@ def differential_tads(
             lc = hc.getRegionBinRange(str(chromosom), row[1], row[1])[0]
             olt = olc = 0
             orc = ort = -1
-            rt = rc = None
             if i + 1 < n:
                 rt = ht.getRegionBinRange(str(chromosom), row[2], row[2])[0]
                 rc = hc.getRegionBinRange(str(chromosom), row[2], row[2])[0]
