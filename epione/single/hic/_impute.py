@@ -262,7 +262,8 @@ def impute_cells(
             ``neighbor_num`` (5), ``local_transfer_range`` (1),
             ``minimum_distance`` (one bin, bp), ``maximum_distance``
             (-1 = none), ``embedding_epoch`` (60), ``no_nbr_epoch`` (45),
-            ``with_nbr_epoch`` (30). An epoch is 1,000 mini-batches.
+            ``with_nbr_epoch`` (30), ``optimizer`` (``"sequential"``; or
+            ``"torch20_foreach"``). An epoch is 1,000 mini-batches.
         higashi_neighbors: write Higashi's imputation that borrows from the
             ``neighbor_num`` nearest cells (stage 3, upstream's final
             output; default) instead of the cell-only one (stage 2).
