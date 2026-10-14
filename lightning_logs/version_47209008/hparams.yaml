@@ -1,0 +1,6 @@
+model_params:
+  model_type: ConvModel
+  n_tasks: 1
+train_params:
+  loss: mse
+  task: regression
