@@ -88,8 +88,8 @@ def set_stabilise(model, on: bool):
 
 
 def trainable_state(model) -> dict:
-    """LoRA (incl. MoLoRA experts) + cell-state hypernetwork / gate weights (everything that is trained)."""
-    return {k: v for k, v in model.state_dict().items() if "lora" in k or "cell_state_to_" in k}
+    """LoRA (incl. MoLoRA experts) + cell-state hypernetworks / gate + FiLM head (everything that is trained)."""
+    return {k: v for k, v in model.state_dict().items() if "lora" in k or "cell_state_to_" in k or k.startswith("head_")}
 
 
 def param_groups(model, lr: float, cellstate_lr: float, weight_decay: float):
