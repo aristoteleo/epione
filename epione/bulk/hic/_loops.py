@@ -46,8 +46,23 @@ def loops(
     fdr: float = 0.1,
     clustering_radius: int = 20_000,
     nproc: int = 1,
+    method: str = "cooltools",
+    window_size: int = 5,
+    peak_width: int = 2,
+    p_value_preselection: float = 0.1,
+    peak_interactions_threshold: float = 10,
+    obs_exp_threshold: float = 1.5,
+    p_value: float = 0.025,
+    max_loop_distance: int = 2_000_000,
+    expected: str = "mean",
 ) -> pd.DataFrame:
     """Call chromatin loops (HICCUPS-style dots) on a balanced cool.
+
+    ``method="cooltools"`` (default) wraps :func:`cooltools.dots`.
+    ``method="hicexplorer"`` reproduces ``hicDetectLoops`` (HiCExplorer
+    3.7.6, Wolff et al. 2020): a negative-binomial preselection of enriched
+    pixels per distance, neighbourhood maxima, then Wilcoxon tests of the
+    peak against a donut and the background.
 
     Wraps :func:`cooltools.dots` end-to-end: builds the ``expected_cis``
     on the fly, runs the dot-finder with the standard 4-kernel set,
@@ -65,7 +80,17 @@ def loops(
         clustering_radius: anchor-pair clustering distance (bp);
             within this, multiple sub-significant pixels are merged
             into one loop call. ``20_000`` = cooltools default.
-        nproc: parallel workers for tile scanning.
+        nproc: parallel workers for tile scanning (cooltools).
+        method: ``"cooltools"`` or ``"hicexplorer"``.
+        window_size, peak_width, p_value_preselection,
+        peak_interactions_threshold, obs_exp_threshold, p_value,
+        max_loop_distance, expected: ``method="hicexplorer"`` only, with
+            HiCExplorer's defaults (``--windowSize``, ``--peakWidth``,
+            ``--pValuePreselection``, ``--peakInteractionsThreshold``,
+            ``--obsExpThreshold``, ``--pValue``, ``--maxLoopDistance`` in bp,
+            ``--expected`` = ``"mean"`` / ``"mean_nonzero"`` /
+            ``"mean_nonzero_ligation"``). ``max_loci_separation``, ``fdr`` and
+            ``clustering_radius`` apply to cooltools only.
 
     Returns:
         BEDPE-shaped DataFrame: one row per called loop. Columns:
@@ -73,7 +98,20 @@ def loops(
         plus cooltools-internal columns (``count``, ``la_exp.*``,
         ``la_p.*``, etc.) — keep them for filtering/sorting; drop
         before exporting if you only want the BEDPE shape.
+
+        With ``method="hicexplorer"``: ``chrom1, start1, end1, chrom2,
+        start2, end2, pvalue`` (the peak-vs-background rank-sum p-value).
     """
+    if method == "hicexplorer":
+        from ._loops_hicexplorer import detect_loops
+        return detect_loops(_resolve_uri(cool_path, resolution), chromosomes=chromosomes,
+                            window_size=window_size, peak_width=peak_width,
+                            p_value_preselection=p_value_preselection,
+                            peak_interactions_threshold=peak_interactions_threshold,
+                            obs_exp_threshold=obs_exp_threshold, p_value=p_value,
+                            max_loop_distance=max_loop_distance, expected=expected)
+    if method != "cooltools":
+        raise ValueError("method must be 'cooltools' or 'hicexplorer'")
     import cooler
     import cooltools
 

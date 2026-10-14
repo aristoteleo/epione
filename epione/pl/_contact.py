@@ -643,7 +643,8 @@ def plot_insulation(
     """Per-bin insulation-score line plot for one chromosome.
 
     Renders the diamond-insulation score from :func:`epione.bulk.hic.insulation`
-    as a line; optionally drops vertical ticks at the called TAD
+    as a line (or, for a ``method="hicexplorer"`` table, the mean
+    TAD-separation score, or one window with ``window_bp``); optionally drops vertical ticks at the called TAD
     boundaries (red by default). Designed to stack on top of a
     contact-pyramid panel in figures of the Maziak 2026 / Chang 2024
     style.
@@ -666,16 +667,21 @@ def plot_insulation(
     """
     import matplotlib.pyplot as plt
 
-    cols = [c for c in insulation_df.columns
-            if c.startswith("log2_insulation_score_")]
+    hicx = "tad_separation_score" in insulation_df.columns
+    prefix = "tad_separation_score_" if hicx else "log2_insulation_score_"
+    cols = [c for c in insulation_df.columns if c.startswith(prefix)]
     if not cols:
         raise KeyError(
-            "insulation_df missing log2_insulation_score_* columns"
+            "insulation_df missing log2_insulation_score_* / tad_separation_score columns"
         )
     avail = [int(c.rsplit("_", 1)[-1]) for c in cols]
-    if window_bp is None:
-        window_bp = min(avail)
-    score_col = f"log2_insulation_score_{int(window_bp)}"
+    if hicx and window_bp is None:
+        # HiCExplorer calls boundaries on the mean over windows; plot that
+        score_col = "tad_separation_score"
+    else:
+        if window_bp is None:
+            window_bp = min(avail)
+        score_col = f"{prefix}{int(window_bp)}"
 
     sub = insulation_df.loc[insulation_df["chrom"] == chromosome].copy()
     if sub.empty:
@@ -699,7 +705,8 @@ def plot_insulation(
     if boundaries:
         if boundaries_df is None:
             from ..bulk.hic._insulation import tad_boundaries
-            boundaries_df = tad_boundaries(insulation_df, window_bp=window_bp)
+            boundaries_df = (tad_boundaries(insulation_df) if hicx
+                             else tad_boundaries(insulation_df, window_bp=window_bp))
         bsub = boundaries_df[boundaries_df["chrom"] == chromosome]
         if region_start is not None:
             bsub = bsub[bsub["end"] > region_start]
@@ -711,7 +718,11 @@ def plot_insulation(
                   color="#c13e3e", lw=0.6, alpha=0.85)
 
     ax.set_xlabel(f"{chromosome} (Mb)")
-    ax.set_ylabel(f"log2 insulation\n(window {int(window_bp)/1000:.0f} kb)")
+    if hicx:
+        ax.set_ylabel("TAD-separation\nscore" + ("" if window_bp is None
+                                                 else f" ({int(window_bp)/1000:.0f} kb)"))
+    else:
+        ax.set_ylabel(f"log2 insulation\n(window {int(window_bp)/1000:.0f} kb)")
     ax.set_title(title or f"insulation — {chromosome}")
     for sp in ("top", "right"):
         ax.spines[sp].set_visible(False)

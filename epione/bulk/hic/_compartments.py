@@ -33,8 +33,20 @@ def compartments(
     phasing_track: Optional[pd.DataFrame] = None,
     fasta_path: Optional[Union[str, Path]] = None,
     ignore_diags: int = 2,
+    method: str = "cooltools",
+    obs_exp: str = "dist_norm",
+    ligation_factor: bool = False,
+    extra_track: Optional[Union[str, Path]] = None,
+    histone_mark_type: str = "active",
+    ignore_masked_bins: bool = False,
 ) -> pd.DataFrame:
     """Compute per-bin A/B compartment eigenvectors from a balanced ``.cool``.
+
+    ``method="cooltools"`` (default) wraps :func:`cooltools.eigs_cis`.
+    ``method="hicexplorer"`` reproduces ``hicPCA`` (HiCExplorer 3.7.6): per
+    chromosome, an observed/expected matrix, its covariance and
+    ``scipy.linalg.eig``, with eigenvectors taken in LAPACK's return order
+    (``E1`` is the first returned, not necessarily the largest).
 
     Arguments:
         cool_path: path to a balanced ``.cool`` (or ``.mcool::resolutions/N``).
@@ -59,13 +71,44 @@ def compartments(
         ignore_diags: diagonals to mask before eigendecomposition.
             Default 2 (skip main + first off-diagonal, dominated by
             self-ligation / read-pair artefacts).
+        method: ``"cooltools"`` or ``"hicexplorer"``.
+        obs_exp: ``method="hicexplorer"`` only -- ``"dist_norm"`` (mean of
+            the non-zero contacts at each distance; HiCExplorer default) or
+            ``"lieberman"`` (Lieberman-Aiden 2009).
+        ligation_factor: ``method="hicexplorer"``, ``dist_norm`` only --
+            Homer's proximity-ligation correction of the expected value.
+        extra_track: ``method="hicexplorer"`` only -- sign phasing as in
+            ``hicPCA --extraTrack``: a BED of genes (eigenvector correlated
+            positively with gene density) or a bigWig of a histone mark.
+            ``phasing_track`` / ``fasta_path`` apply to cooltools only.
+        histone_mark_type: ``"active"`` or ``"inactive"`` mark in a bigWig
+            ``extra_track``.
+        ignore_masked_bins: ``method="hicexplorer"`` -- drop masked bins
+            before the PCA (``--ignoreMaskedBins``).
 
     Returns:
         ``pandas.DataFrame`` with per-bin rows and columns
         ``chrom``, ``start``, ``end``, ``E1``, ``E2``, ..., ``E{n_eigs}``.
         ``E1 > 0`` marks A compartment, ``E1 < 0`` marks B (after sign
         phasing).
+
+        With ``method="hicexplorer"`` the eigenvector columns are
+        ``E1`` .. ``E{n_eigs}`` from hicPCA, one row per bin.
     """
+    if method == "hicexplorer":
+        if phasing_track is not None or fasta_path is not None:
+            raise ValueError("method='hicexplorer' phases with extra_track (BED of genes or bigWig), "
+                             "not phasing_track / fasta_path")
+        from ._hicmatrix import HiCMat
+        from ._pca_hicexplorer import hicpca
+        hm = HiCMat.from_cool(_resolve_uri(cool_path, resolution))
+        return hicpca(hm, which=tuple(range(1, int(n_eigs) + 1)), method=obs_exp,
+                      ligation_factor=ligation_factor,
+                      extra_track=None if extra_track is None else str(extra_track),
+                      histone_mark_type=histone_mark_type, ignore_masked_bins=ignore_masked_bins,
+                      chromosomes=chromosomes)
+    if method != "cooltools":
+        raise ValueError("method must be 'cooltools' or 'hicexplorer'")
     import cooler
     import cooltools
 
