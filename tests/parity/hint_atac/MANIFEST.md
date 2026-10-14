@@ -71,3 +71,47 @@ Notes fixed before the run:
   Epione docstrings): the reverse-strand slope of the single-end model is scaled with the *forward* slope's
   standard deviation; footprinting uses a reverse shift of −5 but `differential` uses −4; the paired-end
   model skips a peak whose signal extraction raises.
+
+## Results (appended after the run; thresholds above unchanged)
+
+Run on 2026-10-14 with `parity_check.py --gates H1,H6,H8,H9,H10` in the Epione environment (Python
+3.11, numpy 2.4, scipy 1.17, pysam 0.24, numba 0.68, MOODS 1.9.4.2). All 6,007 peaks × 2 samples ×
+2 models; no peak was skipped by either side.
+
+| # | Value | Pass |
+|---|---|---|
+| H1 | HMM parameters identical to the pickles (both models); k-mer bias identical at every base | ✅ |
+| H2 | raw cut counts identical (all reads; ≤145 / >145 bp) | ✅ |
+| H3 | max abs err **0**; 100 % of bases bit-identical | ✅ |
+| H4 | max abs err 4.4e-16 | ✅ |
+| H5 | state agreement 1.000000 (every base of every peak) | ✅ |
+| H6 | Bcell single 13,855 / 13,855, Tcell single 12,006 / 12,006, Bcell paired 30,568 / 30,568, Tcell paired 33,673 / 33,673 footprints: bp Jaccard 1.0, identical coordinates both ways 100 % | ✅ |
+| H7 | tag counts identical on all footprints | ✅ |
+| H8 | Bcell 12,720 / 12,720, Tcell 12,404 / 12,404 MPBS: Jaccard 1.0, score max abs err 0 | ✅ |
+| H9a | `Num` identical, 83 / 83 motifs (`--bc` and raw) | ✅ |
+| H9b | factor rel. err 1.6e-8 (`--bc`), 2.0e-8 (raw), i.e. the 8-digit text rounding; identical as float32 | ✅ |
+| H9c | min Pearson 0.999999999999999; protection-score signs 100 %; identical as float32 | ✅ |
+| H9d | Pearson 1.0, sign agreement 100 %, max abs err 0 | ✅ |
+| H9e | Spearman of −log10 p 1.0; p < 0.05 sets identical (5 motifs `--bc`, 4 raw); z and p bit-identical | ✅ |
+| H9f | min profile Pearson 0.9999999999999931; profiles identical as float32 | ✅ |
+| H10 | 83 motifs: Pearson 1.0, sign agreement 100 % (the full Epione chain reproduces the official one) | ✅ |
+
+The float64 errors in H9b/H9c/H9f come from upstream writing float32 values with `str()` (8 significant
+digits). Compared after casting to float32, every value is the same number.
+
+**Timing** (same node, one core each; upstream from `/usr/bin/time`, Epione with a warm numba cache):
+
+| Step | rgt-hint 1.0.2 | Epione, 1 core |
+|---|---|---|
+| footprinting, single-end model (Bcell / Tcell) | 57 s / 59 s | 11.5 s / 12.4 s |
+| footprinting, paired-end model (Bcell / Tcell) | 70 s / 76 s | 16.6 s / 18.1 s |
+| motif matching, both samples | 60 s | 2.3 s |
+| differential `--bc` / raw | 308 s / 214 s | 15.3 s / 10.2 s |
+
+`hint_footprints` and `hint_differential` also take `n_jobs` (peaks and motifs are independent; the
+result does not depend on it, which the unit tests check).
+
+**Reproducing.** Reference: `rgt-hint` and `rgt-motifanalysis` from the env described above, with
+`PYTHONHASHSEED=0` and one thread, on the commands listed under "Reference", plus a dump driver for the
+per-peak tracks. Epione: set `EPIONE_HINT_PARITY_DIR` and `EPIONE_HINT_DATA` and run `parity_check.py`
+or `pytest tests/test_hint.py` (the four parity tests take about 90 s on 4 cores).
