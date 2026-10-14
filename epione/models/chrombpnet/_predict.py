@@ -67,8 +67,12 @@ def evaluate(model, regions, genome, signal, *, batch_size: int = 64,
     pred = predict_regions(model, regions, genome, batch_size=batch_size, device=device)
     obs = get_cts(regions, signal, model.output_len)
     true_log = np.log(1 + obs.sum(-1))
-    jsd = np.array([jensenshannon(o / (pseudocount + np.nansum(o)), p)
-                    for o, p in zip(obs, pred["probs"])])
+    import warnings
+    with warnings.catch_warnings():
+        # all-zero observed windows give NaN, skipped by nanmedian as upstream
+        warnings.simplefilter("ignore", RuntimeWarning)
+        jsd = np.array([jensenshannon(o / (pseudocount + np.nansum(o)), p)
+                        for o, p in zip(obs, pred["probs"])])
     return {
         "count_pearson": float(pearsonr(true_log, pred["log_counts"])[0]),
         "count_spearman": float(spearmanr(true_log, pred["log_counts"])[0]),

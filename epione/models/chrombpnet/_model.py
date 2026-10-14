@@ -69,9 +69,12 @@ class BPNet(nn.Module):
     input_len, output_len
         Sequence length in and profile length out (official 2114 and 1000).
     precise_profile
-        Run the 75-bp profile convolution in float64 (default). It is the
-        widest reduction in the network, and in float32 it is where nearly
-        all the difference from the official Keras outputs comes from.
+        Run the 75-bp profile convolution in float64. It is the widest
+        reduction in the network; on CPU, float32 there accounts for nearly
+        all the difference from the official Keras outputs. ``'auto'``
+        (default): float64 on CPU, native precision on GPU, where both
+        TensorFlow and PyTorch run convolutions in TF32 by default and a
+        float64 pass costs ~70% of the training step for no parity gain.
     """
 
     def __init__(
@@ -82,10 +85,12 @@ class BPNet(nn.Module):
         output_len: int = 1000,
         conv1_kernel_size: int = CONV1_KERNEL,
         profile_kernel_size: int = PROFILE_KERNEL,
-        precise_profile: bool = True,
+        precise_profile="auto",
     ) -> None:
         super().__init__()
-        self.precise_profile = bool(precise_profile)
+        if precise_profile not in (True, False, "auto"):
+            raise ValueError("precise_profile must be True, False or 'auto'")
+        self.precise_profile = precise_profile
         self.filters = int(filters)
         self.n_dil_layers = int(n_dil_layers)
         self.input_len = int(input_len)
@@ -128,7 +133,9 @@ class BPNet(nn.Module):
         for conv, relu in zip(self.dil_convs, self.dil_relus):
             c = relu(conv(h))
             h = c + _center_crop(h, c.shape[-1])
-        if self.precise_profile:
+        precise = (self.precise_profile is True
+                   or (self.precise_profile == "auto" and h.device.type == "cpu"))
+        if precise:
             # The profile head sums 75 x filters products per output base;
             # in float32 that alone adds ~1e-4 to the logits on CPU, ~30x
             # the Keras/Eigen rounding (see tests/parity/chrombpnet). One
