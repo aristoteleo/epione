@@ -14,6 +14,15 @@ Public API (flat — call as ``epi.bulk.hic.X``):
     * :func:`tad_boundaries`          — boundary BED from insulation
     * :func:`loops`                   — HICCUPS-style dot finder
     * :func:`pileup`                  — APA / aggregate stack
+    * :func:`tad_domains`             — TAD intervals between boundaries
+    * :func:`compare_matrices`        — diff / ratio / log2ratio of two matrices
+    * :func:`correlate_matrices`      — pairwise Pearson / Spearman of matrices
+    * :func:`differential_tads`       — Wilcoxon test of TADs between conditions
+    * :func:`h5_to_cool`              — HiCExplorer ``.h5`` → ``.cool``
+
+``compartments``, ``insulation`` / ``tad_boundaries`` and ``loops`` take
+``method="cooltools"`` (default) or ``method="hicexplorer"`` (ports of
+hicPCA, hicFindTADs and hicDetectLoops, HiCExplorer 3.7.6).
     * :func:`plot_contact_matrix`     — region heatmap
     * :func:`plot_contact_triangle`   — pyramid view of region
     * :func:`plot_decay_curve`        — P(s) QC plot
@@ -28,8 +37,11 @@ from __future__ import annotations
 
 from ._balance import balance_cool
 from ._compartments import compartments, saddle
-from ._insulation import insulation, tad_boundaries
+from ._insulation import insulation, tad_boundaries, tad_domains
 from ._loops import loops, pileup
+from ._compare import compare_matrices, correlate_matrices
+from ._differential import differential_tads
+from ._io import h5_to_cool
 # Plotting helpers live in :mod:`epione.pl` since v0.4 (PR 3); import
 # them from there so ``epi.bulk.hic.plot_*`` still resolves.
 from epione.pl._contact import (
@@ -50,8 +62,13 @@ __all__ = [
     "saddle",
     "insulation",
     "tad_boundaries",
+    "tad_domains",
     "loops",
     "pileup",
+    "compare_matrices",
+    "correlate_matrices",
+    "differential_tads",
+    "h5_to_cool",
     "plot_contact_matrix",
     "plot_contact_triangle",
     "plot_decay_curve",

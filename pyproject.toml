@@ -90,6 +90,7 @@ hic = [
     'cooltools>=0.7',
     'pairtools>=1.0',
     'bioframe',
+    'tables',        # epione.bulk.hic.h5_to_cool (HiCExplorer .h5 matrices)
 ]
 test = [
     'pytest>=7',
