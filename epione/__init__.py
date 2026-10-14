@@ -6,6 +6,7 @@ Subpackage map (call-chain shown alongside):
     epione.single.{atac, hic}    single-cell analyses, modality-specific
     epione.pp / .tl / .pl        cross-modality preprocessing / analysis / plotting
     epione.scenic                SCENIC+ enhancer-driven GRNs (topics → motifs → eGRNs)
+    epione.grn                   GRN methods in one place: Pando (py-Pando) and SCENIC+
     epione.translate             RNA ↔ ATAC cross-modality translation + benchmark
     epione.io                    pure format read/write (BED, cool, pairs, h5ad, ...)
     epione.upstream              FASTQ → BAM → bigwig / pairs → cool pipelines
@@ -50,6 +51,7 @@ _SUBPACKAGES = (
     "core",         # populated incrementally
     "data",         # populated incrementally
     "datasets",     # populated incrementally
+    "grn",          # GRN methods: Pando (py-Pando), SCENIC+ (re-exported as grn.scenic)
     "io",           # populated incrementally
     "models",       # bridges to external sequence→function models
     "pp",

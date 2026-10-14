@@ -123,6 +123,10 @@ translate = [
     # epione.translate methods (scButterfly, ...); prepare/metrics need none of these.
     'torch>=2.0',
 ]
+pando = [
+    # epione.grn.pando: the omicverse port of Pando (R) with its parity tests.
+    'pypando>=0.1.0',
+]
 scenic = [
     # cisTarget feather databases (Arrow IPC) and pycistarget-format hdf5 I/O.
     'pyarrow',
@@ -141,7 +145,7 @@ doublets = [
     'igraph',
 ]
 full = [
-    'epione[diffexp,motif,footprint,upstream,scenic,translate,multimodal,doublets]',
+    'epione[diffexp,motif,footprint,upstream,scenic,pando,translate,multimodal,doublets]',
 ]
 
 
