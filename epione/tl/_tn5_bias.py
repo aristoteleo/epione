@@ -9,7 +9,7 @@ model. :class:`Tn5Bias` is that missing seam:
 
 ``track(chrom, start, end) -> float32[end - start]``
 
-Three implementations:
+Four implementations:
 
 :class:`PrintBias`
     The PRINT/scPrinter CNN (Hu *et al.*, *Nature* 2025), 0.1 MB, run on
@@ -22,6 +22,10 @@ Three implementations:
 :class:`KmerBias`
     Epione's existing hexamer enrichment table
     (:func:`~epione.tl.compute_tn5_bias_table`).
+:class:`ChromBPNetBias`
+    ChromBPNet's convolutional bias model (Pampari *et al.*), trained per
+    dataset on GC-matched background or taken from an ENCODE release, run
+    in PyTorch (:mod:`epione.models.chrombpnet`).
 
 Each model carries the cut convention it was trained under (``shift``,
 see :mod:`epione._insertions`). The PRINT models were fitted to cuts at a
@@ -53,6 +57,7 @@ import numpy as np
 from .._insertions import SHIFT_ARCHR, SHIFT_PRINT
 
 __all__ = [
+    "ChromBPNetBias",
     "KmerBias",
     "PrecomputedBias",
     "PrintBias",
@@ -381,6 +386,97 @@ class KmerBias(Tn5Bias):
         return np.where(km >= 0, self.table[np.clip(km, 0, None)], 1.0)
 
 
+class ChromBPNetBias(Tn5Bias):
+    """ChromBPNet's Tn5 bias model as a per-base expected-cut track.
+
+    The bias model (a small BPNet trained on GC-matched background regions,
+    see :mod:`epione.models.chrombpnet`) predicts a 1,000-bp cut profile and
+    a total count from 2,114 bp of sequence. ``track`` tiles the requested
+    interval with 1,000-bp output windows, runs each on its centred 2,114-bp
+    input (N-padded past chromosome ends) and returns the expected cuts
+    ``softmax(profile) * exp(log_counts)`` per base.
+
+    Parameters
+    ----------
+    genome
+        :class:`~epione.core.genome.Genome` or FASTA path.
+    model
+        A trained bias :class:`~epione.models.chrombpnet.BPNet`; a path to an
+        official ``bias_scaled`` ``.h5``; or an ENCODE release name from
+        :data:`epione.models.chrombpnet.PRETRAINED` (``'encode_k562'``...).
+    fold
+        ENCODE fold for a release name.
+    device, batch_size
+        Torch device and windows per forward pass.
+
+    The cut convention is ``(0, 0)``: the official pipeline builds its
+    training bigWig from 10x fragments with cuts at ``start`` and ``end``.
+    """
+
+    name = "chrombpnet"
+    shift = SHIFT_PRINT
+
+    def __init__(self, genome, model, *, fold: int = 0, device: str = "cpu",
+                 batch_size: int = 64) -> None:
+        self.fasta = _fasta_path(genome)
+        self.model_spec = model
+        self.fold = int(fold)
+        self.device = device
+        self.batch_size = int(batch_size)
+
+    def _fasta(self):
+        if getattr(self, "_fa", None) is None:
+            import pysam
+            self._fa = pysam.FastaFile(self.fasta)
+        return self._fa
+
+    def _net(self):
+        if getattr(self, "_model", None) is None:
+            from epione.models import chrombpnet as cbp
+            spec = self.model_spec
+            if isinstance(spec, (str, Path)) and str(spec) in cbp.PRETRAINED:
+                m = cbp.load_pretrained(str(spec), "bias", self.fold)
+            elif isinstance(spec, (str, Path)):
+                m = cbp.load_keras_h5(spec)
+            else:
+                m = spec
+            if hasattr(m, "accessibility"):   # a full ChromBPNet: take its bias
+                m = m.bias
+            self._model = m.to(self.device).eval()
+        return self._model
+
+    def _seq(self, chrom: str, lo: int, hi: int, chrom_len: int) -> str:
+        a, b = max(lo, 0), min(hi, chrom_len)
+        core = self._fasta().fetch(chrom, a, b).upper() if b > a else ""
+        return "N" * (a - lo) + core + "N" * (hi - b)
+
+    def windows(self, chrom: str, start: int, end: int):
+        """Output-window starts covering ``[start, end)``."""
+        out_len = self._net().output_len
+        return list(range(start, end, out_len))
+
+    def track(self, chrom: str, start: int, end: int) -> np.ndarray:
+        if end <= start:
+            raise ValueError(f"empty interval {chrom}:{start}-{end}")
+        from epione.models.chrombpnet import one_hot_encode, predict, softmax
+        fa = self._fasta()
+        if chrom not in fa.references:
+            raise KeyError(f"{chrom!r} not in {self.fasta}")
+        net = self._net()
+        L, O = net.input_len, net.output_len
+        pad = (L - O) // 2
+        clen = fa.get_reference_length(chrom)
+        starts = self.windows(chrom, start, end)
+        seqs = [self._seq(chrom, w - pad, w - pad + L, clen) for w in starts]
+        x = np.transpose(one_hot_encode(seqs), (0, 2, 1)).astype(np.float32)
+        prof, cnt = predict(net, x, batch_size=self.batch_size, device=self.device)
+        exp_cuts = softmax(prof.astype(np.float64)) * np.exp(cnt.astype(np.float64))
+        return exp_cuts.reshape(-1)[: end - start].astype(np.float32)
+
+    def __repr__(self) -> str:  # pragma: no cover - cosmetic
+        return f"ChromBPNetBias(model={self.model_spec!r}, shift={self.shift})"
+
+
 # ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
@@ -403,7 +499,9 @@ def tn5_bias(
         ``'print'`` -- PRINT CNN on demand (needs torch);
         ``'precomputed'`` -- scPrinter's bias file at ``path``;
         ``'kmer'`` -- hexamer table, estimated from ``fragment_file``
-        unless ``table=`` is passed.
+        unless ``table=`` is passed;
+        ``'chrombpnet'`` -- ChromBPNet's bias model (``model=`` a trained
+        BPNet, an official ``.h5`` or an ENCODE release name; needs torch).
     **kwargs
         Forwarded to the model class.
 
@@ -422,6 +520,12 @@ def tn5_bias(
         return PrecomputedBias(path)
     if method in ("kmer", "hexamer"):
         return KmerBias(genome, fragment_file=fragment_file, **kwargs)
+    if method == "chrombpnet":
+        model = kwargs.pop("model", None) or path
+        if model is None:
+            raise ValueError("method='chrombpnet' needs model= (BPNet, .h5 path or "
+                             "an ENCODE release name such as 'encode_k562')")
+        return ChromBPNetBias(genome, model, **kwargs)
     raise ValueError(
-        f"unknown bias method {method!r}; use 'print', 'precomputed' or 'kmer'"
+        f"unknown bias method {method!r}; use 'print', 'precomputed', 'kmer' or 'chrombpnet'"
     )

@@ -34,7 +34,7 @@ _SCORE_BIGWIG_ATTRS = {
 _PLOTTING_TOBIAS_ATTRS = {"plot_aggregate", "plot_aggregate_tobias"}
 # PRINT / scPrinter: pluggable Tn5 bias, learned null, TF binding score.
 _TN5_BIAS_ATTRS = {
-    "tn5_bias", "Tn5Bias", "PrintBias", "PrecomputedBias", "KmerBias",
+    "tn5_bias", "Tn5Bias", "PrintBias", "PrecomputedBias", "KmerBias", "ChromBPNetBias",
 }
 _PRINT_ATTRS = {
     "tf_binding_score", "TFBindingResult", "DispersionModel",
@@ -164,7 +164,7 @@ __all__ = [
     "multi_scale_footprint", "MultiScaleFootprint",
     "footprint_score", "plot_multi_scale_footprint",
     "multi_scale_footprint_region", "plot_multi_scale_footprint_region",
-    "tn5_bias", "Tn5Bias", "PrintBias", "PrecomputedBias", "KmerBias",
+    "tn5_bias", "Tn5Bias", "PrintBias", "PrecomputedBias", "KmerBias", "ChromBPNetBias",
     "tf_binding_score", "TFBindingResult", "DispersionModel",
     "print_footprint_score", "print_footprint_pvalues",
     "fetch_print_model", "PRINT_SCALES", "plot_tf_binding_score",
