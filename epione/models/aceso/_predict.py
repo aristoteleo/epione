@@ -60,8 +60,7 @@ def predict_profiles(decoder, fasta_path: str, windows: pd.DataFrame, states: np
                 for c0 in range(0, len(S), cell_chunk):
                     z = S[c0:c0 + cell_chunk][None].to(device)
                     if fast:
-                        w_, b_ = decoder.forward_cell_embs_only(z)
-                        o = decoder.forward_convs_on_emb(emb, w_, b_)
+                        o = decoder.forward_convs_on_emb(emb, *decoder.forward_cell_embs_only(z))
                     else:
                         o = decoder(xt, z)
                     parts.append(o.float().squeeze(0).cpu().numpy())

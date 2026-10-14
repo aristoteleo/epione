@@ -29,7 +29,7 @@ import scipy.sparse as sp
 
 from ._encoder import StateEncoder, alignment_loss, _drop_empty
 from ._panel import PanelSampler, PanelSpace
-from ._decoder import DecoderConfig, make_optimizer, set_stabilise, trainable_state, profile_pearson
+from ._decoder import DecoderConfig, make_optimizer, set_stabilise, trainable_state, profile_pearson, param_groups, aux_loss
 
 
 def cell_index_embedding(n_cells: int) -> np.ndarray:
@@ -77,7 +77,7 @@ def train_joint(model: AcesoModel, X: sp.spmatrix, Z: np.ndarray, sampler: Panel
     ``Z``: EpiAgent states of the same cells (alignment target)."""
     import torch
     from epione.models import scooby as sb
-    from scooby.utils.utils import poisson_multinomial_torch, add_weight_decay
+    from scooby.utils.utils import poisson_multinomial_torch
     c = config
     dev = model.encoder.device
     os.makedirs(out_dir, exist_ok=True); torch.manual_seed(c.seed)
@@ -86,7 +86,7 @@ def train_joint(model: AcesoModel, X: sp.spmatrix, Z: np.ndarray, sampler: Panel
     dl = torch.utils.data.DataLoader(train_ds, batch_size=1, shuffle=True, num_workers=c.workers,
                                      worker_init_fn=sb.worker_init, persistent_workers=True, prefetch_factor=4)
     vdl = torch.utils.data.DataLoader(val_ds, batch_size=1, shuffle=False, num_workers=2, worker_init_fn=sb.worker_init)
-    groups = add_weight_decay(model.decoder, lr=c.lr, cellstate_lr=c.cellstate_lr, weight_decay=c.weight_decay)
+    groups = param_groups(model.decoder, c.lr, c.cellstate_lr, c.weight_decay)
     groups.append({"params": list(model.encoder.net.parameters()), "lr": c.encoder_lr, "weight_decay": 0.0})
     total = c.max_steps or c.epochs * math.ceil(len(train_ds) / c.accum)
     opt, sched = make_optimizer(model.decoder, groups, c, total)
@@ -125,7 +125,7 @@ def train_joint(model: AcesoModel, X: sp.spmatrix, Z: np.ndarray, sampler: Panel
                 out = model.profiles(x.permute(0, 2, 1).to(dev, non_blocking=True), z[None])
             ld = poisson_multinomial_torch(out.float(), y[:, :, keep].to(dev).float(), total_weight=0.2)
             la = alignment_loss(z.float(), Zn[idx[keep]].to(dev), c.tau)
-            loss = (ld + c.lambda_align * la) / c.accum
+            loss = (ld + aux_loss(model.decoder) + c.lambda_align * la) / c.accum
             loss.backward()
             if (k + 1) % c.accum:
                 continue

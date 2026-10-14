@@ -88,8 +88,21 @@ def set_stabilise(model, on: bool):
 
 
 def trainable_state(model) -> dict:
-    """LoRA + cell-state hypernetwork weights (everything that is trained)."""
-    return {k: v for k, v in model.state_dict().items() if "lora" in k or "cell_state_to_conv" in k}
+    """LoRA (incl. MoLoRA experts) + cell-state hypernetwork / gate weights (everything that is trained)."""
+    return {k: v for k, v in model.state_dict().items() if "lora" in k or "cell_state_to_" in k}
+
+
+def param_groups(model, lr: float, cellstate_lr: float, weight_decay: float):
+    """upstream ``add_weight_decay`` groups; the ACESO decoder adds its gate to the cell-state group"""
+    if hasattr(model, "param_groups"):
+        return model.param_groups(lr, cellstate_lr, weight_decay)
+    from scooby.utils.utils import add_weight_decay
+    return add_weight_decay(model, lr=lr, cellstate_lr=cellstate_lr, weight_decay=weight_decay)
+
+
+def aux_loss(model):
+    """the ACESO decoder's expert load-balancing term (0 for plain scooby)"""
+    return model.balance_loss() if hasattr(model, "balance_loss") else 0.0
 
 
 def profile_pearson(model, loader, device: str = "cuda", embed: Optional[Callable] = None):
@@ -126,15 +139,14 @@ def train_decoder(model, train_ds, val_ds, out_dir: str, config: DecoderConfig =
     ``best.pt`` (trainable weights + optimiser state) and ``train.log``; resumable."""
     import torch
     from epione.models import scooby as sb
-    from scooby.utils.utils import poisson_multinomial_torch, add_weight_decay
+    from scooby.utils.utils import poisson_multinomial_torch
     c = config
     os.makedirs(out_dir, exist_ok=True); torch.manual_seed(c.seed)
     dl = torch.utils.data.DataLoader(train_ds, batch_size=1, shuffle=True, num_workers=c.workers,
                                      worker_init_fn=sb.worker_init, persistent_workers=True, prefetch_factor=4)
     vdl = torch.utils.data.DataLoader(val_ds, batch_size=1, shuffle=False, num_workers=2, worker_init_fn=sb.worker_init)
     total = c.max_steps or c.epochs * math.ceil(len(train_ds) / c.accum)
-    opt, sched = make_optimizer(model, add_weight_decay(model, lr=c.lr, cellstate_lr=c.cellstate_lr,
-                                                        weight_decay=c.weight_decay), c, total)
+    opt, sched = make_optimizer(model, param_groups(model, c.lr, c.cellstate_lr, c.weight_decay), c, total)
     step, best = 0, -1.0
     ck = os.path.join(out_dir, "last.pt")
     if resume and os.path.exists(ck):
@@ -147,7 +159,7 @@ def train_decoder(model, train_ds, val_ds, out_dir: str, config: DecoderConfig =
             set_stabilise(model, step < c.warmup)
             with torch.autocast("cuda", dtype=torch.bfloat16):
                 out = model(x.permute(0, 2, 1).to(device, non_blocking=True), ce.to(device))
-            loss = poisson_multinomial_torch(out.float(), y.to(device).float(), total_weight=0.2) / c.accum
+            loss = (poisson_multinomial_torch(out.float(), y.to(device).float(), total_weight=0.2) + aux_loss(model)) / c.accum
             loss.backward()
             if (k + 1) % c.accum:
                 continue

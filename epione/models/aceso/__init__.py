@@ -15,9 +15,11 @@ State encoder (stage 1)
     **Panel-agnostic training**: every batch draws a random gene panel and depth
     (:mod:`._panel`), so one encoder serves any targeted platform.
 Decoder (stage 2)
-    scooby (Borzoi + LoRA + cell-state hypernetwork, via :mod:`epione.models.scooby`) predicts
-    per-cell 32 bp ATAC profiles from 524 kb of DNA. It is conditioned on the *predicted* z, the
-    same input it receives at inference (:mod:`._decoder`).
+    **State-conditioned mixture of LoRA experts on Borzoi** (:mod:`._molora`): a shared lower trunk,
+    K expert-adapted upper trunks and a gate pi(z), so the cell state changes the sequence features,
+    not only the read-out; per-cell 32 bp ATAC profiles from 524 kb of DNA, conditioned on the
+    *predicted* z, the input it receives at inference. Plain scooby (Borzoi + LoRA + cell-state
+    hypernetwork, via :mod:`epione.models.scooby`; :mod:`._decoder`) is the baseline.
 Joint fine-tuning (stage 3)
     **End-to-end**: the decoder's sequence-level loss is back-propagated into the state encoder,
     with an alignment term that keeps z in the EpiAgent space (:mod:`._joint`).
@@ -40,6 +42,7 @@ _MODULES = {
     "_panel": ["mgi_orthologs", "hvg_rank", "PanelSpace", "PanelSampler", "thin_counts"],
     "_encoder": ["StateEncoder", "EncoderConfig", "train_encoder", "predict_states", "alignment_loss"],
     "_decoder": ["DecoderConfig", "MultiFragmentReader", "build_decoder", "train_decoder", "profile_pearson"],
+    "_molora": ["AcesoDecoder", "MoLoRAConfig", "ExpertLoRA", "build_aceso_decoder"],
     "_joint": ["AcesoModel", "JointConfig", "train_joint", "cell_index_embedding"],
     "_predict": ["predict_profiles", "aggregate_regions"],
     "_eval": ["knn_neighbors", "knn_smoothed_pearson", "pseudobulk_pearson", "knn_transfer_accuracy"],

@@ -85,3 +85,21 @@ def test_cell_index_embedding_exact():
     e = aceso.cell_index_embedding(100_000)
     assert e.dtype == np.float32 and e.shape == (100_000, 1)
     assert np.array_equal(e[:, 0].astype(np.int64), np.arange(100_000))
+
+
+def test_expert_lora_zero_init_and_per_expert_updates():
+    torch = pytest.importorskip("torch")
+    from epione.models.aceso._molora import ExpertLoRA
+    torch.manual_seed(0)
+    for base, x in [(torch.nn.Linear(6, 5), torch.randn(3, 7, 6)), (torch.nn.Conv1d(6, 5, 1), torch.randn(3, 6, 7))]:
+        m = ExpertLoRA(base, n_experts=3, rank=2, alpha=2.0)
+        assert torch.allclose(m(x), base(x))                       # zero-initialised B: equals the base layer
+        with torch.no_grad():
+            m.expert_lora_B.normal_()
+        same = x[:1].expand(3, *x.shape[1:])
+        y = m(same)
+        assert not torch.allclose(y[0], y[1])                      # expert k updates batch element k
+        ref = base(same[:1]) + m.scale * (
+            (same[:1] @ m.expert_lora_A[0].T) @ m.expert_lora_B[0].T if m.kind == "linear"
+            else torch.einsum("or,ri,bil->bol", m.expert_lora_B[0], m.expert_lora_A[0], same[:1]))
+        assert torch.allclose(y[:1], ref, atol=1e-5)
