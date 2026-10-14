@@ -11,12 +11,22 @@ demux a multi-cell pairs file by barcode, build one ``.cool`` per
 celltype, and quantify celltype × celltype similarity via cis
 contact-vector correlation — the upstream of Chang 2024 Fig 1d/e/f.
 
+Higashi (Zhang, Zhou & Ma 2022, *Nat. Biotechnol.*) is available as an
+alternative imputation / embedding method: ``impute_cells(...,
+method="higashi")`` and ``embedding(..., method="higashi")`` train a
+PyTorch port of ma-compbio/Higashi (MIT) on all cells jointly — a
+hypergraph of cell and bin nodes scored by Hyper-SAGNN, a cell-dependent
+GNN, and k-nearest-cell imputation. It needs ``torch`` (a GPU is
+recommended). Defaults remain scHiCluster + PCA.
+
 Public API (flat — call as ``epi.single.hic.X``):
     * :func:`load_cool_collection`     — index per-cell ``.cool`` paths
     * :func:`load_scool_cells`         — index a multi-cell ``.scool`` bundle
     * :func:`impute_cell_chromosome`   — pure-numpy core (one matrix)
     * :func:`impute_cells`             — driver over a cell collection
+                                         (``method="schicluster"`` | ``"higashi"``)
     * :func:`embedding`                — PCA on flattened imputed contacts
+                                         (``method="pca"`` | ``"higashi"``)
     * :func:`demux_pairs_by_barcode`   — split multi-cell pairs by celltype
     * :func:`pseudobulk_by_celltype`   — demux + ``pairs_to_cool`` + balance
     * :func:`cluster_correlation`      — celltype × celltype Pearson r
