@@ -125,3 +125,17 @@ G0 showed that the cell-node attributes are not identical across the two environ
 **A2.** Epione's stage-1 and stage-2 optimisers emulate the torch-2.0 list-wise `foreach` Adam update in plain tensor ops. It is checked against torch 2.0.1 on the reference's parameter layout. Stage 3 has no duplicated parameters, so there the emulation is plain Adam. G2 is re-run with 3 new Epione seeds, with the same rule, floors and reference runs. The original G2, run with the pre-A2 code on Epione seeds 0–2, is reported as specified.
 
 Note: under torch < 2.0, where `foreach` was not the default, upstream itself behaves like the pre-A2 Epione code. The pre-A2 behaviour therefore stays available as `optimizer="sequential"`.
+
+### A2 check, and diagnostic D1 (registered before D1 was run)
+
+**The A2 emulation check.** It was carried out before the A2 reruns finished, and it is not exact.
+
+- On a synthetic layout, list-wise Adam matches torch 2.0.1 for all but 5 (stage 1) and 10 (stage 2) tensors. Those are the pairs whose two copies share a CUDA launch, where torch 2.0 races.
+- On the real stage-2 model with real gradients (3 steps), torch 2.0.1's `foreach` updates of the duplicated parameters are larger than both alternatives:
+  - about 10% larger than sequential Adam: relative difference 0.094, norm ratio 0.91;
+  - about 5% larger than list-wise Adam: relative difference 0.055, norm ratio 0.95.
+- Inside the reference loop, list-wise Adam gives the same stage-2 losses as `foreach=False` (0.5685 / 0.5232 / 0.5070, against 0.5683 / 0.5229 / 0.5067). The reference's own `foreach` path gives 0.5657 / 0.5186 / 0.5014.
+
+So the torch-2.0.1 behaviour that drives the gap is a launch-dependent race. It can be neither emulated deterministically nor reproduced under torch 2.6. The A2 reruns continue as registered and are reported. A2 does **not** achieve its purpose.
+
+**D1 (diagnostic, not a gate).** One full reference run, seed 0, with the reference's Adam forced to `foreach=False`, which gives two sequential steps for the duplicates as under torch < 2.0. It is evaluated with the same G2 metrics. If D1's imputation metrics fall to Epione's level, the G2 imputation gap is attributed to this torch-2.0-specific optimiser artefact of the reference, not to the port.
