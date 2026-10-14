@@ -105,3 +105,7 @@ That makes 3 + 2 × 2 = **7 gated metrics**. G2 passes only if all 7 pass. Repor
 ### G3 · fast mode
 
 Not applicable: no fast mode is added. Fast-Higashi (ma-compbio/Fast-Higashi, a separate PARAFAC2-based method of about 3.9k lines) is not ported in this change.
+
+## Amendment A1 (registered before G1b was run, after the G0 result)
+
+G0 showed that the cell-node attributes are not identical across the two environments (see Results). Every G1b quantity passes through those attributes, so the original G1b also tests the G0 discrepancy. **G1b-A1** repeats G1b with one change: Epione's `HigashiInput.cell_feats` is replaced by the reference's stored attributes (`node_feats.hdf5:/cell/<i>`). This isolates the network and imputation code. Same tolerance, max |Δ| ≤ 1e-4. The original G1b is still run and reported as specified.
