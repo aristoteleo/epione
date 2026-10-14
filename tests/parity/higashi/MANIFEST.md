@@ -141,3 +141,70 @@ So the torch-2.0.1 behaviour that drives the gap is a launch-dependent race. It 
 **D1 (diagnostic, not a gate).** One full reference run, seed 0, with the reference's Adam forced to `foreach=False`, which gives two sequential steps for the duplicates as under torch < 2.0. It is evaluated with the same G2 metrics. If D1's imputation metrics fall to Epione's level, the G2 imputation gap is attributed to this torch-2.0-specific optimiser artefact of the reference, not to the port.
 
 **Default after A2.** The emulation is not exact. In effect it behaves like sequential Adam (see the check above). Epione's default is therefore `optimizer="sequential"`, the behaviour of upstream's own code under torch < 2.0 and under torch 2.6. `optimizer="torch20_foreach"` (list-wise) stays available. This choice follows from the emulation check, not from the A2 metrics.
+
+## Results (2026-10-14)
+
+| gate | result |
+|---|---|
+| G0 preprocessing | **FAIL** on one criterion. Every exact criterion passes: hypergraph, train/test hyperedges in order, weights, raw matrices. The float criteria pass too: depth-normalised graphs (max \|Δ\| 6e-5, same pattern), bin attributes, sparsity, cell weights. The **cell-node attributes miss the 1e-3 threshold**: relative Frobenius error 0.0031–0.0068 per chromosome |
+| G1 metric implementation | **PASS**: \|Δ\| ≤ 8e-16 for every metric |
+| G1b, original (Epione preprocessing) | **FAIL**: embeddings max \|Δ\| 0.080, nbr-0 imputation 0.0059, nbr-5 0.0037; neighbour lists differ. This follows from the G0 cell-attribute difference |
+| **G1b-A1** (reference cell attributes) | **PASS**: embeddings max \|Δ\| 0.0 (bit-identical), nbr-0 imputation 1.3e-6, nbr-5 6.9e-7, neighbour lists identical. All three reference state dicts load with `strict=True` |
+| G2, original (pre-A2 code) | **FAIL, 5/7**. Embedding metrics and pseudo-bulk r pass; held-out AUROC fails at both nbr-0 and nbr-5 |
+| G2, A2 (list-wise Adam) | **FAIL, 5/7**. Same pattern |
+| D1 (diagnostic) | The reference itself, run with `foreach=False`, falls to Epione's level: AUROC nbr-0 0.722, nbr-5 0.664 |
+| G3 | not applicable (no fast mode) |
+
+### G0: why the cell attributes differ
+
+The difference was traced to one call. The same inputs, the same RandomState stream (position checked), the same `randomized_svd` algorithm and the same sign convention still give 0.8% different trailing components between the two environments. This happens only for the diagonal block, whose leading singular value dominates. Upstream's `n_iter=2` power iterations run without normalisation, and they amplify library-level rounding differences: numpy 1.23 / OpenBLAS against numpy 2.4. Within one environment the result is bit-stable across thread counts. Two implementation differences were found and fixed along the way:
+- the scikit-learn ≥ 1.5 sign convention of `TruncatedSVD` (fixed by calling `randomized_svd` as 1.0 did);
+- an attempted float64 cast (reverted).
+
+The threshold is unchanged, so G0 is recorded as failing on this criterion.
+
+### G2: 3 seeds a side
+
+| metric | reference (seeds 0,1,2) | Epione, original | Epione, A2 | tol | original | A2 |
+|---|---|---|---|---|---|---|
+| ARI | 0.1506 ± 0.0040 (0.148, 0.155, 0.148) | 0.1483 ± 0.0048 | 0.1460 ± 0.0009 | 0.030 | pass | pass |
+| AMI | 0.2595 ± 0.0035 | 0.2543 ± 0.0036 | 0.2533 ± 0.0006 | 0.030 | pass | pass |
+| kNN accuracy | 0.8772 ± 0.0028 | 0.8769 ± 0.0012 | 0.8716 ± 0.0045 | 0.020 | pass | pass |
+| AUROC nbr-0 | 0.7353 ± 0.0032 (0.734, 0.733, 0.739) | 0.7167 ± 0.0172 (0.722, 0.731, 0.698) | 0.7181 ± 0.0192 (0.726, 0.732, 0.696) | 0.0064 | **fail** | **fail** |
+| AUROC nbr-5 | 0.6905 ± 0.0040 (0.687, 0.689, 0.695) | 0.6583 ± 0.0189 (0.646, 0.680, 0.649) | 0.6627 ± 0.0177 (0.659, 0.682, 0.647) | 0.0080 | **fail** | **fail** |
+| pseudo-bulk r nbr-0 | 0.6884 ± 0.0068 | 0.6787 ± 0.0186 | 0.6859 ± 0.0069 | 0.0135 | pass | pass |
+| pseudo-bulk r nbr-5 | 0.6545 ± 0.0165 | 0.6391 ± 0.0175 | 0.6493 ± 0.0135 | 0.0329 | pass | pass |
+| repli R² (not gated) | 0.9806 | 0.9809 | 0.9809 | — | | |
+
+**D1, reference with `foreach=False`, seed 0:**
+
+| metric | value |
+|---|---|
+| ARI | 0.173 |
+| AMI | 0.282 |
+| kNN accuracy | 0.870 |
+| AUROC nbr-0 | **0.722** |
+| AUROC nbr-5 | **0.664** |
+| pseudo-bulk r nbr-0 | 0.674 |
+| pseudo-bulk r nbr-5 | 0.616 |
+| stage-2 losses, epochs 1–3 | 0.5694 / 0.5213 / 0.5050 |
+
+Both AUROC values lie inside Epione's seed distribution and 4–7 reference SDs below the reference's `foreach` runs.
+
+**Reading.** The embedding is reproduced. The held-out AUROC gap (−0.019 at nbr-0, −0.032 at nbr-5) appears whenever the *reference code* runs with sequential Adam on its duplicated parameters: under torch < 2.0, under torch 2.6, or with `foreach=False`. It disappears only under torch 2.0.x's racy multi-tensor path. Every per-step quantity is equivalent:
+- the forward pass, the loss and the gradients (G1b-A1 and the diagnostics in A2);
+- the batch distributions;
+- the imputation.
+
+Epione's imputation AUROC also varies more from seed to seed (SD 0.017–0.019 vs 0.003–0.004). D1 has one seed only, so whether this spread also belongs to sequential-Adam training is not established. **G2 is reported as FAIL.** There are no further amendments.
+
+### Wall-clock (median of 3 seeds, minutes)
+
+All runs shared one H100 that was also at 100% utilisation from an unrelated job, so these are indicative only.
+
+| side | stage 1 | stage 2 | stage 3 | impute nbr-0 | impute nbr-5 | total |
+|---|---|---|---|---|---|---|
+| reference (8 sampler processes) | 88 | 83 | 13 | 30 | 21 | 233 |
+| Epione | 18 | 15 | 12 | 32 | 39 | 115 |
+
+Training per epoch is about 3–4× faster in Epione: vectorised sampling, and no sparse-mm coalescing. Imputation is not faster, because the per-cell moving average and HDF5 writes dominate.
