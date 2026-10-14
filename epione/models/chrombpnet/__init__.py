@@ -37,7 +37,7 @@ _ATTRS = {
     "_data": {"one_hot_encode", "read_narrowpeak", "open_signal", "BigWigSignal",
               "InsertionSignal", "bias_hyperparams", "chrombpnet_hyperparams",
               "gc_matched_nonpeaks", "genomewide_gc", "load_regions", "ChromBPNetBatches",
-              "filter_edge_regions"},
+              "filter_edge_regions", "get_seq_onehot"},
     "_train": {"train_bias", "train_chrombpnet", "fit_model", "adjust_bias_logcounts",
                "multinomial_nll", "TrainResult"},
     "_predict": {"predict_regions", "evaluate", "contribution_scores", "ism",
