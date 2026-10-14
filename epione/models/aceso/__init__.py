@@ -43,6 +43,7 @@ _MODULES = {
     "_encoder": ["StateEncoder", "EncoderConfig", "train_encoder", "predict_states", "alignment_loss"],
     "_decoder": ["DecoderConfig", "MultiFragmentReader", "build_decoder", "train_decoder", "profile_pearson"],
     "_molora": ["AcesoDecoder", "MoLoRAConfig", "ExpertLoRA", "build_aceso_decoder"],
+    "_backbone": ["BACKBONES", "SlicedLoRA", "add_attention_lora"],
     "_filmhead": ["FiLMHeadDecoder", "FiLMConfig", "build_film_decoder"],
     "_joint": ["AcesoModel", "JointConfig", "train_joint", "cell_index_embedding"],
     "_predict": ["predict_profiles", "aggregate_regions"],

@@ -103,3 +103,28 @@ def test_expert_lora_zero_init_and_per_expert_updates():
             (same[:1] @ m.expert_lora_A[0].T) @ m.expert_lora_B[0].T if m.kind == "linear"
             else torch.einsum("or,ri,bil->bol", m.expert_lora_B[0], m.expert_lora_A[0], same[:1]))
         assert torch.allclose(y[:1], ref, atol=1e-5)
+
+
+def test_sliced_lora_adapts_only_given_rows_and_expert_rows():
+    torch = pytest.importorskip("torch")
+    from epione.models.aceso._backbone import SlicedLoRA
+    from epione.models.aceso._molora import ExpertLoRA
+    torch.manual_seed(0)
+    base = torch.nn.Linear(6, 10)
+    rows = torch.tensor([0, 1, 2, 7, 8, 9])                 # e.g. q and v rows of a fused qkv
+    m = SlicedLoRA(base, rows)
+    x = torch.randn(3, 4, 6)
+    assert torch.allclose(m(x), base(x))                    # zero-init B
+    with torch.no_grad():
+        m.lora_B.normal_()
+    d = m(x) - base(x)
+    other = torch.tensor([3, 4, 5, 6])
+    assert torch.allclose(d[..., other], torch.zeros_like(d[..., other]))
+    assert d[..., rows].abs().sum() > 0
+    e = ExpertLoRA(m, n_experts=3, rank=2, alpha=2.0, rows=rows)   # experts on top of the shared sliced LoRA
+    assert e.expert_lora_B.shape == (3, len(rows), 2)
+    assert torch.allclose(e(x), m(x))
+    with torch.no_grad():
+        e.expert_lora_B.normal_()
+    de = e(x) - m(x)
+    assert torch.allclose(de[..., other], torch.zeros_like(de[..., other])) and not torch.allclose(de[0], de[1])

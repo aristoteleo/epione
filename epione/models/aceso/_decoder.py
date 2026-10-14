@@ -39,7 +39,7 @@ class DecoderConfig:
     eval_every: int = 250
     workers: int = 6
     seed: int = 0
-    checkpoint: str = "johahi/borzoi-replicate-0"
+    backbone: str = "borzoi"            # or "flashzoi" (:mod:`._backbone`)
 
 
 def MultiFragmentReader(readers: Sequence, names: Optional[Sequence[str]] = None):
@@ -70,11 +70,17 @@ def MultiFragmentReader(readers: Sequence, names: Optional[Sequence[str]] = None
     return _Multi()
 
 
-def build_decoder(cell_emb_dim: int, device: str = "cuda", checkpoint: str = "johahi/borzoi-replicate-0", train: bool = True):
-    """scooby with upstream LoRA, ATAC track only."""
+def build_decoder(cell_emb_dim: int, device: str = "cuda", checkpoint: Optional[str] = None, train: bool = True,
+                  backbone: str = "borzoi"):
+    """scooby with upstream LoRA, ATAC track only, on Borzoi or Flashzoi (:mod:`._backbone`; on Flashzoi
+    the attention LoRA is added on the q/v rows of the fused Wqkv). ``checkpoint`` overrides the
+    backbone's default weights."""
     from epione.models import scooby as sb
-    return sb.load_scooby(checkpoint, cell_emb_dim=cell_emb_dim, n_tracks=1, lora=True, train=train, device=device,
-                          disable_cache=True, use_transform_borzoi_emb=False)
+    from ._backbone import BACKBONES, add_attention_lora
+    model = sb.load_scooby(checkpoint or BACKBONES[backbone], cell_emb_dim=cell_emb_dim, n_tracks=1, lora=True,
+                           train=train, device=device, disable_cache=True, use_transform_borzoi_emb=False)
+    add_attention_lora(model, train=train)
+    return model
 
 
 def set_stabilise(model, on: bool):

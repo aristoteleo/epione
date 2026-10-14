@@ -89,10 +89,10 @@ class FiLMHeadDecoder(nn.Module):
 
 
 def build_film_decoder(cell_emb_dim: int, config: FiLMConfig = FiLMConfig(), device: str = "cuda",
-                       checkpoint: str = "johahi/borzoi-replicate-0", train: bool = True) -> FiLMHeadDecoder:
-    """scooby (upstream LoRA, ATAC track) + per-cell FiLM head"""
+                       checkpoint=None, train: bool = True, backbone: str = "borzoi") -> FiLMHeadDecoder:
+    """scooby (upstream LoRA, ATAC track; Borzoi or Flashzoi) + per-cell FiLM head"""
     from ._decoder import build_decoder
-    dec = FiLMHeadDecoder(build_decoder(cell_emb_dim, device=device, checkpoint=checkpoint, train=train),
+    dec = FiLMHeadDecoder(build_decoder(cell_emb_dim, device=device, checkpoint=checkpoint, train=train, backbone=backbone),
                           cell_emb_dim, config).to(device)
     for n, p in dec.named_parameters():
         if n.startswith(("head_", "cell_state_to_film")):

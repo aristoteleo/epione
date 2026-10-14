@@ -46,9 +46,10 @@ class ExpertLoRA(nn.Module):
     """K low-rank updates on a Linear (input [K, L, in]) or 1x1 Conv1d (input [K, in, L]); the k-th
     batch element gets the k-th update. ``base`` may itself be a peft LoRA layer."""
 
-    def __init__(self, base: nn.Module, n_experts: int, rank: int, alpha: float):
+    def __init__(self, base: nn.Module, n_experts: int, rank: int, alpha: float, rows=None):
         super().__init__()
-        inner = getattr(base, "base_layer", base)
+        from ._backbone import unwrap_linear
+        inner = unwrap_linear(base)
         if isinstance(inner, nn.Linear):
             self.kind, d_in, d_out = "linear", inner.in_features, inner.out_features
         elif isinstance(inner, nn.Conv1d):
@@ -57,8 +58,10 @@ class ExpertLoRA(nn.Module):
         else:
             raise TypeError(type(inner))
         self.base, self.scale = base, alpha / rank
+        # rows: adapt only these output rows (Flashzoi's fused Wqkv: q and v rows)
+        self.register_buffer("rows", None if rows is None else rows.long(), persistent=False)
         self.expert_lora_A = nn.Parameter(torch.empty(n_experts, rank, d_in))
-        self.expert_lora_B = nn.Parameter(torch.zeros(n_experts, d_out, rank))
+        self.expert_lora_B = nn.Parameter(torch.zeros(n_experts, d_out if rows is None else len(rows), rank))
         for k in range(n_experts):                       # peft's init of lora_A
             nn.init.kaiming_uniform_(self.expert_lora_A.data[k], a=5 ** 0.5)
 
@@ -70,24 +73,29 @@ class ExpertLoRA(nn.Module):
             d = torch.einsum("klr,kor->klo", torch.einsum("kli,kri->klr", x, A), B)
         else:
             d = torch.einsum("kor,krl->kol", B, torch.einsum("kri,kil->krl", A, x))
+        if self.rows is not None:                        # linear only (asserted at build)
+            return y.index_add(-1, self.rows.to(y.device), self.scale * d.to(y.dtype))
         return y + self.scale * d
 
 
 def _expert_targets(scooby, n_expert_blocks: int):
-    """(parent, attribute) of every module that gets expert updates: in the last ``n_expert_blocks``
-    transformer blocks to_q, to_v and the two feed-forward linears (upstream LoRA targets), and the
-    1x1 conv_layer of upsampling_unet1/0 and final_joined_convs (upstream targets conv_layer except
-    the separable blocks)."""
+    """(parent, attribute, rows) of every module that gets expert updates: in the last ``n_expert_blocks``
+    transformer blocks the attention q and v projections (Borzoi: to_q, to_v; Flashzoi: q rows and v rows
+    of the fused Wqkv, one expert set each) and the two feed-forward linears (upstream LoRA targets), and the 1x1 conv_layer of
+    upsampling_unet1/0 and final_joined_convs (upstream targets conv_layer except the separable blocks)."""
+    from ._backbone import attention_modules, q_rows, v_rows
     t = []
     depth = len(scooby.transformer)
-    for i in range(depth - n_expert_blocks, depth):
-        blk = scooby.transformer[i]
-        attn = blk[0].fn[1]
-        t += [(attn, "to_q"), (attn, "to_v")]
-        ff = blk[1].fn
-        t += [(ff, "1"), (ff, "4")]
+    for (attn, kind), i in zip(attention_modules(scooby, range(depth - n_expert_blocks, depth)),
+                               range(depth - n_expert_blocks, depth)):
+        if kind == "flashzoi":
+            t += [(attn.mha, "Wqkv", q_rows(attn.mha)), (attn.mha, "Wqkv", v_rows(attn.mha))]   # applied in turn
+        else:
+            t += [(attn, "to_q", None), (attn, "to_v", None)]
+        ff = scooby.transformer[i][1].fn
+        t += [(ff, "1", None), (ff, "4", None)]
     for name in ["upsampling_unet1", "upsampling_unet0", "final_joined_convs"]:
-        t.append((getattr(scooby, name)[0], "conv_layer"))
+        t.append((getattr(scooby, name)[0], "conv_layer", None))
     return t
 
 
@@ -103,9 +111,9 @@ class AcesoDecoder(nn.Module):
         assert core.n_tracks == 1, "ACESO decoder: ATAC only"
         assert not core.use_transform_borzoi_emb
         K = config.n_experts
-        for parent, attr in _expert_targets(core, config.n_expert_blocks):
+        for parent, attr, rows in _expert_targets(core, config.n_expert_blocks):
             base = parent._modules[attr]
-            parent._modules[attr] = ExpertLoRA(base, K, config.rank, config.alpha)
+            parent._modules[attr] = ExpertLoRA(base, K, config.rank, config.alpha, rows=rows)
         self.n_low = len(core.transformer) - config.n_expert_blocks
         self.cell_state_to_gate = nn.Sequential(nn.Linear(cell_emb_dim, config.gate_hidden), nn.GELU(),
                                                 nn.Linear(config.gate_hidden, K))
@@ -190,10 +198,10 @@ class AcesoDecoder(nn.Module):
 
 
 def build_aceso_decoder(cell_emb_dim: int, config: MoLoRAConfig = MoLoRAConfig(), device: str = "cuda",
-                        checkpoint: str = "johahi/borzoi-replicate-0", train: bool = True) -> AcesoDecoder:
-    """scooby (upstream LoRA, ATAC track) + MoLoRA experts and gate."""
+                        checkpoint=None, train: bool = True, backbone: str = "borzoi") -> AcesoDecoder:
+    """scooby (upstream LoRA, ATAC track; Borzoi or Flashzoi) + MoLoRA experts and gate."""
     from ._decoder import build_decoder
-    dec = AcesoDecoder(build_decoder(cell_emb_dim, device=device, checkpoint=checkpoint, train=train),
+    dec = AcesoDecoder(build_decoder(cell_emb_dim, device=device, checkpoint=checkpoint, train=train, backbone=backbone),
                        cell_emb_dim, config).to(device)
     for n, p in dec.named_parameters():
         if "expert_lora" in n or "cell_state_to_gate" in n:
