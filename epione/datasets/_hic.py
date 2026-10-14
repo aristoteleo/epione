@@ -26,6 +26,10 @@ HICEXPLORER_TEST_MATRICES = {
               "sha256:6b3f3f4e8bf70b18832722cbf64195a0b267fdfaff2196f59cfb92b48f9b806c"),
     "gm12878_2_5mb": ("hicDetectLoops/GSE63525_GM12878_insitu_primary_2_5mb.cool",
                       "sha256:1f6e27d0005019874e6f8af012de8a6e1f76791c77f9862fd40e36e4602900f0"),
+    "gm12878_raw": ("hicCorrectMatrix/gm12878_raw_values.cool",
+                    "sha256:674b13c0831ea8e6f98036ef1f2dbdfc3ba1cac319fcb09d04f0d20d685aee6d"),
+    "gm12878_kr": ("hicCorrectMatrix/gm12878_KR.cool",
+                   "sha256:aacaeaeb52f0e3bb01d332432b617ef5452a3af9bfeffe9cb16cab93dfa30758"),
 }
 
 
@@ -100,6 +104,8 @@ def hicexplorer_test_matrices(
       Cell 2017; GEO GSM2644945 / GSM2644947) -- 9.5 MB each.
     * ``"gm12878_2_5mb"``: GM12878 in situ Hi-C at 2.5 Mb (Rao et al., Cell
       2014; GSE63525) -- 1.6 MB.
+    * ``"gm12878_raw"`` / ``"gm12878_kr"``: GM12878 at 2.5 Mb, raw counts and
+      the same matrix with a KR ``weight`` column -- about 4 MB each.
 
     Arguments:
         data_dir: Where to store the files. Defaults to

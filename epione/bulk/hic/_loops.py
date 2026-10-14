@@ -184,20 +184,16 @@ def pileup(
     import cooltools
 
     clr = cooler.Cooler(_resolve_uri(cool_path, resolution))
-    if chromosomes is not None:
-        view = pd.DataFrame({
-            "chrom": list(chromosomes),
-            "start": [0] * len(chromosomes),
-            "end": [int(clr.chromsizes[c]) for c in chromosomes],
-            "name": list(chromosomes),
-        })
-    else:
-        view = pd.DataFrame({
-            "chrom": list(clr.chromnames),
-            "start": [0] * len(clr.chromnames),
-            "end": [int(clr.chromsizes[c]) for c in clr.chromnames],
-            "name": list(clr.chromnames),
-        })
+    chroms = list(chromosomes) if chromosomes is not None else list(clr.chromnames)
+    # Region names are "chrom:0-size", not the bare chromosome name: cooltools
+    # 0.7.1 (snipping._extract_stack) unpacks any 2-character region name such as
+    # "21" into a (region1, region2) pair and then refuses it as trans.
+    view = pd.DataFrame({
+        "chrom": chroms,
+        "start": [0] * len(chroms),
+        "end": [int(clr.chromsizes[c]) for c in chroms],
+        "name": [f"{c}:0-{int(clr.chromsizes[c])}" for c in chroms],
+    })
 
     if expected is None:
         expected = _ensure_expected_cis(clr, view, ignore_diags=2)
