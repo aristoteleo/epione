@@ -65,4 +65,17 @@ groupby-sum of the same cells × peaks matrix. `var` carries `chrom`, `start` an
 
 ## Results
 
-(Appended after the runs.)
+Run on 2026-10-13 with gReLU 1.1.0, captum 0.5.0 and torch 2.6.0, on CPU. The env stacks
+gReLU on Epione's dev env. tangermeme and ledidi were installed with `--no-deps`, because
+their newest pybigtools dependency cannot be built on this cluster's glibc 2.17; the paths
+used here do not touch pybigtools.
+
+| Check | Result |
+|---|---|
+| V1, adapter exactness | **pass**: `torch.equal` for all 10 model/head pairs (BPNet × 4, ChromBPNet × 4, Seq2PRINT × 2) |
+| V2, bridge = direct gReLU | **pass**: `np.array_equal` for variant effects, ISM, saliency and DeepLIFT-SHAP (seed 0) |
+| V3, CTCF sign test | **pass**: 300 core mutations, median −0.361, 91.7% negative; 300 controls, median +0.004, 44.0% negative |
+| V4, pseudobulk builder | **pass**: identical to the pandas groupby-sum; `var` = `chrom`, `start`, `end` |
+
+gReLU's `CustomGenome` needs a `<fasta>.sizes` file. `_genome_arg` writes it from the
+`.fai`, or uses a cache copy behind symlinks if the FASTA directory is read-only.
