@@ -239,6 +239,9 @@ Imported on demand, never by `import epione`; listed here without autodoc pages 
 | Official training recipe | `epione.models.chrombpnet.train_bias`, `train_chrombpnet` |
 | Prediction, official metrics, interpretation | `epione.models.chrombpnet.predict_regions`, `evaluate`, `contribution_scores`, `ism`, `marginal_footprint` |
 | ChromBPNet bias as a Tn5 bias backend for footprinting | `epi.tl.tn5_bias(method="chrombpnet")`, {class}`epione.tl.ChromBPNetBias` |
+| gReLU bridge: an Epione model as a gReLU `LightningModel` (needs `epione[grelu]`) | `epione.models.grelu.wrap`, `HEADS` |
+| Variant effects, ISM and attributions for Epione or gReLU models | `epione.models.grelu.predict_variant_effects`, `ism`, `attributions` |
+| Groups × peaks training data for gReLU | `epione.models.grelu.pseudobulk_anndata` |
 
 ### BigWig matrix tooling (bulk)
 
