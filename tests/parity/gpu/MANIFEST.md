@@ -98,6 +98,15 @@ fixed here before the first run:
 - G1 compares the stored values of the two normalised CSR matrices after both are put in
   canonical (sorted-index) form; the sparsity patterns must be identical.
 
+**A2 (2026-10-15, after the first G10 run, before its rerun).** G10 failed in the first run
+(mean neighbour-set Jaccard 0.96667 = 29/30 in *every* row, distances of shared neighbours
+equal to 5e-6). The cause is a layout difference, not the search: rapids-singlecell stores each
+cell's self-match as an explicit zero entry in `.obsp["distances"]` (30 entries per row), while
+`epi.pp.neighbors` stores the 29 neighbours without self. The rapids dispatch
+(`epione.core._rapids.rapids_neighbors`) now drops stored diagonal entries so both backends
+return the same layout. G10 is rerun on the fixed dispatch with the threshold unchanged; both
+the failed first run and the rerun are reported. No other gate or threshold changes.
+
 ## Results
 
 (appended after the run)
