@@ -21,6 +21,11 @@ Currently:
     A bridge to gReLU (Genentech): Epione models become gReLU models, so
     variant-effect prediction, ISM and attributions run on them.
 
+``scbasset``
+    scBasset's sequence -> per-cell accessibility CNN, rewritten in
+    PyTorch from the official TensorFlow code; its last layer is a cell
+    embedding (``epi.tl.scbasset``).
+
 ``scooby``
     Single-cell sequence→profile prediction (Borzoi backbone, LoRA,
     cell-state-conditioned decoder). The target and fold-preparation
@@ -38,7 +43,7 @@ from __future__ import annotations
 import importlib
 from typing import TYPE_CHECKING
 
-_SUBPACKAGES = ("chrombpnet", "grelu", "registry", "scooby", "seq2print")
+_SUBPACKAGES = ("chrombpnet", "grelu", "registry", "scbasset", "scooby", "seq2print")
 _REGISTRY_API = ("ChecksumError", "PretrainedEntry", "fetch_pretrained", "get_pretrained",
                  "list_pretrained", "load_pretrained", "pretrained_cache_dir", "register",
                  "register_family", "unregister")
