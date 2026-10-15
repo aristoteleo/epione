@@ -327,6 +327,7 @@ Imported on demand, never by `import epione`; listed here without autodoc pages 
 | HINT differential footprinting (TF activity, per-TF profiles) | {func}`epione.pl.plot_hint_differential`, {func}`epione.pl.plot_hint_profile` |
 | Peak-to-gene arc plot | {func}`epione.pl.plot_peak2gene` |
 | Grouped genome browser track (ArchR `plotBrowserTrack`) | {func}`epione.pl.plot_browser_track`, {func}`epione.pl.browser_track_coverage` |
+| Interactive genome browser (igv.js; Jupyter, docs, standalone HTML) | {func}`epione.pl.igv_browser`, {class}`epione.pl.IGVBrowser` |
 | Marker / peak-to-gene heatmaps (ArchR) | {func}`epione.pl.marker_heatmap`, {func}`epione.pl.peak2gene_heatmap` |
 | Peak-annotation enrichment heatmap | {func}`epione.pl.enrich_heatmap` |
 | HOMER motif table | {func}`epione.pl.homer_motif_table` |
