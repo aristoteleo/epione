@@ -99,6 +99,7 @@ linked above.
 | Task | Functions |
 |---|---|
 | LSI / iterative LSI | {func}`epione.tl.lsi`, {func}`epione.tl.iterative_lsi` |
+| Learned scATAC embeddings: scBasset (sequence CNN, PyTorch rewrite of the official code) and PeakVI (scvi-tools) (`pip install epione[multimodal]`) | {func}`epione.tl.scbasset`, {func}`epione.tl.peakvi` |
 | UMAP / t-SNE / PCA | {func}`epione.tl.umap`, {func}`epione.tl.tsne` (openTSNE / FIt-SNE), {func}`epione.pl.umap`, {func}`epione.pl.tsne`, {func}`epione.pl.pca`, {func}`epione.pl.diffmap`, {func}`epione.pl.draw_graph` |
 | Clustering (leiden / louvain / kmeans / RPH-kmeans / hierarchical) | {func}`epione.tl.clusters` |
 | Marker features per cluster | {func}`epione.tl.find_marker_features` |
@@ -267,6 +268,8 @@ Imported on demand, never by `import epione`; listed here without autodoc pages 
 | Official training recipe | `epione.models.chrombpnet.train_bias`, `train_chrombpnet` |
 | Prediction, official metrics, interpretation | `epione.models.chrombpnet.predict_regions`, `evaluate`, `contribution_scores`, `ism`, `marginal_footprint` |
 | ChromBPNet bias as a Tn5 bias backend for footprinting | `epi.tl.tn5_bias(method="chrombpnet")`, {class}`epione.tl.ChromBPNetBias` |
+| scBasset in PyTorch (official Keras layers and training recipe, no TensorFlow; official `.h5` weights load) | `epione.models.scbasset.ScBasset`, `ScBassetNet`, `load_keras_h5` |
+| scBasset preprocessing, denoised accessibility, motif-injection TF activity | `epione.models.scbasset.peak_sequences`, `ScBasset.impute`, `ScBasset.motif_score`, `motif_library` |
 | gReLU bridge: an Epione model as a gReLU `LightningModel` (needs `epione[grelu]`) | `epione.models.grelu.wrap`, `HEADS` |
 | Variant effects, ISM and attributions for Epione or gReLU models | `epione.models.grelu.predict_variant_effects`, `ism`, `attributions` |
 | Groups × peaks training data for gReLU | `epione.models.grelu.pseudobulk_anndata` |

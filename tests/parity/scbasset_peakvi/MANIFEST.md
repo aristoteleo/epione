@@ -144,4 +144,83 @@ None was added, so there is nothing to gate.
 
 ## Results
 
-(appended after the runs)
+Raw outputs: `results/*.json`.
+
+### G0 · preprocessing: PASS
+
+| id | result |
+|---|---|
+| G0a | peak table identical (29,542 peaks) |
+| G0b | 0 mismatches at A/C/G/T positions. 201 positions are not A/C/G/T; they are random on both sides and all lie in 0-3. |
+| G0c | sparsity pattern of the binary targets identical in train, val and test; Epione values all 1 |
+| G0d | train / test / val ids identical |
+
+*Check-code fix, not a gate change.* The first G0c run reported a failure.
+The check script required the official `m_*.npz` values to be 1, but those
+files store counts. The official generator sets the target to 1 at every
+stored index, so the official binary targets are the sparsity pattern of
+`m`. The patterns were identical in that first run. The check was corrected
+to compare patterns; the gate itself is unchanged.
+
+### G1 · metric code and architecture: PASS
+
+| id | result |
+|---|---|
+| G1a | kNN accuracy \|Δ\| = 0; per-cell AUROC \|Δ\| = 0 |
+| G1b | Epione 0.91312662 vs Keras 0.91312665, \|Δ\| = 2.7e-8 |
+| G1c | official seed-0 weights in Epione's network: max \|Δ prob\| = 1.8e-6 on the 1,477 × 9,631 test predictions (CPU); embedding and intercept identical |
+
+### G2 · scBasset, Epione vs official, 3 seeds each, 200-epoch cap: PASS (5/5)
+
+No run stopped early: every run used all 200 epochs. The best training-AUC
+epoch fell between 195 and 198 on both sides, with a best training AUC of
+0.805 for Epione and 0.804 for the official code. Mean wall time per run on
+the shared H100: Epione 72 min, official about 105 min.
+
+| metric | Epione mean ± SD | official mean ± SD | \|Δ\| | tolerance | result |
+|---|---|---|---|---|---|
+| ARI | 0.482 ± 0.054 | 0.450 ± 0.045 | 0.032 | 0.109 | pass |
+| AMI | 0.664 ± 0.014 | 0.640 ± 0.012 | 0.024 | 0.030 | pass |
+| kNN accuracy | 0.805 ± 0.003 | 0.794 ± 0.007 | 0.010 | 0.020 | pass |
+| silhouette | 0.063 ± 0.001 | 0.059 ± 0.003 | 0.005 | 0.030 | pass |
+| test AUROC | 0.669 ± 0.003 | 0.672 ± 0.003 | 0.003 | 0.010 | pass |
+
+Per seed (Epione / official):
+
+| seed | ARI | AMI | kNN acc | silhouette | test AUROC |
+|---|---|---|---|---|---|
+| 0 | 0.422 / 0.434 | 0.648 / 0.643 | 0.803 / 0.801 | 0.062 / 0.056 | 0.667 / 0.676 |
+| 1 | 0.529 / 0.415 | 0.672 / 0.627 | 0.808 / 0.789 | 0.064 / 0.058 | 0.672 / 0.672 |
+| 2 | 0.494 / 0.501 | 0.671 / 0.649 | 0.803 / 0.793 | 0.063 / 0.062 | 0.668 / 0.670 |
+
+### P1 · PeakVI wrapper vs direct scvi-tools (CPU, 10 epochs): PASS
+
+Latent max \|Δ\| = 0 (bitwise identical).
+
+### P2 · PeakVI wrapper vs direct scvi-tools (GPU, seeds 0-2, default training): PASS (4/4)
+
+The latent spaces are bitwise identical for every seed (max \|Δ\| = 0), and so
+are all four metrics. Early stopping ended the runs at epochs 223, 241 and 216
+on both sides; each run took about 8.5 min.
+
+| metric | Epione = direct, mean ± SD | \|Δ\| | result |
+|---|---|---|---|
+| ARI | 0.460 ± 0.021 | 0 | pass |
+| AMI | 0.717 ± 0.005 | 0 | pass |
+| kNN accuracy | 0.920 ± 0.002 | 0 | pass |
+| silhouette | 0.143 ± 0.002 | 0 | pass |
+
+### Information (no gate) · motif-injection TF activity
+
+- **Port.** Official seed-0 weights loaded into Epione give the same scores
+  as the official `motif_score`, with r = 1.0000 for all six TFs tested.
+- **Per-lineage means.** Mean z-scores in B, monocyte and T cells over three
+  seeds per side (`results/motif_seeds.txt`):
+  - SPI1 and CEBPA are monocyte-high on every run.
+  - TCF7 and TBX21 are T-high on every run.
+  - PAX5 in B cells is unstable on both sides: from −2.0 to 0.2 for the
+    official code and from −3.1 to 0.1 for Epione. EBF1 is unstable in the
+    same way.
+- **Reading.** At the 200-epoch cap, B-cell TF activities are not
+  reproducible from seed to seed with either implementation. This is a
+  property of the model at this budget, not a port difference.
