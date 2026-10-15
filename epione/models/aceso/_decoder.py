@@ -106,8 +106,10 @@ def trainable_state(model) -> dict:
     """every trained parameter (LoRA / Locon adapters incl. MoLoRA experts, cell-state hypernetworks / gate, FiLM head)
     and the BatchNorm running statistics: upstream freezes BN only during warm-up, so Borzoi's / Flashzoi's BN
     statistics change during training and the model is wrong without them (2026-10-15: a checkpoint without them
-    scored val r 0.004 instead of 0.16; AlphaGenome's RMSBatchNorm never updates its statistics)."""
+    scored val r 0.004 instead of 0.16; AlphaGenome's RMSBatchNorm never updates its statistics); and the MoLoRA
+    gate bias (``balance="bias"``)."""
     keep = {n for n, p in model.named_parameters() if p.requires_grad} | _bn_buffer_names(model)
+    keep |= {n for n, _ in model.named_buffers() if n.endswith("gate_bias")}          # MoLoRA balance="bias"
     return {k: v for k, v in model.state_dict().items() if k in keep}
 
 

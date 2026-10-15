@@ -24,7 +24,13 @@ gate. The MLP gate also starts uniform and, with identical experts, receives alm
 first Borzoi run its per-cell pi stayed within 0.001 of 1/K for 1,250 steps while the experts diverged (an
 average of experts, not routing). The prototype gate routes cell groups to different experts from step 0,
 so each expert is trained mainly by its own cells. A load-balancing penalty (squared coefficient of variation of the mean
-gate over the cells of a batch; Shazeer et al. 2017) keeps all experts in use.
+gate over the cells of a batch; Shazeer et al. 2017) keeps all experts in use (``balance="aux"``). Its weight must
+be set relative to the task loss: with scooby's Poisson-multinomial loss (~1e-4) the default 0.01 dominated and drove
+every cell's gate to uniform (Flashzoi run 2026-10-15: per-cell entropy ln K from step ~5,800, prototypes orthogonal
+to all states). ``balance="bias"`` is the auxiliary-loss-free alternative (Wang et al. 2024, arXiv:2408.15664; used in
+DeepSeek-V3): a per-expert bias b_k, not trained by gradient, is added to the gate logits and moved after every
+optimizer step by ``bias_rate * sign(1/K - load_k)`` (load = mean gate over the cells of the step). Deviation from the
+paper: there the bias only enters the top-K selection; the gate here is dense (no selection), so it enters the weights.
 Only ATAC (``n_tracks = 1``) is supported.
 """
 from __future__ import annotations
@@ -45,7 +51,9 @@ class MoLoRAConfig:
     gate: str = "prototype"           # or "mlp"
     gate_tau: float = 0.1             # prototype gate temperature (cosine similarities in [-1, 1])
     gate_hidden: int = 128
-    balance_weight: float = 0.01
+    balance_weight: float = 0.01      # balance="aux" only
+    balance: str = "aux"              # "aux" (CV^2 penalty) or "bias" (auxiliary-loss-free bias, Wang et al. 2024)
+    bias_rate: float = 1e-3           # balance="bias": update rate u of the paper
     checkpoint_upper: bool = True     # activation checkpointing of the expert part (memory)
 
 
@@ -159,6 +167,7 @@ class AcesoDecoder(nn.Module):
                                                     nn.Linear(config.gate_hidden, K))
             nn.init.zeros_(self.cell_state_to_gate[-1].weight); nn.init.zeros_(self.cell_state_to_gate[-1].bias)
         self.last_gate = None
+        self.register_buffer("gate_bias", torch.zeros(K))               # balance="bias"; stays 0 otherwise
 
     @property
     def core(self):
@@ -204,7 +213,7 @@ class AcesoDecoder(nn.Module):
     def forward_cell_embs_only(self, cell_emb):
         """[1, n, d] -> (w [1, n, 1920, 1], b [1, n], pi [1, n, K])"""
         w, b = self.core.forward_cell_embs_only(cell_emb)
-        pi = torch.softmax(self.cell_state_to_gate(cell_emb).float(), dim=-1)
+        pi = torch.softmax(self.cell_state_to_gate(cell_emb).float() + self.gate_bias, dim=-1)
         self.last_gate = pi
         return w, b, pi
 
@@ -227,10 +236,17 @@ class AcesoDecoder(nn.Module):
     # ---- regulariser / bookkeeping
     def balance_loss(self):
         """squared coefficient of variation of the mean gate over the cells of the last batch"""
-        if self.last_gate is None:
+        if self.last_gate is None or self.config.balance != "aux":
             return torch.zeros(())
         imp = self.last_gate.reshape(-1, self.config.n_experts).mean(0)
         return self.config.balance_weight * (imp.var(unbiased=False) / imp.mean().pow(2))
+
+    @torch.no_grad()
+    def update_gate_bias(self, load):
+        """balance="bias": b_k += bias_rate * sign(mean load - load_k); ``load`` = mean gate per expert over the step"""
+        if self.config.balance == "bias":
+            load = load.to(self.gate_bias.device, torch.float32)
+            self.gate_bias += self.config.bias_rate * torch.sign(load.mean() - load)
 
     def param_groups(self, lr: float, cellstate_lr: float, weight_decay: float):
         """upstream ``add_weight_decay`` grouping; the gate joins the cell-state (high-lr) group."""
