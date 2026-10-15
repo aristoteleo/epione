@@ -1,11 +1,11 @@
 """scBasset / PeakVI parity gates (see MANIFEST.md). Epione env (no TensorFlow).
 
 Layout under $EPIONE_SCBASSET_PARITY_DIR:
-    data/atac_ad.h5ad             shared input (reference/prep_input.py)
+    data/atac_ad.h5ad             shared input (scbasset_ref/scripts/prep_input.py, outside the repo)
     data/processed/               official scbasset_preprocess.py output
-    runs/official_s{0,1,2}/       official training + reference/export_official.py
+    runs/official_s{0,1,2}/       official training + epione_dev/scbasset_ref/reference_scripts/export_official.py (TF reference env, kept outside the repo)
     runs/epione_s{0,1,2}/         run_epione.py
-    runs/keras_auc.npz            reference/keras_auc.py
+    runs/keras_auc.npz            epione_dev/scbasset_ref/reference_scripts/keras_auc.py
 $HG38_FASTA is the GRCh38 FASTA (epi.data.hg38).
 
     python parity_check.py g0 | g1 | g2 | p1 | p2 | info   [--json OUT]
