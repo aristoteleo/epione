@@ -30,7 +30,7 @@ not changed. Any amendment is dated, written here before the re-run, and reporte
 Both use the FASTA of `refdata-cellranger-arc-GRCh38-2020-A-2.0.0` for every tool, the
 whitelists shipped with Cell Ranger ATAC (`737K-cratac-v1`, `737K-arc-v1`), and 16
 threads. Epione runs use the defaults of `fastq_to_fragments` (MAPQ ≥ 30 on both mates,
-insert ≤ 2000 bp, posterior ≥ 0.975, pseudocount 1, adapter trimming only for bowtie2)
+insert ≤ 2000 bp, posterior ≥ 0.975, pseudocount 1, adapter trimming only for bowtie2 — see amendment A1)
 with `aligner` in `chromap`, `bwa-mem2`, `bowtie2`.
 
 ## Fixed definitions
@@ -83,6 +83,26 @@ Notes fixed in advance:
 * Speed: wall time and peak RSS of every run (Cell Ranger and each aligner, 16 threads,
   same node; index building reported separately) are reported next to the gates; they
   are not gates.
+
+## Amendments (dated, registered before the re-run they apply to)
+
+* **A1 — 2026-10-15, implementation default, not a threshold.** The first D1 bwa-mem2
+  run (no adapter trimming, as pre-registered above) failed G4: median per-cell
+  fragment Jaccard 0.859 < 0.90, while chromap (0.974) and bowtie2 with fastp
+  trimming (0.966) passed. Diagnosis on chr1: the fragments that differ are short
+  (median 36 bp vs 125 bp overall, reads are 50 / 49 bp), and of the 26 222
+  Cell Ranger-only fragments with a same-start, same-cell bwa-mem2 counterpart, 22 002
+  (84 %) end 1–3 bp further out in bwa-mem2 (the mirror image holds for same-end
+  pairs), i.e.
+  local alignment extending into untrimmed adapter whose first bases match the genome
+  by chance. Cell Ranger trims adapters before bwa. The default of
+  `fastq_to_fragments` is changed to trim with fastp for bwa-mem2 too
+  (`trim_adapters="auto"` now means trimming for bwa-mem2 and bowtie2). bwa-mem2 is
+  re-run on D1 and run on D2 with the new default; the failing first run is reported
+  next to it. All thresholds unchanged.
+* **A2 — 2026-10-15, reference version.** SnapATAC2 2.9.0 (latest) has no installable
+  build on this cluster (its `macs3` dependency fails to build); 2.8.0, the newest
+  wheel that installs, is used for G7. `make_fragment_file` arguments as above.
 
 ## Results (appended after the run; thresholds above unchanged)
 
