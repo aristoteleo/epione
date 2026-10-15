@@ -32,6 +32,7 @@ from ._marker_heatmap import (
     marker_heatmap, marker_heatmap_matrix, peak2gene_heatmap, prepare_peak2gene_heatmap,
 )
 from ._enrich_heatmap import enrich_heatmap
+from ._spatial import spatial, spatial_qc
 
 # Footprint plot re-exported from tl (same object — plot is the
 # natural consumer of the Footprint dataclass that get_footprints
@@ -66,6 +67,7 @@ def plot_hint_profile(*args, **kwargs):
     return _fp(*args, **kwargs)
 
 __all__ = [
+    "spatial", "spatial_qc",
     "plot_tf_binding_score",
     "plot_hint_differential", "plot_hint_profile",
     "frag_size_distr", "tss_enrichment", "fragment_histogram", "plot_joint",

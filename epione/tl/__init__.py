@@ -49,6 +49,11 @@ _HINT_ATTRS = {
     "load_hint_bias_table", "load_hint_hmm",
 }
 _HINT_PLOT_ATTRS = {"plot_hint_differential", "plot_hint_profile"}
+# SpatialGlue (AGPL-3.0 port; needs torch) -- spatial multi-omics integration.
+_SPATIALGLUE_ATTRS = {
+    "spatialglue", "spatialglue_preprocess", "spatialglue_graphs",
+    "lsi_spatialglue", "clr_normalize_each_cell",
+}
 
 
 def __getattr__(name):
@@ -84,6 +89,9 @@ def __getattr__(name):
         return getattr(mod, name)
     if name in _HINT_PLOT_ATTRS:
         mod = importlib.import_module("._hint_plot", __name__)
+        return getattr(mod, name)
+    if name in _SPATIALGLUE_ATTRS:
+        mod = importlib.import_module("._spatialglue", __name__)
         return getattr(mod, name)
     if name in _SCORE_BIGWIG_ATTRS:
         mod = importlib.import_module("._score_bigwig", __name__)
@@ -157,6 +165,7 @@ from ._module_score import add_module_score, confusion_matrix
 from ._bulk_projection import LSIModel, project_bulk_atac, deconvolve_bulk
 from ._multimodal import combined_dims, wnn, multivi
 from ._tsne import tsne
+from ._spatial import spatial_neighbors, spatial_smooth, spatial_domains, spatial_moran
 
 
 __all__ = [
@@ -227,4 +236,7 @@ __all__ = [
     "wnn",
     "multivi",
     "tsne",
+    "spatial_neighbors", "spatial_smooth", "spatial_domains", "spatial_moran",
+    "spatialglue", "spatialglue_preprocess", "spatialglue_graphs",
+    "lsi_spatialglue", "clr_normalize_each_cell",
 ]
