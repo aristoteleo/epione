@@ -270,3 +270,16 @@ def test_moods_exact_scan(tdev, delta_scale, monkeypatch):
     assert np.array_equal(ref, got)
 
 
+
+
+@pytest.mark.parametrize("metric", ["euclidean", "cosine"])
+def test_neighbors_umap_connectivities_torch_match_cpu(peaks, metric, tdev):
+    pytest.importorskip("umap")
+    import epione as epi
+    a, b = peaks.copy(), peaks.copy()
+    emb = (np.random.default_rng(2).normal(size=(peaks.n_obs, 10)) * 50).astype(np.float32)
+    a.obsm["E"] = emb; b.obsm["E"] = emb
+    epi.pp.neighbors(a, n_neighbors=12, use_rep="E", metric=metric)
+    epi.pp.neighbors(b, n_neighbors=12, use_rep="E", metric=metric, device=tdev)
+    np.testing.assert_allclose(a.obsp["connectivities"].toarray(),
+                               b.obsp["connectivities"].toarray(), atol=1e-4)

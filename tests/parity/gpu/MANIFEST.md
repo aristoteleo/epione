@@ -147,8 +147,13 @@ Observations (not gates):
   (max 0.82; 7,332 rows euclidean, 10,702 rows cosine). The CPU path's sklearn search on
   float32 input returns a non-zero self-distance (up to 2.4e-7 euclidean, 4.2e-7 cosine) for
   10.6 % (euclidean) / 38.5 % (cosine) of the cells, which `umap.fuzzy_simplicial_set` takes as
-  the nearest-neighbour distance rho; the GPU search sets the self-distance to exactly 0. This is
-  a pre-existing property of the CPU path, left unchanged here (G0).
+  the nearest-neighbour distance rho; the GPU search sets the self-distance to exactly 0. This was
+  a pre-existing property of the CPU path, left unchanged in this PR (G0).
+  **Follow-up fix (fix/knn-self-distance):** the CPU path now also makes each cell its own first
+  neighbour at distance exactly 0 (`_set_self_distance_zero`). Rerun on D1: connectivities
+  CPU vs GPU max |diff| 0.816 -> 6.5e-6 (euclidean) and 0.793 -> 1.0e-5 (cosine); rows with
+  |diff| > 1e-3: 7,332 -> 0 and 10,702 -> 0. This intentionally changes CPU
+  `obsp["connectivities"]` (and anything built on it: UMAP, Leiden) relative to G0.
 
 ### G13: wall time
 
