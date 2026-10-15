@@ -30,7 +30,7 @@ not changed. Any amendment is dated, written here before the re-run, and reporte
 Both use the FASTA of `refdata-cellranger-arc-GRCh38-2020-A-2.0.0` for every tool, the
 whitelists shipped with Cell Ranger ATAC (`737K-cratac-v1`, `737K-arc-v1`), and 16
 threads. Epione runs use the defaults of `fastq_to_fragments` (MAPQ ≥ 30 on both mates,
-insert ≤ 2000 bp, posterior ≥ 0.975, pseudocount 1, adapter trimming only for bowtie2 — see amendment A1)
+insert ≤ 2000 bp, posterior ≥ 0.975, pseudocount 1, adapter trimming only for bowtie2 — see amendments A1, A3)
 with `aligner` in `chromap`, `bwa-mem2`, `bowtie2`.
 
 ## Fixed definitions
@@ -99,10 +99,32 @@ Notes fixed in advance:
   `fastq_to_fragments` is changed to trim with fastp for bwa-mem2 too
   (`trim_adapters="auto"` now means trimming for bwa-mem2 and bowtie2). bwa-mem2 is
   re-run on D1 and run on D2 with the new default; the failing first run is reported
-  next to it. All thresholds unchanged.
+  next to it. All thresholds unchanged. *(Superseded by A3 before that re-run was
+  made.)*
 * **A2 — 2026-10-15, reference version.** SnapATAC2 2.9.0 (latest) has no installable
   build on this cluster (its `macs3` dependency fails to build); 2.8.0, the newest
   wheel that installs, is used for G7. `make_fragment_file` arguments as above.
+
+* **A3 — 2026-10-15, implementation fix; supersedes A1's diagnosis and default
+  change.** Before re-running with A1, G7 was run on the BAM of the failing first
+  bwa-mem2 run (no trimming): Epione `bam_to_fragments` vs SnapATAC2 gave record
+  Jaccard 0.879, and SnapATAC2's fragments from that same BAM scored a per-cell Jaccard
+  of 0.975 against Cell Ranger. So the bwa-mem2 G4 failure came from how Epione turned a
+  read pair into a fragment, not from missing trimming. Two errors, both fixed:
+  1. Epione took the leftmost aligned base and the rightmost aligned end over *both*
+     mates. On short fragments each mate runs into adapter at its 3' end, and bwa-mem2
+     extends a few bases into it, past the other mate's 5' end. The fragment is now
+     bounded by the forward mate's 5' end and the reverse mate's 5' end.
+  2. Epione used aligned 5' ends. For mates soft-clipped at the 5' end, Cell Ranger
+     and SnapATAC2 use the unclipped 5' end: among Epione-only records on chr1, 7.6 %
+     are in Cell Ranger's file, against 91 % of SnapATAC2's variant of the same
+     fragment. The 5' ends are now unclipped.
+  The `trim_adapters="auto"` default is back to the pre-registered one (trim for
+  bowtie2 only). All D1 runs (chromap, bwa-mem2, bowtie2) and all D2 runs are made
+  again with the fixed code, and only those results are scored. The failing first
+  bwa-mem2 run is reported. Thresholds unchanged. Caveat: this fix was found by
+  diagnosing the D1 gates. D2 had not been run by any aligner when it was made, so D2
+  is the held-out check.
 
 ## Results (appended after the run; thresholds above unchanged)
 
