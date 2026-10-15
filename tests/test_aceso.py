@@ -143,3 +143,20 @@ def test_alphagenome_locon_keeps_length_and_starts_at_zero():
         with torch.no_grad():
             m.locon_up.weight.normal_()
         assert m(x).shape == conv(x).shape                   # same output length as the original
+
+
+def test_prototype_gate_routes_clusters_to_different_experts():
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("sklearn")
+    import numpy as np
+    from epione.models.aceso._molora import PrototypeGate
+    rng = np.random.default_rng(0)
+    centres = rng.normal(size=(4, 10))
+    Z = np.vstack([c + 0.1 * rng.normal(size=(50, 10)) for c in centres]).astype(np.float32)
+    g = PrototypeGate(10, 4, tau=0.1)
+    sizes = g.init_kmeans(Z)
+    assert sorted(sizes.tolist()) == [50, 50, 50, 50]
+    pi = torch.softmax(g(torch.from_numpy(Z)), -1)
+    top = pi.argmax(1).numpy().reshape(4, 50)
+    assert all(len(set(r)) == 1 for r in top) and len({r[0] for r in top}) == 4    # each cluster -> its own expert
+    assert float(pi.max(1).values.mean()) > 0.9                                     # far from uniform

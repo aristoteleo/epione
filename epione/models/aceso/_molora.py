@@ -13,12 +13,17 @@ of cells:
                          batch dimension). Each expert adds its own low-rank update to the modules
                          upstream LoRA adapts there (to_q, to_v, the feed-forward linears and the
                          non-separable 1x1 convolutions); -> K sequence embeddings E_k;
-  gate                   pi(z) = softmax(MLP(z)) over the K experts;
+  gate                   prototype gate (default): pi(z) = softmax(cos(z, p_k) / tau) over K learnable
+                         prototypes p_k, initialised by k-means of the cell states (``init_prototypes``);
+                         or ``gate="mlp"``: pi(z) = softmax(MLP(z)), last layer zero-initialised;
   cell read-out          upstream ``cell_state_to_conv`` hypernetwork (w_c, b_c) applied to the
                          mixed embedding: y_c = softplus(w_c . sum_k pi_ck E_k + b_c).
 
-Expert updates are zero-initialised and the gate starts uniform, so at step 0 the model equals
-scooby (all E_k identical). A load-balancing penalty (squared coefficient of variation of the mean
+Expert updates are zero-initialised, so at step 0 the model equals scooby (all E_k identical) whatever the
+gate. The MLP gate also starts uniform and, with identical experts, receives almost no gradient: in the
+first Borzoi run its per-cell pi stayed within 0.001 of 1/K for 1,250 steps while the experts diverged (an
+average of experts, not routing). The prototype gate routes cell groups to different experts from step 0,
+so each expert is trained mainly by its own cells. A load-balancing penalty (squared coefficient of variation of the mean
 gate over the cells of a batch; Shazeer et al. 2017) keeps all experts in use.
 Only ATAC (``n_tracks = 1``) is supported.
 """
@@ -37,6 +42,8 @@ class MoLoRAConfig:
     n_expert_blocks: int = 2          # transformer blocks (of 8) in the expert part
     rank: int = 8                     # upstream LoRA default r / alpha
     alpha: float = 8.0
+    gate: str = "prototype"           # or "mlp"
+    gate_tau: float = 0.1             # prototype gate temperature (cosine similarities in [-1, 1])
     gate_hidden: int = 128
     balance_weight: float = 0.01
     checkpoint_upper: bool = True     # activation checkpointing of the expert part (memory)
@@ -99,6 +106,30 @@ def _expert_targets(scooby, n_expert_blocks: int):
     return t
 
 
+class PrototypeGate(nn.Module):
+    """pi(z) = softmax(cos(z, p_k) / tau); prototypes p_k learnable, k-means initialised"""
+
+    def __init__(self, dim: int, n_experts: int, tau: float):
+        super().__init__()
+        self.tau = tau
+        self.prototypes = nn.Parameter(torch.randn(n_experts, dim) / dim ** 0.5)
+
+    @torch.no_grad()
+    def init_kmeans(self, states, seed: int = 0):
+        import numpy as np
+        from sklearn.cluster import KMeans
+        X = np.asarray(states, dtype=np.float32)
+        X = X / (np.linalg.norm(X, axis=1, keepdims=True) + 1e-12)
+        km = KMeans(self.prototypes.shape[0], n_init=10, random_state=seed).fit(X)
+        self.prototypes.copy_(torch.as_tensor(km.cluster_centers_, dtype=self.prototypes.dtype))
+        return np.bincount(km.labels_, minlength=self.prototypes.shape[0])
+
+    def forward(self, z):
+        z = F.normalize(z.float(), dim=-1)
+        p = F.normalize(self.prototypes.float(), dim=-1)
+        return z @ p.T / self.tau                                    # logits; softmax in the caller
+
+
 class AcesoDecoder(nn.Module):
     """MoLoRA decoder around a (peft-wrapped) upstream scooby model; same call interface as scooby:
     ``forward(sequence, cell_emb)``, ``forward_seq_to_emb``, ``forward_cell_embs_only``,
@@ -121,9 +152,12 @@ class AcesoDecoder(nn.Module):
             base = parent._modules[attr]
             parent._modules[attr] = ExpertLoRA(base, K, config.rank, config.alpha, rows=rows)
         self.n_low = depth - config.n_expert_blocks
-        self.cell_state_to_gate = nn.Sequential(nn.Linear(cell_emb_dim, config.gate_hidden), nn.GELU(),
-                                                nn.Linear(config.gate_hidden, K))
-        nn.init.zeros_(self.cell_state_to_gate[-1].weight); nn.init.zeros_(self.cell_state_to_gate[-1].bias)
+        if config.gate == "prototype":
+            self.cell_state_to_gate = PrototypeGate(cell_emb_dim, K, config.gate_tau)
+        else:
+            self.cell_state_to_gate = nn.Sequential(nn.Linear(cell_emb_dim, config.gate_hidden), nn.GELU(),
+                                                    nn.Linear(config.gate_hidden, K))
+            nn.init.zeros_(self.cell_state_to_gate[-1].weight); nn.init.zeros_(self.cell_state_to_gate[-1].bias)
         self.last_gate = None
 
     @property
@@ -184,6 +218,11 @@ class AcesoDecoder(nn.Module):
     def forward(self, sequence, cell_emb):
         p = self.forward_cell_embs_only(cell_emb)
         return self.forward_convs_on_emb(self.forward_seq_to_emb(sequence), *p)
+
+    def init_prototypes(self, states, seed: int = 0):
+        """prototype gate: k-means (K clusters, cosine via L2-normalised states) of ``states`` (cells x d)"""
+        assert isinstance(self.cell_state_to_gate, PrototypeGate)
+        self.cell_state_to_gate.init_kmeans(states, seed)
 
     # ---- regulariser / bookkeeping
     def balance_loss(self):
