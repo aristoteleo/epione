@@ -164,8 +164,18 @@ doublets = [
     # epi.pp.archr_doublets: Louvain clustering inside the iterative LSI.
     'igraph',
 ]
+gpu = [
+    # torch backend of every `device=` argument (epi.tl.lsi / iterative_lsi /
+    # compute_deviations / add_motif_matrix / peak_to_gene, epi.pp.neighbors).
+    # Install a CUDA build of torch for your driver (https://pytorch.org).
+    # The optional backend="rapids" path additionally needs
+    # `pip install "rapids-singlecell[rapids-cu12]"` (glibc >= 2.28); it is
+    # deliberately not listed here.
+    'torch>=2.0',
+    'MOODS-python',  # log-odds matrices / thresholds for the GPU motif scan
+]
 full = [
-    'epione[diffexp,motif,footprint,upstream,scenic,pando,translate,multimodal,doublets,higashi,cnv,spatial]',
+    'epione[diffexp,motif,footprint,upstream,scenic,pando,translate,multimodal,doublets,higashi,cnv,spatial,gpu]',
 ]
 
 

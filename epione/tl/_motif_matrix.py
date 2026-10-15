@@ -96,6 +96,34 @@ def _coerce_pwms_to_biopython(pwms):
     return list(pwms)
 
 
+def _match_motif_torch(adata_pv, motifs, *, pvalue, background, device,
+                       pseudocounts: float = 0.0001, verbose: bool = True):
+    """GPU twin of :func:`pychromvar.match_motif` (same matrices, same
+    thresholds, same background) returning the dense uint8 peak x motif
+    matrix pychromvar writes to ``varm['motif_match']``."""
+    import MOODS.tools
+    from ..core._gpu import torch_device
+    from ._motif_scan_torch import moods_any_hit
+
+    seqs = list(adata_pv.uns["peak_seq"])
+    if background == "subject":
+        bg = MOODS.tools.bg_from_sequence_dna("".join(seqs), 0)
+    else:  # "even" and pychromvar's (unimplemented) "genome"
+        bg = MOODS.tools.flat_bg(4)
+    n = len(motifs)
+    matrices = [None] * 2 * n
+    thresholds = [None] * 2 * n
+    for i, motif in enumerate(motifs):
+        counts = (tuple(motif.counts['A']), tuple(motif.counts['C']),
+                  tuple(motif.counts['G']), tuple(motif.counts['T']))
+        matrices[i] = MOODS.tools.log_odds(counts, bg, pseudocounts)
+        matrices[i + n] = MOODS.tools.reverse_complement(matrices[i])
+        thresholds[i] = MOODS.tools.threshold_from_p(matrices[i], bg, pvalue)
+        thresholds[i + n] = thresholds[i]
+    return moods_any_hit(seqs, matrices, thresholds, bg, n,
+                         dev=torch_device(device), verbose=verbose)
+
+
 def add_motif_matrix(
     adata: AnnData,
     genome_fasta: Optional[str] = None,
@@ -111,6 +139,7 @@ def add_motif_matrix(
     window: Optional[int] = None,
     key_added: str = "motif",
     verbose: bool = True,
+    device: str = "cpu",
 ) -> AnnData:
     """Scan peaks against PWMs; store sparse peak × motif binary matrix.
 
@@ -141,6 +170,14 @@ def add_motif_matrix(
         matrix is dumped to this file (``.npz``). On later runs with the
         same ``adata.var_names`` hash the cache is loaded instead of
         re-scanning. Independent of ``motif_database``.
+    device
+        ``"cpu"`` (default) scans with MOODS through pychromvar. ``"cuda"``
+        (``"cuda:N"``, or ``"auto"``) scans on the GPU with torch, using the
+        MOODS log-odds matrices and p-value thresholds and reproducing MOODS's
+        float64 scoring order and edge rules, so the hit matrix is identical
+        to the CPU one (peaks with ACGT runs shorter than 7 bp are handed to
+        MOODS). Only affects a fresh scan; the cache and database paths are
+        unchanged. Needs ``pip install epione[gpu]`` and MOODS.
     key_added
         - ``adata.varm[key_added]`` stores the sparse boolean matrix
           (same layout as :func:`pychromvar.match_motif` writes to
@@ -227,9 +264,17 @@ def add_motif_matrix(
 
     motifs = _coerce_pwms_to_biopython(pwms)
     _console(f"{len(motifs):,} motifs | pvalue={pvalue:.0e}", verbose)
-    pv.match_motif(adata_pv, motifs=motifs, p_value=pvalue,
-                   background=background,
-                   genome_file=genome_fasta if background == "genome" else None)
+    from ..core._gpu import resolve_device, is_torch_device
+    device = resolve_device(device)
+    if is_torch_device(device):
+        _console(f"scanning on {device} (torch, MOODS-exact)", verbose)
+        adata_pv.varm["motif_match"] = _match_motif_torch(
+            adata_pv, motifs, pvalue=pvalue, background=background,
+            device=device, verbose=verbose)
+    else:
+        pv.match_motif(adata_pv, motifs=motifs, p_value=pvalue,
+                       background=background,
+                       genome_file=genome_fasta if background == "genome" else None)
 
     M = adata_pv.varm["motif_match"]
     if not sp.issparse(M):

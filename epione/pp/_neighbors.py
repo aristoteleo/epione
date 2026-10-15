@@ -196,6 +196,8 @@ def neighbors(
     random_state: _LegacyRandom = 0,
     key_added: str | None = None,
     copy: bool = False,
+    device: str = "cpu",
+    backend: Literal["epione", "rapids"] = "epione",
 ) -> AnnData | None:
     """
     Compute the nearest neighbors distance matrix and neighborhood graph.
@@ -236,11 +238,41 @@ def neighbors(
         .obsp['connectivities'] respectively.
     copy
         Return a copy instead of writing to adata.
-    
+    device
+        ``"cpu"`` (default) searches with ``transformer`` as described
+        above. ``"cuda"`` (``"cuda:N"``, or ``"auto"``) runs an exact
+        brute-force search with torch on the GPU, in query blocks sized to
+        the GPU memory budget; distances are computed in float64, like
+        sklearn's brute-force euclidean search, so the neighbour sets match
+        the exact CPU search. Supported metrics: euclidean, sqeuclidean,
+        cosine, correlation, manhattan / cityblock / l1, chebyshev,
+        minkowski. The UMAP / Gaussian connectivities are then computed on
+        the CPU from that kNN graph, exactly as for ``device="cpu"``.
+        Ignored when ``transformer`` is an object. Needs
+        ``pip install epione[gpu]``.
+    backend
+        ``"epione"`` (default) uses the implementation above (on ``device``).
+        ``"rapids"`` hands the whole call to
+        :func:`rapids_singlecell.pp.neighbors` (brute-force cuVS search and
+        cuML / cupy connectivities) when ``rapids_singlecell`` is installed,
+        see :doc:`/gpu`; the outputs land in the same ``.uns`` / ``.obsp``
+        keys.
+
     Returns
     -------
     Returns None if copy=False, else returns an AnnData object.
     """
+    if backend == "rapids":
+        from ..core._rapids import rapids_neighbors
+        return rapids_neighbors(
+            adata, n_neighbors=n_neighbors, n_pcs=n_pcs, use_rep=use_rep,
+            metric=metric, metric_kwds=metric_kwds, random_state=random_state,
+            key_added=key_added, copy=copy,
+        )
+    if backend != "epione":
+        raise ValueError(f"backend must be 'epione' or 'rapids', got {backend!r}")
+    from ..core._gpu import resolve_device, is_torch_device
+    device = resolve_device(device)
     print(f"Computing neighbors with n_neighbors={n_neighbors}")
     
     adata = adata.copy() if copy else adata
@@ -254,7 +286,16 @@ def neighbors(
     X = _choose_representation(adata, use_rep=use_rep, n_pcs=n_pcs)
     
     # Setup transformer
-    if transformer is None or transformer == "sklearn":
+    if is_torch_device(device) and not hasattr(transformer, "fit_transform"):
+        from ..core._gpu import torch_device
+        from ..core._gpu_ops import knn
+        if not isinstance(metric, str):
+            raise ValueError("device='cuda' needs a named metric, not a callable")
+        indices, distances = knn(
+            X, min(n_neighbors, X.shape[0] - 1), dev=torch_device(device),
+            metric=metric, metric_kwds=dict(metric_kwds),
+        )
+    elif transformer is None or transformer == "sklearn":
         from sklearn.neighbors import NearestNeighbors
         
         nn = NearestNeighbors(

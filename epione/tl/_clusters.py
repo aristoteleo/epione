@@ -14,6 +14,7 @@ def clusters(
     hierarchical_kwargs=None,
     use_rep:str='X_pca',
     key_added:str='clusters',
+    backend:str='epione',
     **kwargs
 ):
     r"""
@@ -39,6 +40,13 @@ def clusters(
         Use the representation of the data.
     key_added : str
         Key to store the cluster labels.
+    backend : {'epione', 'rapids'}
+        ``'epione'`` (default) runs the implementations below.
+        ``'rapids'`` (``method='leiden'`` only) runs cuGraph Leiden through
+        :func:`rapids_singlecell.tl.leiden` on the same neighbour graph;
+        needs ``rapids_singlecell`` installed (see the GPU acceleration
+        page). ``leiden_kwargs`` are passed through except ``flavor`` /
+        ``directed`` / ``partition_type``, which have no cuGraph equivalent.
     **kwargs
         Additional arguments for clustering algorithm.
         
@@ -129,6 +137,10 @@ def clusters(
         random_state: int
             Random seed for reproducibility.
     """
+    if backend not in ('epione', 'rapids'):
+        raise ValueError(f"backend must be 'epione' or 'rapids', got {backend!r}")
+    if backend == 'rapids' and method != 'leiden':
+        raise ValueError("backend='rapids' is available for method='leiden' only")
     if method == 'leiden':
         if leiden_kwargs is None:
             leiden_kwargs = {
@@ -136,6 +148,12 @@ def clusters(
             }
         else:
             leiden_kwargs['key_added'] = key_added
+        if backend == 'rapids':
+            from ..core._rapids import rapids_leiden
+            kw = {k: v for k, v in leiden_kwargs.items()
+                  if k not in ('flavor', 'directed', 'partition_type')}
+            rapids_leiden(adata, **kw)
+            return adata
         return leiden(adata, **leiden_kwargs)
     elif method == 'louvain':
         if louvain_kwargs is None:

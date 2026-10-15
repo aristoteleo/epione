@@ -104,9 +104,16 @@ def _tf_logidf(X, scale_to: float = 10000.0):
         return np.log1p(tf).astype(np.float32)
 
 
-def _randomized_svd(X, n_components: int, random_state: int = 0):
+def _randomized_svd(X, n_components: int, random_state: int = 0, device: str = "cpu"):
     """Randomized SVD returning U, s, Vt with largest singular values first."""
     n_components = int(min(n_components, min(X.shape) - 1))
+    if device != "cpu":
+        # torch port of sklearn's randomized_svd: same Gaussian test matrix
+        # (same RandomState), same LU / QR power iterations, same sign flip.
+        from ..core._gpu import torch_device
+        from ..core._gpu_ops import randomized_svd
+        return randomized_svd(X, n_components, dev=torch_device(device),
+                              random_state=random_state, n_iter="auto")
     U, s, Vt = sklearn.utils.extmath.randomized_svd(
         X, n_components=n_components,
         random_state=random_state, n_iter="auto",
@@ -219,20 +226,60 @@ def _variable_features_from_clusters(
 # Internal clustering helper
 # ---------------------------------------------------------------------------
 
+class _TorchKNNTransformer:
+    """Minimal sklearn-style kNN transformer for :func:`scanpy.pp.neighbors`:
+    exact cosine / euclidean search on the GPU. ``fit_transform`` returns the
+    ``(n, n)`` CSR distance graph with ``n_neighbors`` entries per row, self
+    first at distance 0, in increasing distance -- the layout scanpy reads
+    with its constant-nnz shortcut."""
+
+    def __init__(self, n_neighbors: int, metric: str, device: str):
+        self.n_neighbors = int(n_neighbors)
+        self.metric = metric
+        self.device = device
+
+    def get_params(self, deep: bool = True):
+        return {"n_neighbors": self.n_neighbors, "metric": self.metric}
+
+    def fit_transform(self, X):
+        from ..core._gpu import torch_device
+        from ..core._gpu_ops import knn
+        X = np.asarray(X)
+        n = X.shape[0]
+        k = min(self.n_neighbors, n)
+        idx, dist = knn(X, k, dev=torch_device(self.device), metric=self.metric)
+        return sp.csr_matrix(
+            (dist.ravel(), idx.ravel(), np.arange(0, n * k + 1, k)),
+            shape=(n, n),
+        )
+
+
 def _knn_leiden(
     emb: np.ndarray, n_neighbors: int, resolution: float, seed: int,
+    device: str = "cpu",
 ) -> np.ndarray:
-    """Build a cosine kNN graph on `emb` and run Leiden."""
+    """Build a cosine kNN graph on `emb` and run Leiden.
+
+    On a GPU device the kNN search is exact (torch brute force); on the CPU
+    scanpy chooses (pynndescent above 4,096 cells). Connectivities and Leiden
+    are scanpy's in both cases."""
     import scanpy as sc
     from anndata import AnnData as _A
 
     # Tiny adata with emb as .obsm["X_lsi"]
     tmp = _A(np.zeros((emb.shape[0], 1), dtype=np.float32))
     tmp.obsm["X_emb"] = emb.astype(np.float32)
-    sc.pp.neighbors(
-        tmp, use_rep="X_emb",
-        n_neighbors=int(n_neighbors), metric="cosine", random_state=seed,
-    )
+    if device != "cpu":
+        sc.pp.neighbors(
+            tmp, use_rep="X_emb",
+            n_neighbors=int(n_neighbors), metric="cosine", random_state=seed,
+            transformer=_TorchKNNTransformer(int(n_neighbors), "cosine", device),
+        )
+    else:
+        sc.pp.neighbors(
+            tmp, use_rep="X_emb",
+            n_neighbors=int(n_neighbors), metric="cosine", random_state=seed,
+        )
     sc.tl.leiden(
         tmp, resolution=float(resolution),
         random_state=seed, key_added="leiden",
@@ -266,6 +313,7 @@ def iterative_lsi(
     layer: Optional[str] = None,
     copy: bool = False,
     verbose: bool = True,
+    device: str = "cpu",
 ) -> Optional[AnnData]:
     """Perform ArchR-style iterative LSI on a cell-by-feature matrix.
 
@@ -317,6 +365,18 @@ def iterative_lsi(
         If True, work on and return a copy.
     verbose
         Print progress.
+    device
+        ``"cpu"`` (default) runs the NumPy / SciPy / sklearn implementation.
+        ``"cuda"`` (``"cuda:N"``, or ``"auto"``) runs each round's randomized
+        SVD with a torch port of sklearn's ``randomized_svd`` (same random
+        test matrix for the same ``seed``, so a single round agrees with the
+        CPU to floating-point rounding) and the kNN search of the
+        intermediate clustering as an exact GPU search. The CPU path lets
+        scanpy use approximate pynndescent search there, so with
+        ``iterations >= 2`` the intermediate clusters -- and hence the
+        variable features of later rounds -- can differ slightly from the
+        CPU run, as they do between CPU seeds. TF-logIDF, feature selection
+        and Leiden stay on the CPU. Needs ``pip install epione[gpu]``.
 
     Examples
     --------
@@ -338,6 +398,8 @@ def iterative_lsi(
     """
     if iterations < 1:
         raise ValueError("iterations must be >= 1")
+    from ..core._gpu import resolve_device
+    device = resolve_device(device)
 
     if copy:
         adata = adata.copy()
@@ -415,7 +477,8 @@ def iterative_lsi(
 
         # TF-logIDF + SVD
         X_norm = _tf_logidf(X_sub, scale_to=scale_to)
-        U, s, Vt = _randomized_svd(X_norm, n_components=n_components, random_state=seed + it)
+        U, s, Vt = _randomized_svd(X_norm, n_components=n_components, random_state=seed + it,
+                                   device=device)
 
         # Depth-correlation filter
         depth_fit = depth_all[fit_idx]
@@ -455,7 +518,8 @@ def iterative_lsi(
 
         if not is_final:
             res = resolutions[it]
-            clusters = _knn_leiden(emb, n_neighbors=n_neighbors, resolution=res, seed=seed + it)
+            clusters = _knn_leiden(emb, n_neighbors=n_neighbors, resolution=res, seed=seed + it,
+                                   device=device)
             iter_record["resolution"] = res
             iter_record["n_clusters"] = int(len(np.unique(clusters)))
 
