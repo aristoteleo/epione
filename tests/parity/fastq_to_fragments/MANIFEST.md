@@ -128,4 +128,71 @@ Notes fixed in advance:
 
 ## Results (appended after the run; thresholds above unchanged)
 
-_pending_
+Final code (after A3), 16 threads. D1 = atac_pbmc_500_nextgem (493 Cell Ranger cells,
+33.5 M read pairs), D2 = pbmc_granulocyte_sorted_3k ATAC (2 638 Cell Ranger cells, 77.2 M
+read pairs; 2 711 ARC cells for G8).
+
+| Gate | Output | Threshold | D1 chromap | D1 bwa-mem2 | D1 bowtie2 | D2 chromap | D2 bwa-mem2 | D2 bowtie2 | Pass |
+|---|---|---|---|---|---|---|---|---|---|
+| G1a | raw barcode per read | ≥ 0.9999 | 1.0 (33 535 381 reads) | | | 1.0 (77 215 568 reads) | | | yes |
+| G1b | corrected barcode per read | ≥ 0.999 | 0.99999997 (1 read differs) | | | 0.99999992 (6 reads differ) | | | yes |
+| G1c | corrected barcode, raw off whitelist | ≥ 0.98 | 0.9999995 (2.10 M reads) | | | 0.9999986 (4.23 M reads) | | | yes |
+| G2 | top-K barcodes vs Cell Ranger cells | ≥ 0.95 | 0.8925 | 0.8925 | 0.8925 | 0.9418 | 0.9418 | 0.9418 | **no** |
+| G3 | unique fragments per cell, Pearson | ≥ 0.99 | 0.999997 | 0.999997 | 0.999987 | 0.999996 | 0.999997 | 0.999996 | yes |
+| G4 | median per-cell fragment Jaccard | ≥ 0.80 / 0.90 / 0.75 | 0.9743 | 0.9910 | 0.9660 | 0.9680 | 0.9853 | 0.9617 | yes |
+| G5 | TSS enrichment per cell, Pearson | ≥ 0.95 | 0.9899 | 0.9991 | 0.9893 | 0.9931 | 0.9973 | 0.9937 | yes |
+| G6 | Leiden ARI on LSI | ≥ 0.75 | 0.9594 | 0.9102 | 0.8683 | 0.7950 | 0.9128 | 0.9387 | yes |
+| G7a | records vs SnapATAC2 2.8.0, same BAM | ≥ 0.999 | | 0.9823 | 0.99999 | | | | **no** (bwa-mem2) / yes (bowtie2) |
+| G7b | equal count column among shared records | ≥ 0.999 | | 0.99903 | 1.0 | | | | yes |
+| G8a | top-K (GEX-translated) vs ARC cells | ≥ 0.90 | | | | 0.9350 | | | yes |
+| G8b | fragments per ARC cell, Pearson | ≥ 0.99 | | | | 0.999997 | | | yes |
+
+First (pre-A3) bwa-mem2 run on D1, reported as required: G4 **0.859** (fail), G3 0.99991,
+G5 0.9984, G6 0.958.
+
+**Failures, diagnosed (thresholds unchanged)**
+
+* **G2, every aligner, both datasets: the gate definition, not Epione.** The same top-K
+  rule applied to *Cell Ranger's own* fragment file gives the same overlap with Cell
+  Ranger's cell calls (D1 0.8925, D2 0.9418, identical to Epione's numbers). The top-K
+  sets of Epione and Cell Ranger agree almost completely: Jaccard 1.0 for all D1 runs
+  and for D2 chromap / bowtie2, 0.9992 for D2 bwa-mem2. Cell Ranger's caller is not a
+  top-K rule (it fits a mixture model and removes gel-bead multiplets), and a 0.95
+  threshold on top-K against it was not attainable even for Cell Ranger itself. G8a,
+  which compares against ARC's calls, has the same control (ARC's own top-K: 0.9357 vs
+  Epione 0.9350).
+* **G7a on the bwa-mem2 BAM: a soft-clip convention difference, where Epione is the one
+  closer to Cell Ranger.** On the bowtie2 BAM (end-to-end alignments, no soft clips)
+  Epione and SnapATAC2 agree on 99.999 % of records, with identical counts. On
+  bwa-mem2's BAM (local alignment, soft clips) they differ in how a soft-clipped 5' end
+  is placed. Epione always uses the unclipped 5' end. SnapATAC2 2.8.0 does this for only
+  some reads (its differing records sit at ±2–5 bp and ±14–15 bp). On chr1 Epione's file
+  holds 99.4 % of Cell Ranger's records, SnapATAC2's 98.5 %. Of the records only Epione
+  has, 99.1 % are in Cell Ranger's file; of SnapATAC2's alternatives, 31.8 %. The counts
+  of shared records agree (G7b passes).
+* Minor: 133 of 10.7 M records (mostly chrM, high duplicate counts) are in Epione's
+  bowtie2-BAM output but not in SnapATAC2's; not investigated further.
+
+**Speed** (wall time, `/usr/bin/time -v`, 16 threads each, same node; peak RSS is that of
+the largest single process: the aligner for Epione, one Martian stage for Cell Ranger)
+
+| Data | Tool | Wall time | Peak RSS |
+|---|---|---|---|
+| D1 | Cell Ranger ATAC 2.2.0 (`count`, all outputs incl. peaks / matrices) | 28 m 57 s | 7.0 GB |
+| D1 | Epione chromap | 2 m 17 s | 21.9 GB |
+| D1 | Epione bwa-mem2 (+ sorted BAM) | 14 m 50 s | 26.3 GB |
+| D1 | Epione bowtie2 (+ fastp, + sorted BAM) | 33 m 47 s | 19.0 GB |
+| D2 | Cell Ranger ATAC 2.2.0 | 1 h 04 m 58 s | 7.8 GB |
+| D2 | Epione chromap | 6 m 32 s | 22.4 GB |
+| D2 | Epione chromap + ATAC→GEX translation | 6 m 46 s | 22.6 GB |
+| D2 | Epione bwa-mem2 (+ sorted BAM) | 34 m 42 s | 27.8 GB |
+| D2 | Epione bowtie2 (+ fastp, + sorted BAM) | 1 h 15 m 16 s | 9.2 GB |
+
+D2 bwa-mem2 / bowtie2 shared the node with a 6-thread tutorial run for part of their
+time. Index building (once per genome, GRCh38 2020-A): chromap 3 m 43 s (4 threads,
+26.6 GB), bwa-mem2 21 m 14 s (1 thread, 72.7 GB), bowtie2-build 31 m 41 s (4 threads,
+5.9 GB). Cell Ranger ships its bwa index in the reference.
+
+Scripts: `parity_barcodes.py` (G1), `parity_fragments.py` (G2–G6, G8),
+`parity_snapatac2.py` (G7). Data, references and Cell Ranger outputs live outside the
+repository.

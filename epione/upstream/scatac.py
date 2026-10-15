@@ -722,7 +722,8 @@ def fastq_to_fragments(
         })
         if keep_bam:
             samtools = resolve_tool("samtools")
-            subprocess.run([samtools, "sort", "-@", str(max(1, threads)), "-m", "1G", "-o", str(bam_path),
+            # bounded memory: at most 8 sort threads x 768 MB
+            subprocess.run([samtools, "sort", "-@", str(min(8, max(1, threads))), "-m", "768M", "-o", str(bam_path),
                             str(raw_bam)], check=True, env=build_env())
             subprocess.run([samtools, "index", "-@", str(max(1, threads)), str(bam_path)], check=True, env=build_env())
             bam_out = str(bam_path)
