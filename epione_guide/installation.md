@@ -18,3 +18,11 @@ Optional extras for full functionality:
 pip install .[full]
 ```
 
+
+GPU acceleration (PyTorch backend of the `device=` arguments):
+
+```bash
+pip install .[gpu]
+```
+
+See {doc}`gpu` for CUDA builds of torch and the optional rapids-singlecell backend.

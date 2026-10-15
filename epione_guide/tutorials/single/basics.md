@@ -14,4 +14,5 @@ t_atac_embedding
 t_harmony
 t_integrate
 t_label_transfer
+t_gpu_acceleration
 ```
