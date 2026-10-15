@@ -85,7 +85,18 @@ backend is covered by mocked dispatch tests only.
 
 ## Amendments
 
-(none)
+**A1 (2026-10-15, before any comparison was run).** Protocol details that the table left open,
+fixed here before the first run:
+- G11: CPU Leiden is `epi.tl.clusters(method="leiden", leiden_kwargs=dict(resolution=1.2,
+  random_state=s, flavor="igraph", n_iterations=2, directed=False))` (the D1 build call);
+  the rapids side passes the same `leiden_kwargs` except `n_iterations=-1`, which the
+  dispatch maps to cuGraph's default 100 levels (igraph's 2 refinement passes have no cuGraph
+  counterpart). The graph for G11/G12 is `epi.pp.neighbors(n_neighbors=30, metric="cosine",
+  use_rep="X_iterative_lsi")` built once on the CPU and loaded by both sides.
+- G5 (D3 replicate): both sides search the CPU run's `X_lsi`, so the comparison isolates the
+  search.
+- G1 compares the stored values of the two normalised CSR matrices after both are put in
+  canonical (sorted-index) form; the sparsity patterns must be identical.
 
 ## Results
 
