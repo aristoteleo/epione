@@ -166,6 +166,10 @@ from ._bulk_projection import LSIModel, project_bulk_atac, deconvolve_bulk
 from ._multimodal import combined_dims, wnn, multivi
 from ._tsne import tsne
 from ._spatial import spatial_neighbors, spatial_smooth, spatial_domains, spatial_moran
+from ._cnv import (
+    cnv, cnv_make_windows, cnv_count_matrix, cnv_subclones,
+    cnv_karyotype_measures, cnv_burden,
+)
 
 
 __all__ = [
@@ -239,4 +243,6 @@ __all__ = [
     "spatial_neighbors", "spatial_smooth", "spatial_domains", "spatial_moran",
     "spatialglue", "spatialglue_preprocess", "spatialglue_graphs",
     "lsi_spatialglue", "clr_normalize_each_cell",
+    "cnv", "cnv_make_windows", "cnv_count_matrix", "cnv_subclones",
+    "cnv_karyotype_measures", "cnv_burden",
 ]

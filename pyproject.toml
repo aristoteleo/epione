@@ -58,6 +58,9 @@ dependencies = [
 [project.optional-dependencies]
 # Extras pulled in only when the matching feature is actually called.
 # Kept out of `dependencies` so `pip install epione` stays lightweight.
+cnv = [
+    'scikit-misc',   # epione.tl.cnv GC correction (same dloess code as R stats::loess)
+]
 diffexp = [
     'patsy',         # design matrices for edgepy backend
     'pydeseq2',
@@ -123,6 +126,8 @@ test = [
     'pyarrow',
     # epi.tl.tsne (tests/test_multimodal.py).
     'openTSNE>=1.0',
+    # epione.tl.cnv GC correction (tests/test_cnv.py).
+    'scikit-misc',
 ]
 translate = [
     # epione.translate methods (scButterfly, ...); prepare/metrics need none of these.
@@ -159,7 +164,7 @@ doublets = [
     'igraph',
 ]
 full = [
-    'epione[diffexp,motif,footprint,upstream,scenic,pando,translate,multimodal,doublets,higashi]',
+    'epione[diffexp,motif,footprint,upstream,scenic,pando,translate,multimodal,doublets,higashi,cnv]',
 ]
 
 
