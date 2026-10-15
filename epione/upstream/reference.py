@@ -57,8 +57,30 @@ def ensure_aligner_index(
     fasta: Union[str, Path],
     index_prefix: Union[str, Path, None] = None,
     overwrite: bool = False,
+    threads: int = 1,
 ) -> str:
+    """Build the aligner index for ``fasta`` unless it already exists.
+
+    ``aligner`` is ``"bwa-mem2"``, ``"bowtie2"`` or ``"chromap"``. Returns
+    what the aligner takes as its index argument: the bwa-mem2 / bowtie2
+    prefix, or the chromap index file (default ``<fasta stem>.chromap.index``
+    next to the FASTA; ``index_prefix`` overrides it). ``threads`` is used by
+    ``bowtie2-build`` and ``chromap -i``.
+    """
     fasta = Path(fasta)
+    if aligner == "chromap":
+        chromap = resolve_tool("chromap")
+        if index_prefix is None:
+            index_file = fasta.with_suffix(".chromap.index")
+        else:
+            index_file = Path(index_prefix)
+            index_file.parent.mkdir(parents=True, exist_ok=True)
+        if overwrite or not index_file.exists():
+            tmp = index_file.with_name(index_file.name + ".tmp")
+            run([chromap, "-i", "-t", str(max(1, threads)), "-r", str(fasta), "-o", str(tmp)])
+            tmp.replace(index_file)
+        return str(index_file)
+
     if aligner == "bwa-mem2":
         bwa_mem2 = resolve_tool("bwa-mem2")
         if index_prefix is None:
@@ -87,10 +109,10 @@ def ensure_aligner_index(
             for ext in [".1.bt2", ".2.bt2", ".3.bt2", ".4.bt2", ".rev.1.bt2", ".rev.2.bt2"]
         ]
         if overwrite or not all(p.exists() for p in bt2_files):
-            run([bowtie2_build, str(fasta), prefix])
+            run([bowtie2_build, "--threads", str(max(1, threads)), str(fasta), prefix])
         return prefix
 
-    raise ValueError("aligner must be 'bwa-mem2' or 'bowtie2'")
+    raise ValueError("aligner must be 'bwa-mem2', 'bowtie2' or 'chromap'")
 
 
 def prepare_reference(
@@ -101,6 +123,7 @@ def prepare_reference(
     aligner: str = "bowtie2",
     index_prefix: Optional[Union[str, Path]] = None,
     overwrite: bool = False,
+    threads: int = 1,
 ) -> Dict[str, str]:
     if fasta is None:
         if genome is None:
@@ -114,6 +137,7 @@ def prepare_reference(
         fasta=fasta,
         index_prefix=index_prefix,
         overwrite=overwrite,
+        threads=threads,
     )
     return {
         "fasta": str(fasta),

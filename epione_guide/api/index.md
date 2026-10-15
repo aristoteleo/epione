@@ -76,10 +76,13 @@ linked above.
 | BAM ops | {func}`epione.upstream.sort_bam`, {func}`epione.upstream.index_bam`, {func}`epione.upstream.merge_bams`, {func}`epione.upstream.filter_bam` |
 | BAM → coverage bigwig | {func}`epione.upstream.bam_to_bigwig` |
 | Tn5 shift (ATAC) | {func}`epione.upstream.shift_atac_bam` |
-| BAM → fragments | {func}`epione.upstream.bam_to_frags` |
+| BAM → fragments (bulk) | {func}`epione.upstream.bam_to_frags` |
+| scATAC FASTQ → fragments (chromap / bwa-mem2 / bowtie2) | {func}`epione.upstream.fastq_to_fragments`, {class}`epione.upstream.FragmentsResult`, {func}`epione.upstream.find_fastqs`, {class}`epione.upstream.ReadLayout`, {data}`epione.upstream.CHEMISTRIES` |
+| scATAC BAM (CB tags) → fragments | {func}`epione.upstream.bam_to_fragments`, {func}`epione.upstream.read_fragments` |
+| Cell-barcode whitelist correction | {class}`epione.upstream.BarcodeCorrector`, {func}`epione.upstream.load_whitelist`, {func}`epione.upstream.detect_barcode_orientation`, {func}`epione.upstream.barcode_translation_table` |
 | Bulk peak calling (MACS2) | {func}`epione.upstream.call_peaks_macs2` |
 | Hi-C: BAM → pairs → .cool | {func}`epione.upstream.pairs_from_bam`, {func}`epione.upstream.pairs_to_cool` |
-| Format helpers | {data}`epione.upstream.HIC_TOOLS`, {data}`epione.upstream.ATAC_TOOLS`, {data}`epione.upstream.RNA_TOOLS`, {data}`epione.upstream.MOTIF_TOOLS` |
+| Format helpers | {data}`epione.upstream.HIC_TOOLS`, {data}`epione.upstream.ATAC_TOOLS`, {data}`epione.upstream.RNA_TOOLS`, {data}`epione.upstream.MOTIF_TOOLS`, {data}`epione.upstream.SC_ATAC_TOOLS` |
 
 ### Preprocessing — load, QC, matrices
 

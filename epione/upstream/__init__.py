@@ -8,6 +8,12 @@ resulting matrices lives in the modality packages
 
 Public API:
 
+Single-cell ATAC:
+    :func:`fastq_to_fragments`         — FASTQ → fragments.tsv.gz (chromap / bwa-mem2 / bowtie2)
+    :func:`bam_to_fragments`           — paired BAM with CB tags → fragments.tsv.gz
+    :class:`BarcodeCorrector`          — whitelist barcode correction
+    :func:`find_fastqs`, :class:`ReadLayout`, :data:`CHEMISTRIES`
+
 ATAC / ChIP / generic upstream:
     :func:`trim_fastq_pair`            — fastp wrapper
     :func:`bam_to_bigwig`              — BAM → coverage bigwig
@@ -47,10 +53,24 @@ from .bigwig import bam_to_bigwig
 from .macs2 import call_peaks_macs2
 from .atac import shift_atac_bam
 from .pipeline import bam_to_frags
+from ._barcodes import (
+    BarcodeCorrector,
+    load_whitelist,
+    detect_barcode_orientation,
+    barcode_translation_table,
+)
+from ._fragments import bam_to_fragments, read_fragments
+from .scatac import (
+    fastq_to_fragments,
+    find_fastqs,
+    ReadLayout,
+    CHEMISTRIES,
+    FragmentsResult,
+)
 from ._env import (
     tool_path, check_tools, build_env, run_cmd, ensure_dir,
     resolve_executable,
-    ATAC_TOOLS, RNA_TOOLS, MOTIF_TOOLS, HIC_TOOLS,
+    ATAC_TOOLS, RNA_TOOLS, MOTIF_TOOLS, HIC_TOOLS, SC_ATAC_TOOLS,
 )
 from ._pairs import pairs_from_bam, pairs_to_cool
 
@@ -80,6 +100,17 @@ __all__ = [
     "call_peaks_macs2",
     "shift_atac_bam",
     "bam_to_frags",
+    "fastq_to_fragments",
+    "bam_to_fragments",
+    "read_fragments",
+    "find_fastqs",
+    "ReadLayout",
+    "CHEMISTRIES",
+    "FragmentsResult",
+    "BarcodeCorrector",
+    "load_whitelist",
+    "detect_barcode_orientation",
+    "barcode_translation_table",
     "tool_path",
     "check_tools",
     "build_env",
@@ -90,6 +121,7 @@ __all__ = [
     "RNA_TOOLS",
     "MOTIF_TOOLS",
     "HIC_TOOLS",
+    "SC_ATAC_TOOLS",
     "pairs_from_bam",
     "pairs_to_cool",
 ]
