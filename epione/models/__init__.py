@@ -26,20 +26,31 @@ Currently:
     cell-state-conditioned decoder). The target and fold-preparation
     layers work without torch; the model layers need a torch
     environment.
+
+Pretrained weights of every family are listed and loaded through one
+registry, :mod:`epione.models.registry` (no torch needed to list):
+
+>>> epi.models.list_pretrained(organism="human")
+>>> net = epi.models.load_pretrained("chrombpnet_encode_k562", kind="bias")
 """
 from __future__ import annotations
 
 import importlib
 from typing import TYPE_CHECKING
 
-_SUBPACKAGES = ("chrombpnet", "grelu", "scooby", "seq2print")
+_SUBPACKAGES = ("chrombpnet", "grelu", "registry", "scooby", "seq2print")
+_REGISTRY_API = ("ChecksumError", "PretrainedEntry", "fetch_pretrained", "get_pretrained",
+                 "list_pretrained", "load_pretrained", "pretrained_cache_dir", "register",
+                 "register_family", "unregister")
 
-__all__ = list(_SUBPACKAGES)
+__all__ = list(_SUBPACKAGES) + list(_REGISTRY_API)
 
 
 def __getattr__(name: str):
     if name in _SUBPACKAGES:
         return importlib.import_module(f".{name}", __name__)
+    if name in _REGISTRY_API:
+        return getattr(importlib.import_module(".registry", __name__), name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 

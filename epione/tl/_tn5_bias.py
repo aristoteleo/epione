@@ -403,7 +403,8 @@ class ChromBPNetBias(Tn5Bias):
     model
         A trained bias :class:`~epione.models.chrombpnet.BPNet`; a path to an
         official ``bias_scaled`` ``.h5``; or an ENCODE release name from
-        :data:`epione.models.chrombpnet.PRETRAINED` (``'encode_k562'``...).
+        :data:`epione.models.chrombpnet.PRETRAINED` (``'encode_k562'``...)
+        or its registry name (``'chrombpnet_encode_k562'``).
     fold
         ENCODE fold for a release name.
     device, batch_size
@@ -434,7 +435,7 @@ class ChromBPNetBias(Tn5Bias):
         if getattr(self, "_model", None) is None:
             from epione.models import chrombpnet as cbp
             spec = self.model_spec
-            if isinstance(spec, (str, Path)) and str(spec) in cbp.PRETRAINED:
+            if isinstance(spec, (str, Path)) and _is_chrombpnet_release(str(spec)):
                 m = cbp.load_pretrained(str(spec), "bias", self.fold)
             elif isinstance(spec, (str, Path)):
                 m = cbp.load_keras_h5(spec)
@@ -475,6 +476,18 @@ class ChromBPNetBias(Tn5Bias):
 
     def __repr__(self) -> str:  # pragma: no cover - cosmetic
         return f"ChromBPNetBias(model={self.model_spec!r}, shift={self.shift})"
+
+
+def _is_chrombpnet_release(name: str) -> bool:
+    from epione.models import chrombpnet as cbp
+    from epione.models.registry import get_pretrained
+
+    if name in cbp.PRETRAINED:
+        return True
+    try:
+        return get_pretrained(name).family == "chrombpnet"
+    except KeyError:
+        return False
 
 
 # ---------------------------------------------------------------------------

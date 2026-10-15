@@ -60,7 +60,9 @@ Model files
 The trained HMMs ship with Epione (``epione/data/hint``, exported from
 RGT's pickles). The two ATAC bias tables (65,536 8-mers per strand) are
 downloaded once from RGT's repository at a pinned commit, md5-checked,
-and cached by pooch; set ``EPIONE_DATA_DIR`` to choose where. Any
+and cached through the model registry (``hint_atac_bias_tables`` in
+:func:`epione.models.list_pretrained`); set ``EPIONE_MODELS_DIR`` or
+``EPIONE_DATA_DIR`` to choose where. Any
 ``rgt-hint estimation`` table pair can be passed instead.
 """
 from __future__ import annotations
@@ -104,7 +106,6 @@ _RGT_FILES = {
     "atac_bias_table_R.txt": "md5:0212670fc325736397ca85ac030c16ff",
 }
 _DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "hint"
-_registry = None
 
 
 def fetch_hint_file(name: str) -> str:
@@ -116,18 +117,11 @@ def fetch_hint_file(name: str) -> str:
         ``'atac_bias_table_F.txt'`` or ``'atac_bias_table_R.txt'`` (about
         1 MB each).
     """
-    global _registry
     if name not in _RGT_FILES:
         raise KeyError(f"unknown HINT file {name!r}; one of {sorted(_RGT_FILES)}")
-    import pooch
-    if _registry is None:
-        _registry = pooch.create(
-            path=pooch.os_cache("epione") / "hint",
-            base_url=_RGT_RAW,
-            env="EPIONE_DATA_DIR",
-            registry=dict(_RGT_FILES),
-        )
-    return _registry.fetch(name)
+    from epione.models.registry import get_pretrained
+
+    return str(get_pretrained("hint_atac_bias_tables").fetch(name))
 
 
 # ---------------------------------------------------------------------------
@@ -646,9 +640,15 @@ def load_hint_hmm(model: str = "paired") -> HintHMM:
     7 states x 4 tracks) or ``'paired'`` (``atac_paired.pkl``, 9 x 8)."""
     if model not in ("single", "paired"):
         raise ValueError("model must be 'single' or 'paired'")
-    z = np.load(_DATA_DIR / f"atac_{model}_hmm.npz")
+    return _hmm_from_npz(_DATA_DIR / f"atac_{model}_hmm.npz", name=f"atac_{model}")
+
+
+def _hmm_from_npz(path, name=None) -> HintHMM:
+    z = np.load(path)
+    if name is None:
+        name = Path(path).name.replace("_hmm.npz", "")
     return HintHMM(z["startprob"], z["transmat"], z["means"], z["covars"],
-                   int(z["fp_state"]), name=f"atac_{model}")
+                   int(z["fp_state"]), name=name)
 
 
 # ---------------------------------------------------------------------------

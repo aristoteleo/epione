@@ -35,8 +35,10 @@ product in a different order depending on shape and threading -- but the
 network is tiny (5 -> 32 -> 4) and on the CPUs tested the two agree
 exactly.
 
-Weights come from scPrinter's Zenodo record and are cached by pooch;
-set ``EPIONE_DATA_DIR`` to choose where.
+Weights come from scPrinter's Zenodo record and are fetched through the
+model registry (``print_dispersion``, ``print_tn5_bias``,
+``print_tf_binding`` in :func:`epione.models.list_pretrained`): md5-checked,
+cached; set ``EPIONE_MODELS_DIR`` or ``EPIONE_DATA_DIR`` to choose where.
 """
 from __future__ import annotations
 
@@ -72,7 +74,6 @@ _MODELS = {
     "tn5_bias": ("Tn5_NN_model_py_v2.pt", "md5:5ea6c26fcd54ad2aff3d9705ed54dd3c"),
     "tf_binding": ("TFBS_model_py.pt", "md5:5bd79a9c4f3374241a6f4341eb39fe2c"),
 }
-_registry = None
 
 
 def fetch_print_model(key: str) -> str:
@@ -84,18 +85,11 @@ def fetch_print_model(key: str) -> str:
         ``'dispersion'`` (0.7 MB), ``'tn5_bias'`` (0.1 MB) or
         ``'tf_binding'`` (0.7 MB).
     """
-    global _registry
     if key not in _MODELS:
         raise KeyError(f"unknown PRINT model {key!r}; one of {sorted(_MODELS)}")
-    import pooch
-    if _registry is None:
-        _registry = pooch.create(
-            path=pooch.os_cache("epione") / "print",
-            base_url=_ZENODO,
-            env="EPIONE_DATA_DIR",
-            registry={name: md5 for name, md5 in _MODELS.values()},
-        )
-    return _registry.fetch(_MODELS[key][0])
+    from epione.models.registry import get_pretrained
+
+    return str(get_pretrained(f"print_{key}").fetch())
 
 
 # ---------------------------------------------------------------------------
