@@ -91,4 +91,11 @@ Predict chromatin accessibility from gene expression and expression from accessi
 Imputation and embedding of single-cell contact maps, and a Droplet Hi-C case study.
 :::
 
+:::{grid-item-card} Copy-number variation
+:link: single/cnv
+:link-type: doc
+
+Per-cell gains and losses from scATAC-seq read depth (epiAneufinder), subclones and karyograms.
+:::
+
 ::::
