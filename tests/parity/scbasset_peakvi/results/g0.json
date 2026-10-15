@@ -1,0 +1,11 @@
+{
+ "G0a_peaks_identical": true,
+ "G0b_n_peaks": 29542,
+ "G0b_mismatch_at_ACGT": 0,
+ "G0b_n_nonACGT_positions": 201,
+ "G0b_nonACGT_in_0_3": true,
+ "G0b_pass": true,
+ "G0d_split_identical": true,
+ "G0c_targets_identical": true,
+ "pass": true
+}
