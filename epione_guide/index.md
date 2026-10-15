@@ -54,6 +54,7 @@ Report issues or contribute on GitHub.
 :maxdepth: 1
 
 installation
+gpu
 user_guide/index
 tutorials/index
 ```

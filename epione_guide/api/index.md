@@ -111,6 +111,16 @@ linked above.
 | Project bulk ATAC-seq into the embedding (ArchR `projectBulkATAC`) | {func}`epione.tl.project_bulk_atac`, {class}`epione.tl.LSIModel` |
 | Bulk ATAC composition by NNLS on cluster pseudobulks | {func}`epione.tl.deconvolve_bulk` |
 
+### GPU acceleration (`device=` / `backend=`)
+
+| Task | Functions |
+|---|---|
+| torch backend (`device="cuda"` / `"auto"`, `pip install epione[gpu]`) | {func}`epione.tl.lsi`, {func}`epione.tl.iterative_lsi`, {func}`epione.pp.neighbors`, {func}`epione.tl.compute_deviations`, {func}`epione.tl.add_motif_matrix`, {func}`epione.tl.peak_to_gene` |
+| rapids-singlecell backend (`backend="rapids"`, optional install) | {func}`epione.pp.neighbors`, {func}`epione.tl.umap`, {func}`epione.tl.clusters` (`method="leiden"`) |
+| Device resolution | {func}`epione.core.resolve_device` (`"cpu"`, `"cuda"`, `"cuda:N"`, `"auto"`) |
+| Sparse conversion, batching, memory budget, torch kernels (internal) | {mod}`epione.core._gpu`, {mod}`epione.core._gpu_ops`, {mod}`epione.core._rapids` |
+| Installation, memory budget, RAPIDS requirements | {doc}`/gpu` |
+
 ### Multi-sample integration
 
 | Task | Functions |
