@@ -51,6 +51,13 @@ SCENIC+ eRegulons (topics to eRegulons, bit-exact with the reference) and Pando 
 Joint embeddings, weighted nearest neighbours and deep generative latent spaces for paired RNA + ATAC cells.
 :::
 
+:::{grid-item-card} Spatial ATAC
+:link: spatial
+:link-type: doc
+
+Spatial ATAC-seq and spatial ATAC-RNA-seq: readers, spot QC maps, spatial domains and SpatialGlue integration.
+:::
+
 :::{grid-item-card} Cross-modality translation
 :link: translation
 :link-type: doc

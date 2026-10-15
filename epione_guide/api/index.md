@@ -128,6 +128,19 @@ linked above.
 | Deep generative joint latent space, MultiVI (`pip install epione[multimodal]`) | {func}`epione.tl.multivi` |
 | Example data: cellranger-arc output of 10x PBMC 10k | {func}`epione.datasets.pbmc10k_multiome_10x` |
 
+### Spatial ATAC (spatial ATAC-seq, spatial ATAC-RNA-seq)
+
+| Task | Functions |
+|---|---|
+| Fragments + barcode -> (x, y) table (Space Ranger or DBiT whitelist) + tissue image -> AnnData | {func}`epione.io.read_spatial_atac`, {func}`epione.io.read_spatial_positions`, {func}`epione.io.read_spatial_images` |
+| Spatial ATAC-RNA co-profiling -> MuData | {func}`epione.io.read_spatial_atac_rna` |
+| Attach positions / image to any AnnData | {func}`epione.io.add_spatial` |
+| Spot maps on the tissue, per-spot QC panel | {func}`epione.pl.spatial`, {func}`epione.pl.spatial_qc` |
+| Spot graph (DBiT / Visium grid or kNN; squidpy keys), smoothing, Moran's I | {func}`epione.tl.spatial_neighbors`, {func}`epione.tl.spatial_smooth`, {func}`epione.tl.spatial_moran` |
+| Spatial domains (PCA + mclust / Leiden search / k-means) | {func}`epione.tl.spatial_domains` |
+| ATAC + RNA integration, SpatialGlue (Long *et al.* 2024; AGPL-3.0 port, `pip install epione[spatial]`) | {func}`epione.tl.spatialglue`, {func}`epione.tl.spatialglue_preprocess` |
+| Example data | {func}`epione.datasets.zhang2023_hippocampus_atac_rna`, {func}`epione.datasets.spatialglue_mouse_brain` |
+
 ### chromVAR & motif analysis
 
 | Task | Functions |
@@ -297,6 +310,7 @@ Imported on demand, never by `import epione`; listed here without autodoc pages 
 | Peak / feature files | {func}`epione.io.read_features` |
 | 10x ATAC matrix → AnnData | {func}`epione.io.read_ATAC_10x` |
 | 10x Multiome (cellranger-arc) → RNA + ATAC | {func}`epione.io.read_10x_multiome` |
+| Spatial ATAC (+ RNA) → AnnData / MuData with `obsm["spatial"]` | {func}`epione.io.read_spatial_atac`, {func}`epione.io.read_spatial_atac_rna` |
 | Pickle / h5ad cache helpers | {func}`epione.io.save`, {func}`epione.io.load`, {func}`epione.io.cached` |
 
 ### Core — pure-Python infrastructure

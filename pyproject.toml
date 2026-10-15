@@ -128,6 +128,11 @@ translate = [
     # epione.translate methods (scButterfly, ...); prepare/metrics need none of these.
     'torch>=2.0',
 ]
+spatial = [
+    # epione.tl.spatialglue (SpatialGlue port) and spatial_domains(method="mclust").
+    'torch>=2.0',
+    'pymclustR>=0.2.1',
+]
 pando = [
     # epione.grn.pando: the omicverse port of Pando (R) with its parity tests.
     'pypando[plot]>=0.1.2',
