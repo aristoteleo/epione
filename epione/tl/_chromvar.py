@@ -488,6 +488,154 @@ def _sample_deviations(
 
 
 # ---------------------------------------------------------------------------
+# torch path (device="cuda")
+# ---------------------------------------------------------------------------
+
+def _deviations_torch(
+    M_for_matmul, M_csr, X, bg, peak_frac, cell_totals, fg_fracs, *,
+    method, device, batch_cells, verbose,
+):
+    """Cell-batched torch twin of the analytical and sample paths.
+
+    Per batch of cells ``C`` the dense ``(C, n_peaks)`` block is built on the
+    device from the CSR rows; every quantity of the CPU path is then computed
+    with the same float32 operations, transposed (cells on rows):
+
+    * observed counts ``X_C @ M.T``;
+    * analytical: peer sums ``sum_it X_C[:, bg[:, it]]`` (and of squares) in
+      the same iteration order as the numba kernel, then mean / unbiased
+      variance and ``(mu, var) @ M.T``;
+    * sample: for each iteration ``X_C[:, bg[:, it]] @ M.T`` (equal to
+      ``M_it @ X.T`` of the CPU path) with the same per-iteration
+      ``M_it @ peak_frac`` expectation, accumulated in float64.
+
+    Returns ``(Z, DEV)`` with shape ``(n_motifs, n_cells)`` like the CPU path.
+    """
+    from ..core._gpu import (
+        get_torch, memory_budget, row_blocks, to_torch_csr, torch_device,
+        empty_cache, _csr_rows_view,
+    )
+    torch = get_torch()
+    dev = torch_device(device)
+    n_cells, n_peaks = X.shape
+    n_iter = bg.shape[1]
+
+    if isinstance(M_for_matmul, np.ndarray):
+        Mt = torch.as_tensor(np.ascontiguousarray(M_for_matmul.T, dtype=np.float32),
+                             device=dev)
+    else:
+        Mt = torch.as_tensor(
+            np.asarray(M_for_matmul.T.toarray(), dtype=np.float32), device=dev)
+    n_motifs = Mt.shape[1]
+    bg_d = torch.as_tensor(np.ascontiguousarray(bg.T, dtype=np.int64), device=dev)
+    fg = torch.as_tensor(fg_fracs, device=dev)
+    tot = torch.as_tensor(np.asarray(cell_totals, dtype=np.float32), device=dev)
+
+    fg_bg = None
+    if method == "sample":
+        # Same per-iteration background expectation as the CPU loop
+        # (identical scipy expression, so identical float32 values).
+        M_indices, M_data, M_indptr = M_csr.indices, M_csr.data, M_csr.indptr
+        fg_bg_np = np.empty((n_iter, n_motifs), dtype=np.float32)
+        for it in range(n_iter):
+            new_indices = bg[M_indices, it].astype(np.int32)
+            M_it = sp.csr_matrix((M_data, new_indices, M_indptr),
+                                 shape=(n_motifs, n_peaks))
+            fg_bg_np[it] = np.asarray(M_it @ peak_frac).ravel().astype(np.float32)
+        fg_bg = torch.as_tensor(fg_bg_np, device=dev)
+
+    X = X.tocsr()
+    if batch_cells is None:
+        budget = memory_budget(dev) - Mt.numel() * 4 - bg_d.numel() * 8
+        bytes_per_cell = 5 * n_peaks * 4 + 8 * n_motifs * 8
+        blocks = row_blocks(n_cells, bytes_per_cell, max(budget, bytes_per_cell))
+    else:
+        blocks = row_blocks(n_cells, 1, int(batch_cells))
+    _console(f"{len(blocks)} cell batch(es) of <= {blocks[0].stop - blocks[0].start:,} cells",
+             verbose)
+
+    Z = np.empty((n_motifs, n_cells), dtype=np.float32)
+    DEV = np.empty((n_motifs, n_cells), dtype=np.float32)
+    nan = float("nan")
+    inv_n = torch.tensor(np.float32(1.0 / n_iter), device=dev)
+    factor = torch.tensor(np.float32(n_iter / (n_iter - 1)) if n_iter > 1 else np.float32(0.0),
+                          device=dev)
+    for blk in blocks:
+        Xc = to_torch_csr(_csr_rows_view(X, blk), dev, torch.float32).to_dense()  # (C, P)
+        exp_fg = tot[blk][:, None] * fg[None, :]                        # (C, K)
+        obs = Xc @ Mt
+        pos = exp_fg > 0
+        obs_dev = torch.where(pos, (obs - exp_fg) / exp_fg, nan)
+        del obs
+        if method == "analytical":
+            s_ = torch.zeros_like(Xc)
+            ss = torch.zeros_like(Xc)
+            for it in range(n_iter):
+                v = torch.index_select(Xc, 1, bg_d[it])
+                s_.add_(v)
+                ss.addcmul_(v, v)
+                del v
+            del Xc
+            mu = s_.mul_(inv_n)
+            var = ss.mul_(inv_n).sub_(mu * mu).mul_(factor).clamp_(min=0.0)
+            mean_obs_bg = mu @ Mt
+            var_obs_bg = var @ Mt
+            del s_, ss, mu, var
+            mean_dev_bg = torch.where(pos, (mean_obs_bg - exp_fg) / exp_fg, nan)
+            std_dev_bg = torch.where(pos, torch.sqrt(var_obs_bg) / exp_fg, nan)
+            z = torch.where(std_dev_bg > 0, (obs_dev - mean_dev_bg) / std_dev_bg, nan)
+            d = obs_dev - mean_dev_bg
+        else:
+            sum_bg = torch.zeros(exp_fg.shape, dtype=torch.float64, device=dev)
+            sumsq_bg = torch.zeros_like(sum_bg)
+            for it in range(n_iter):
+                obs_bg = torch.index_select(Xc, 1, bg_d[it]) @ Mt
+                exp_bg = tot[blk][:, None] * fg_bg[it][None, :]
+                dev_it = torch.where(exp_bg > 0, (obs_bg - exp_bg) / exp_bg, nan)
+                dev_it = dev_it.to(torch.float64)
+                dev_it = torch.where(torch.isfinite(dev_it), dev_it, 0.0)
+                sum_bg.add_(dev_it)
+                sumsq_bg.addcmul_(dev_it, dev_it)
+                del obs_bg, exp_bg, dev_it
+            del Xc
+            mean_bg = (sum_bg / n_iter).to(torch.float32)
+            var_bg = sumsq_bg / n_iter - (sum_bg / n_iter) ** 2
+            var_bg = var_bg * (n_iter / max(n_iter - 1, 1))
+            std_bg = torch.sqrt(torch.clamp(var_bg, min=0.0)).to(torch.float32)
+            z = torch.where(std_bg > 0, (obs_dev - mean_bg) / std_bg, nan)
+            d = obs_dev - mean_bg
+            del sum_bg, sumsq_bg, var_bg
+        Z[:, blk] = z.T.cpu().numpy()
+        DEV[:, blk] = d.T.cpu().numpy()
+        del z, d, obs_dev, exp_fg, pos
+    del Mt, bg_d
+    empty_cache(dev)
+    return Z, DEV
+
+
+def _store_deviations(adata, Z, DEV, motif_key, bg_key, key_added, layer,
+                      n_iter, n_motifs, method, verbose):
+    names = np.asarray(
+        adata.uns.get(f"{motif_key}_names",
+                      [f"M{j}" for j in range(n_motifs)]),
+        dtype=object,
+    )
+    adata.obsm[key_added]          = Z.T
+    adata.obsm[f"{key_added}_raw"] = DEV.T
+    adata.uns[f"{key_added}_names"] = names
+    adata.uns[f"{key_added}_params"] = dict(
+        motif_key=motif_key, bg_key=bg_key, layer=layer,
+        n_iterations=int(n_iter), method=method,
+    )
+    _console(
+        f"done. obsm[{key_added!r}] = {Z.T.shape} float32 Z-scores; "
+        f"[{key_added}_raw] holds uncorrected deviations",
+        verbose,
+    )
+    return adata
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -502,6 +650,8 @@ def compute_deviations(
     n_jobs: int = -1,
     layer: Optional[str] = None,
     verbose: bool = True,
+    device: str = "cpu",
+    batch_cells: Optional[int] = None,
 ) -> AnnData:
     """Compute chromVAR-style motif deviation Z-scores.
 
@@ -538,7 +688,20 @@ def compute_deviations(
           bias-corrected Z-score matrix.
         - ``adata.obsm[key_added + '_raw']`` receives the uncorrected
           deviation (``obs_dev - mean_bg``).
+    device
+        ``"cpu"`` (default) runs the NumPy / numba implementation.
+        ``"cuda"`` (``"cuda:N"``, or ``"auto"``) runs both methods with torch
+        on the GPU, in cell batches: the observed counts, the background-peer
+        statistics and the null are the same float32 arithmetic as the CPU
+        path, so Z-scores agree to float32 rounding. ``X`` is never densified
+        on the host. Needs ``pip install epione[gpu]``.
+    batch_cells
+        Cells per GPU batch. ``None`` sizes the batch from the GPU memory
+        budget (``EPIONE_GPU_MEMORY_GB``, else half the free memory): each
+        batch holds about five ``batch_cells x n_peaks`` float32 buffers.
     """
+    from ..core._gpu import resolve_device, is_torch_device
+    device = resolve_device(device)
     if motif_key not in adata.varm:
         raise KeyError(f"adata.varm[{motif_key!r}] not found. Run "
                        "epione.tl.add_motif_matrix first.")
@@ -606,6 +769,21 @@ def compute_deviations(
 
     # Resolve n_jobs once
     n_jobs_eff = os.cpu_count() or 1 if n_jobs is not None and n_jobs < 0 else (n_jobs or 1)
+
+    if is_torch_device(device):
+        if method not in ("analytical", "sample"):
+            raise ValueError(f"unknown method {method!r}; expected 'analytical' or 'sample'")
+        if method == "sample" and M_csr is None:
+            M_csr = sp.csr_matrix(M_for_matmul)
+        fg_fracs = np.asarray(M_for_matmul @ peak_frac).ravel().astype(np.float32)
+        _console(f"torch path on {device}", verbose)
+        Z, DEV = _deviations_torch(
+            M_for_matmul, M_csr, X, bg, peak_frac, cell_totals, fg_fracs,
+            method=method, device=device, batch_cells=batch_cells,
+            verbose=verbose,
+        )
+        return _store_deviations(adata, Z, DEV, motif_key, bg_key, key_added,
+                                 layer, n_iter, n_motifs, method, verbose)
 
     # Foreground — shared across methods. Use threaded sparse×dense path
     # when the dense X_T fits comfortably (saves the sparse×sparse overhead

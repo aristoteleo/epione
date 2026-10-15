@@ -139,6 +139,7 @@ def umap(
     key_added: str | None = None,
     neighbors_key: str = "neighbors",
     copy: bool = False,
+    backend: Literal["epione", "rapids"] = "epione",
 ) -> AnnData | None:
     """
     Embed the neighborhood graph using UMAP (Uniform Manifold Approximation and Projection).
@@ -202,6 +203,13 @@ def umap(
         Key in uns to find neighbors settings and connectivity matrix.
     copy
         Return a copy instead of writing to adata.
+    backend
+        ``"epione"`` (default) runs the implementation selected by
+        ``method``. ``"rapids"`` embeds the *existing* neighbour graph with
+        cuML through :func:`rapids_singlecell.tl.umap` (unlike
+        ``method="rapids"``, which re-runs cuML's own kNN on the
+        representation). Needs ``rapids_singlecell`` installed; see the GPU
+        acceleration page.
     
     Returns
     -------
@@ -210,6 +218,16 @@ def umap(
     - adata.obsm['X_umap' | key_added]: UMAP coordinates
     - adata.uns['umap' | key_added]: UMAP parameters
     """
+    if backend == "rapids":
+        from ..core._rapids import rapids_umap
+        return rapids_umap(
+            adata, min_dist=min_dist, spread=spread, n_components=n_components,
+            maxiter=maxiter, alpha=alpha, negative_sample_rate=negative_sample_rate,
+            init_pos=init_pos, random_state=random_state, a=a, b=b,
+            key_added=key_added, neighbors_key=neighbors_key, copy=copy,
+        )
+    if backend != "epione":
+        raise ValueError(f"backend must be 'epione' or 'rapids', got {backend!r}")
     adata = adata.copy() if copy else adata
     
     # Determine storage keys

@@ -13,6 +13,12 @@ Subpackage map:
     :mod:`epione.core._compat`   numpy-2.x / scanpy-1.10 compat shims
     :mod:`epione.core._findgenes`gene / coordinate annotation lookup
 
+GPU backend plumbing (torch is imported lazily, only for a GPU device):
+    :func:`resolve_device`              core._gpu    ``device=`` resolution
+    :mod:`epione.core._gpu`             sparse conversion, batching, memory budget
+    :mod:`epione.core._gpu_ops`         torch randomized SVD and exact kNN
+    :mod:`epione.core._rapids`          optional rapids-singlecell dispatch
+
 Signal kernels live here too (pure-Python / NumPy — no compiled extension):
     :mod:`epione.core.signals`           rolling-window signal ops
 
@@ -31,6 +37,7 @@ from ._sampling import (
     classify_peaks_by_overlap,
 )
 from ._compat import obs_to_pandas, var_to_pandas
+from ._gpu import resolve_device
 
 from . import console, logger, motifs, regions, utilities
 
@@ -45,6 +52,7 @@ __all__ = [
     "classify_peaks_by_overlap",
     "obs_to_pandas",
     "var_to_pandas",
+    "resolve_device",
     "console",
     "logger",
     "motifs",

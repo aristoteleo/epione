@@ -146,6 +146,43 @@ def _aggregate(X, metacell_idx) -> np.ndarray:
     return out
 
 
+def _aggregate_torch(X, metacell_idx, dev) -> np.ndarray:
+    """GPU twin of :func:`_aggregate`: ``X.T @ A.T / k`` with the
+    ``(n_cells, n_metacells)`` membership matrix ``A``, summed in float64 and
+    returned as float32 (the CPU path averages integer counts in float64 and
+    float32 data in float32)."""
+    from ..core._gpu import SparseOperand, get_torch
+    torch = get_torch()
+    n_mc, k = metacell_idx.shape
+    n_cells = X.shape[0]
+    A = np.zeros((n_cells, n_mc), dtype=np.float64)
+    np.add.at(A, (metacell_idx.ravel(), np.repeat(np.arange(n_mc), k)), 1.0)
+    A_d = torch.as_tensor(A, device=dev)
+    if sp.issparse(X):
+        op = SparseOperand(X, dev, torch.float64)
+        S = op.rmatmul(A_d)                                  # (n_features, n_mc)
+    else:
+        Xd = torch.as_tensor(np.asarray(X, dtype=np.float64), device=dev)
+        S = Xd.T @ A_d
+    return (S.T / k).to(torch.float32).cpu().numpy()
+
+
+def _pair_corr_torch(Pz, Gz, peak_idx, gene_idx, dev) -> np.ndarray:
+    """``sum_m Pz[m, p] * Gz[m, g] / (M - 1)`` for every pair, on the GPU."""
+    from ..core._gpu import get_torch, memory_budget, row_blocks
+    torch = get_torch()
+    n_mc = Pz.shape[0]
+    P = torch.as_tensor(np.ascontiguousarray(Pz.T, dtype=np.float32), device=dev)
+    G = torch.as_tensor(np.ascontiguousarray(Gz.T, dtype=np.float32), device=dev)
+    pi = torch.as_tensor(peak_idx, device=dev)
+    gi = torch.as_tensor(gene_idx, device=dev)
+    r = np.empty(len(peak_idx), dtype=np.float32)
+    for blk in row_blocks(len(peak_idx), 3 * n_mc * 4, memory_budget(dev)):
+        rc = (P[pi[blk]] * G[gi[blk]]).sum(dim=1) / (n_mc - 1)
+        r[blk] = rc.cpu().numpy()
+    return r
+
+
 def _zscore_columns(M: np.ndarray) -> np.ndarray:
     out = M - M.mean(axis=0, keepdims=True)
     sd = out.std(axis=0, ddof=1, keepdims=True)
@@ -189,6 +226,7 @@ def peak_to_gene(
     key_added: str = "peak_to_gene",
     inplace: bool = True,
     verbose: bool = True,
+    device: str = "cpu",
 ) -> pd.DataFrame:
     """ArchR-style peak-to-gene linkage via kNN-metacell correlation.
 
@@ -233,6 +271,12 @@ def peak_to_gene(
         If False, do not write to ``adata.uns``.
     verbose
         Print progress.
+    device
+        ``"cpu"`` (default) or ``"cuda"`` / ``"cuda:N"`` / ``"auto"``. On a
+        GPU the metacell aggregation (a sparse ``X.T @ A`` product) and the
+        per-pair correlations run in torch; metacell sampling, the p-values
+        and the FDR stay on the CPU and are unchanged. Needs
+        ``pip install epione[gpu]``.
 
     Returns
     -------
@@ -321,12 +365,19 @@ def peak_to_gene(
     mc_idx = _build_metacell_indices(emb, n_metacells, k_neighbors, seed)
     n_mc = mc_idx.shape[0]
 
+    from ..core._gpu import resolve_device, is_torch_device, torch_device
+    device = resolve_device(device)
+    use_torch = is_torch_device(device)
+    if use_torch:
+        dev = torch_device(device)
     if verbose:
         console.info("[peak_to_gene] Aggregating peak matrix")
-    peak_mc = _aggregate(adata.X, mc_idx)           # (n_mc, n_peaks)
+    peak_mc = (_aggregate_torch(adata.X, mc_idx, dev) if use_torch
+               else _aggregate(adata.X, mc_idx))           # (n_mc, n_peaks)
     if verbose:
         console.info("[peak_to_gene] Aggregating gene matrix")
-    gene_mc = _aggregate(gene_X, mc_idx)            # (n_mc, n_genes)
+    gene_mc = (_aggregate_torch(gene_X, mc_idx, dev) if use_torch
+               else _aggregate(gene_X, mc_idx))            # (n_mc, n_genes)
 
     # -- 5. Build peak-gene pair list by proximity --------------------------
     if verbose:
@@ -395,16 +446,19 @@ def peak_to_gene(
     # Chunk along the pair axis to avoid holding the full
     # (n_mc, n_pairs) intermediate in RAM.
     n_pairs = len(peak_idx_arr)
-    # Target ~256 MB float32 per chunk: chunk_size * n_mc * 4 <= 256 MB
-    max_chunk = max(1, int(256 * 2**20 / max(n_mc, 1) / 4))
-    chunk_size = min(n_pairs, max(max_chunk, 100_000))
-    r = np.empty(n_pairs, dtype=np.float32)
-    for start in range(0, n_pairs, chunk_size):
-        end = min(start + chunk_size, n_pairs)
-        pcols = Pz[:, peak_idx_arr[start:end]]
-        gcols = Gz[:, gene_idx_arr[start:end]]
-        r_chunk = (pcols * gcols).sum(axis=0) / (n_mc - 1)
-        r[start:end] = r_chunk.astype(np.float32)
+    if use_torch:
+        r = _pair_corr_torch(Pz, Gz, peak_idx_arr, gene_idx_arr, dev)
+    else:
+        # Target ~256 MB float32 per chunk: chunk_size * n_mc * 4 <= 256 MB
+        max_chunk = max(1, int(256 * 2**20 / max(n_mc, 1) / 4))
+        chunk_size = min(n_pairs, max(max_chunk, 100_000))
+        r = np.empty(n_pairs, dtype=np.float32)
+        for start in range(0, n_pairs, chunk_size):
+            end = min(start + chunk_size, n_pairs)
+            pcols = Pz[:, peak_idx_arr[start:end]]
+            gcols = Gz[:, gene_idx_arr[start:end]]
+            r_chunk = (pcols * gcols).sum(axis=0) / (n_mc - 1)
+            r[start:end] = r_chunk.astype(np.float32)
     r = np.clip(r, -1.0, 1.0)
 
     df_deg = n_mc - 2
