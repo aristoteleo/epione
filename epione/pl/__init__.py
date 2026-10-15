@@ -26,6 +26,7 @@ from ._contact import (
 from ._peak2gene import plot_peak2gene
 from ._trajectory import plot_trajectory, plot_trajectory_heatmap
 from ._browser_track import plot_browser_track, browser_track_coverage
+from ._igv import igv_browser, IGVBrowser
 from ._groups import plot_groups, plot_confusion_matrix
 from ._var_dev import var_dev, tf_regulators
 from ._marker_heatmap import (
@@ -84,6 +85,7 @@ __all__ = [
     "plot_correlation_heatmap",
     "plot_peak2gene",
     "plot_browser_track", "browser_track_coverage",
+    "igv_browser", "IGVBrowser",
     "enrich_heatmap",
     "plot_footprints",
     "plot_multi_scale_footprint",
