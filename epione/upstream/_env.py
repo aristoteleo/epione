@@ -25,6 +25,9 @@ from typing import Dict, Iterable, List, Optional, Sequence, Union
 
 _INSTALL_HINTS = {
     "bowtie2": "mamba install -c bioconda -y bowtie2",
+    "bowtie2-build": "mamba install -c bioconda -y bowtie2",
+    "bwa-mem2": "mamba install -c bioconda -y bwa-mem2",
+    "chromap": "mamba install -c bioconda -y chromap",
     "samtools": "mamba install -c bioconda -y samtools",
     "STAR": "mamba install -c bioconda -y star",
     "macs2": "mamba install -c bioconda -y macs2",
@@ -198,6 +201,11 @@ ATAC_TOOLS = ("bowtie2", "samtools", "bedtools", "macs2", "tabix", "bgzip", "fea
 RNA_TOOLS = ("STAR", "samtools", "htseq-count", "featureCounts")
 MOTIF_TOOLS = ("findMotifsGenome.pl",)
 HIC_TOOLS = ("bowtie2", "samtools", "pairtools", "cooler")
+#: CLIs used by :func:`epione.upstream.fastq_to_fragments` (single-cell ATAC):
+#: ``chromap`` for the default aligner, ``bwa-mem2`` / ``bowtie2`` +
+#: ``samtools`` for the alternatives, ``fastp`` for adapter trimming before
+#: bowtie2, ``bgzip`` / ``tabix`` for the output (pysam is the fallback).
+SC_ATAC_TOOLS = ("chromap", "bwa-mem2", "bowtie2", "samtools", "fastp", "bgzip", "tabix")
 
 
 __all__ = [
@@ -210,4 +218,6 @@ __all__ = [
     "ATAC_TOOLS",
     "RNA_TOOLS",
     "MOTIF_TOOLS",
+    "HIC_TOOLS",
+    "SC_ATAC_TOOLS",
 ]
