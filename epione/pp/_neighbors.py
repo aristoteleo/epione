@@ -120,6 +120,35 @@ def _get_sparse_matrix_from_indices_distances(
     return csr_matrix((data, (row_indices, col_indices)), shape=shape)
 
 
+def _set_self_distance_zero(
+    knn_indices: np.ndarray,
+    knn_distances: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Make each point its own first neighbour, at distance exactly 0.
+
+    sklearn and pynndescent compute float32 distances and can return a
+    self-distance of ~1e-7, which ``fuzzy_simplicial_set`` then takes as the
+    nearest-neighbour distance rho. The GPU search sets it to 0 exactly.
+    """
+    knn_indices = np.array(knn_indices, dtype=np.int64, copy=True)
+    knn_distances = np.array(knn_distances, copy=True)
+    rows = np.arange(knn_indices.shape[0])
+    is_self = knn_indices == rows[:, None]
+    # A search can miss the point itself when exact duplicates tie at 0:
+    # put it in front and drop the last neighbour.
+    missing = ~is_self.any(axis=1)
+    if missing.any():
+        knn_indices[missing, 1:] = knn_indices[missing, :-1]
+        knn_distances[missing, 1:] = knn_distances[missing, :-1]
+        knn_indices[missing, 0] = rows[missing]
+        is_self = knn_indices == rows[:, None]
+    knn_distances[is_self] = 0
+    key = np.where(is_self, -1.0, knn_distances.astype(np.float64))
+    order = np.argsort(key, axis=1, kind="stable")
+    return (np.take_along_axis(knn_indices, order, axis=1),
+            np.take_along_axis(knn_distances, order, axis=1))
+
+
 def compute_connectivities_umap(
     knn_indices: np.ndarray,
     knn_distances: np.ndarray,
@@ -341,6 +370,9 @@ def neighbors(
         else:
             raise ValueError(f"Unknown transformer: {transformer}")
     
+    if transformer is None or transformer in ("sklearn", "pynndescent"):
+        indices, distances = _set_self_distance_zero(indices, distances)
+
     # Create sparse distance matrix
     distances_matrix = _get_sparse_matrix_from_indices_distances(
         indices, distances, shape=(adata.n_obs, adata.n_obs)
