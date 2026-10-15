@@ -208,6 +208,18 @@ RNA → ATAC and ATAC → RNA translators learned from paired multiome cells, be
 | multiDGD (`method="multidgd"`): raw-count inputs, source-only translation, joint reconstruction | {func}`epione.translate.prepare_counts`, {meth}`epione.translate._multidgd.MultiDGD.predict`, {meth}`epione.translate._multidgd.MultiDGD.reconstruct` |
 | Example data: 10x Multiome PBMC 10k (scGLUE release) | {func}`epione.datasets.pbmc10k_multiome` |
 
+### Copy-number variation (scATAC-seq)
+
+epiAneufinder (Ramakrishnan et al., *Nat. Commun.* 2023), ported from the R package 1.1.5 and parity-tested against it (`tests/parity/epianeufinder/`). GC correction needs `pip install 'epione[cnv]'` (scikit-misc).
+
+| Task | Functions |
+|---|---|
+| Per-cell CNV states from fragments or a peak matrix (epiAneufinder `epiAneufinder`) | {func}`epione.tl.cnv` |
+| Genome windows with GC content (`makeWindows`), window count matrix (`generateCountMatrix`) | {func}`epione.tl.cnv_make_windows`, {func}`epione.tl.cnv_count_matrix` |
+| Subclones by Ward clustering (`split_subclones`) | {func}`epione.tl.cnv_subclones` |
+| Aneuploidy / heterogeneity (`karyotype_measures`), CNV burden (`cnv_burden_per_cell`) | {func}`epione.tl.cnv_karyotype_measures`, {func}`epione.tl.cnv_burden` |
+| Karyogram heatmap (`plot_karyo_gainloss`, `plot_karyo_annotated`), single-cell profile (`plot_single_cell_profile`) | {func}`epione.pl.karyogram`, {func}`epione.pl.cnv_profile` |
+
 ### Differential & peak-to-gene linkage
 
 | Task | Functions |
