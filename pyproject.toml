@@ -164,7 +164,7 @@ doublets = [
     'igraph',
 ]
 full = [
-    'epione[diffexp,motif,footprint,upstream,scenic,pando,translate,multimodal,doublets,higashi,cnv]',
+    'epione[diffexp,motif,footprint,upstream,scenic,pando,translate,multimodal,doublets,higashi,cnv,spatial]',
 ]
 
 
