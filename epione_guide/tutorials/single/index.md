@@ -13,7 +13,7 @@ The single-cell tutorials are now grouped by analysis step:
 :link: basics
 :link-type: doc
 
-Example data, QC, dimensionality reduction, batch correction and label transfer.
+FASTQ to fragments, example data, QC, dimensionality reduction, batch correction and label transfer.
 :::
 
 :::{grid-item-card} Clusters and markers
