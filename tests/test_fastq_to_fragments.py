@@ -380,6 +380,55 @@ def test_coordinate_sorted_bam_parallel_matches(tmp_path):
     assert a["count"].sum() == 340 and (a["count"] == 2).sum() >= 38
 
 
+def test_parallel_pair_stats_match_single_pass(tmp_path):
+    """Per-reference workers must give the single-pass counters, including
+    pairs split across references, half-mapped and unplaced unmapped pairs."""
+    from epione.upstream._fragments import collect_fragments
+
+    chroms = (("chr1", 10_000), ("chr2", 10_000), ("chr3", 10_000))
+    header = {"HD": {"VN": "1.6", "SO": "unsorted"}, "SQ": [{"SN": c, "LN": n} for c, n in chroms]}
+    bam = tmp_path / "x.bam"
+
+    def seg(out, name, first, tid, pos, rev, mtid, mpos, unmapped=False, mate_unmapped=False, proper=True):
+        a = pysam.AlignedSegment(out.header)
+        a.query_name = name
+        a.query_sequence = "A" * 30
+        a.query_qualities = pysam.qualitystring_to_array("F" * 30)
+        a.flag = (0x1 | (0x2 if proper else 0) | (0x4 if unmapped else 0) | (0x8 if mate_unmapped else 0)
+                  | (0x10 if rev else 0) | (0x40 if first else 0x80))
+        a.reference_id, a.reference_start = tid, pos
+        a.next_reference_id, a.next_reference_start = mtid, mpos
+        if not unmapped:
+            a.mapping_quality, a.cigarstring = 60, "30M"
+        a.set_tag("CB", "AAAA")
+        out.write(a)
+
+    with pysam.AlignmentFile(str(bam), "wb", header=header) as out:
+        for i in range(50):                      # ordinary pairs on chr1..chr3
+            tid, left = i % 3, 100 + 37 * i
+            seg(out, f"p{i}", True, tid, left, False, tid, left + 200)
+            seg(out, f"p{i}", False, tid, left + 200, True, tid, left)
+        for i in range(4):                       # mates on different references
+            seg(out, f"x{i}", True, 0, 3000 + i, False, 1, 4000, proper=False)
+            seg(out, f"x{i}", False, 1, 4000, True, 0, 3000 + i, proper=False)
+        for i in range(3):                       # one mate unmapped, placed at its mate
+            seg(out, f"h{i}", True, 1, 5000 + i, False, 1, 5000 + i, mate_unmapped=True, proper=False)
+            seg(out, f"h{i}", False, 1, 5000 + i, False, 1, 5000 + i, unmapped=True, proper=False)
+        for i in range(5):                       # both unmapped, no coordinate
+            seg(out, f"u{i}", True, -1, -1, False, -1, -1, unmapped=True, mate_unmapped=True, proper=False)
+            seg(out, f"u{i}", False, -1, -1, False, -1, -1, unmapped=True, mate_unmapped=True, proper=False)
+    pysam.sort("-o", str(tmp_path / "s.bam"), str(bam))
+    pysam.index(str(tmp_path / "s.bam"))
+    out_chroms = ["chr1", "chr2"]                 # chr3 counted but not output
+    f1, _, b1, s1 = collect_fragments(tmp_path / "s.bam", chroms=out_chroms, threads=1)
+    f2, _, b2, s2 = collect_fragments(tmp_path / "s.bam", chroms=out_chroms, threads=3)
+    assert s1.as_dict() == s2.as_dict()
+    assert s1.pairs == 62 and s1.both_mapped == 54
+    for k in ("chrom", "start", "end", "count"):
+        np.testing.assert_array_equal(f1[k], f2[k])
+    np.testing.assert_array_equal(np.asarray(b1)[f1["barcode"]], np.asarray(b2)[f2["barcode"]])
+
+
 def test_fragment_ends_are_mate_5prime_ends(tmp_path):
     """A 50-bp fragment read with 60-bp reads: each mate runs into adapter and
     the aligner extends a few bases past the other mate's 5' end. The

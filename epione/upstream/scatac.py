@@ -706,9 +706,19 @@ def fastq_to_fragments(
         bstats = _align_stream(fq, layout, orientation, corrector, aligner=aligner, index=index,
                                threads=threads, trim=trim, out_bam=str(raw_bam), log=str(log),
                                outdir=outdir, extra_args=aligner_args)
+        # Coordinate-sort and index first so fragments are collected one
+        # reference per worker; the sorted BAM is kept only with keep_bam.
+        samtools = resolve_tool("samtools")
+        sorted_bam = bam_path if keep_bam else outdir / "_aligned.sorted.bam"
+        # bounded memory: at most 8 sort threads x 768 MB
+        subprocess.run([samtools, "sort", "-@", str(min(8, max(1, threads))), "-m", "768M",
+                        "-T", str(outdir / "_sort"), "-o", str(sorted_bam), str(raw_bam)],
+                       check=True, env=build_env())
+        raw_bam.unlink()
+        subprocess.run([samtools, "index", "-@", str(max(1, threads)), str(sorted_bam)], check=True, env=build_env())
         frags, _, barcodes, pstats = collect_fragments(
-            raw_bam, barcode_tag="CB", min_mapq=min_mapq, max_fragment_length=max_fragment_length,
-            chroms=chroms_out, threads=1,
+            sorted_bam, barcode_tag="CB", min_mapq=min_mapq, max_fragment_length=max_fragment_length,
+            chroms=chroms_out, threads=threads,
         )
         n_pairs = bstats.pairs
         qc.update({
@@ -721,13 +731,10 @@ def fastq_to_fragments(
             "adapter_trimming": trim,
         })
         if keep_bam:
-            samtools = resolve_tool("samtools")
-            # bounded memory: at most 8 sort threads x 768 MB
-            subprocess.run([samtools, "sort", "-@", str(min(8, max(1, threads))), "-m", "768M", "-o", str(bam_path),
-                            str(raw_bam)], check=True, env=build_env())
-            subprocess.run([samtools, "index", "-@", str(max(1, threads)), str(bam_path)], check=True, env=build_env())
             bam_out = str(bam_path)
-        raw_bam.unlink()
+        else:
+            for f in (sorted_bam, Path(str(sorted_bam) + ".bai")):
+                f.unlink(missing_ok=True)
 
     fqc, tab = _qc_from_fragments(frags, barcodes, qc["n_read_pairs"], min_fragments=min_fragments_qc)
     if translation:

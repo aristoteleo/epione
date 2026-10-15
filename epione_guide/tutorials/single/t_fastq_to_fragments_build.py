@@ -4,7 +4,8 @@ Execute with ``jupyter nbconvert --to notebook --execute --inplace``. Needs
 chromap, bwa-mem2 and samtools on PATH (bioconda), the 10x
 ``atac_pbmc_500_nextgem`` FASTQs and outputs, a GRCh38 FASTA and the 10x
 barcode whitelist; see the "Data" cell for the environment variables.
-With prebuilt indexes it takes about 20 min on 16 cores, most of it bwa-mem2.
+With prebuilt indexes it takes about 4 min on 16 cores (chromap on the full
+run, bwa-mem2 on a 2-million-read-pair subset).
 """
 import pathlib
 
@@ -174,24 +175,54 @@ md(r"""
 
 Here Epione itself extracts and corrects the barcodes, writes them as `CR` (raw), `CY`
 (quality) and `CB` (corrected) tags into the read comments so that bwa-mem2 copies them
-into the BAM (`-C`), and streams the pairs into `bwa-mem2 mem`. The fragments are then
-built from the BAM by `epi.upstream.bam_to_fragments`, which you can also call on any
-paired-end BAM with `CB` tags. `keep_bam=True` keeps a sorted, indexed BAM.
+into the BAM (`-C`), and streams the pairs into `bwa-mem2 mem`. The BAM is then sorted
+and indexed, and the fragments are built from it one chromosome per worker by
+`epi.upstream.bam_to_fragments`, which you can also call on any paired-end BAM with
+`CB` tags. `keep_bam=True` keeps the sorted, indexed BAM.
+
+bwa-mem2 is a full read aligner and is several times slower than chromap (about 15 min
+on 16 cores for this run, 35 min for a 77-million-pair Multiome library). To keep the
+tutorial short we run it on the first 2 million read pairs of lane 1, and run chromap
+on the same subset to compare.
 """)
 code(r"""
-t0 = time.time()
-res_bwa = epi.upstream.fastq_to_fragments(
-    fastq_dir=FASTQ_DIR,
-    reference=FASTA,
-    index=os.environ.get("EPIONE_BWA_MEM2_INDEX"),
-    whitelist=WHITELIST,
-    aligner="bwa-mem2",
-    outdir=f"{OUT}/bwa-mem2",
-    threads=THREADS,
-    keep_bam=True,
-    overwrite=True,
-)
-print(f"{time.time() - t0:.0f} s")
+N_SUB = 2_000_000
+SUB = f"{OUT}/subset_fastqs"
+os.makedirs(SUB, exist_ok=True)
+for role in ("R1", "R2", "R3"):
+    src = fq[role][0]                                  # lane 1
+    dst = os.path.join(SUB, os.path.basename(src))
+    if not os.path.exists(dst):
+        with gzip.open(src, "rt") as fi, gzip.open(dst, "wt", compresslevel=1) as fo:
+            for _ in range(4 * N_SUB):
+                fo.write(fi.readline())
+sorted(os.listdir(SUB))
+""")
+code(r"""
+sub = {}
+for aligner, index in (("bwa-mem2", os.environ.get("EPIONE_BWA_MEM2_INDEX")),
+                       ("chromap", os.environ.get("EPIONE_CHROMAP_INDEX"))):
+    t0 = time.time()
+    sub[aligner] = epi.upstream.fastq_to_fragments(
+        fastq_dir=SUB, reference=FASTA, index=index, whitelist=WHITELIST,
+        aligner=aligner, outdir=f"{OUT}/subset_{aligner}", threads=THREADS, overwrite=True,
+    )
+    print(f"{aligner}: {time.time() - t0:.0f} s")
+pd.DataFrame({k: v.qc for k, v in sub.items()}).loc[
+    ["n_read_pairs", "frac_valid_barcode", "frac_mapped", "frac_duplicate", "n_fragments"]]
+""")
+md(r"""
+Most fragments are identical in the two files; the rest differ at the margin (repeats
+near the MAPQ cut-off, soft-clipped ends):
+""")
+code(r"""
+def frag_keys(path):
+    df = epi.upstream.read_fragments(path)
+    return set(zip(df["chrom"], df["start"], df["end"], df["barcode"]))
+
+a, b = frag_keys(sub["bwa-mem2"]), frag_keys(sub["chromap"])
+print(f"bwa-mem2 {len(a):,}  chromap {len(b):,}  shared {len(a & b):,}  "
+      f"Jaccard {len(a & b) / len(a | b):.3f}")
 """)
 
 md(r"""
@@ -208,7 +239,7 @@ is_cell = cr_sc["is__cell_barcode"] == 1
 cr_cells = cr_sc.loc[is_cell, "barcode"].str.replace("-1", "", regex=False).tolist()
 keys = ["n_read_pairs", "frac_valid_barcode", "frac_mapped", "frac_duplicate", "n_fragments",
         "n_barcodes_ge_1000_fragments", "median_fragments_per_barcode_ge_1000", "wall_time_s"]
-qc = pd.DataFrame({"chromap": res_chromap.qc, "bwa-mem2": res_bwa.qc}).loc[keys]
+qc = pd.DataFrame({"chromap": res_chromap.qc}).loc[keys]
 tot = cr_sc["total"].sum()
 qc["Cell Ranger 2.0.0"] = [
     tot,
@@ -230,17 +261,17 @@ qc.astype(float).map(fmt)
 md(r"""
 The Cell Ranger column comes from its `singlecell.csv`; its counts are read pairs
 (including chrM) rather than unique fragments, and its cell count is its cell caller, so
-those rows are close but not identical in definition. The comparison below uses the same
-definition for all three files.
+those rows are close but not identical in definition. The comparison below uses the same definition for both files.
 """)
 
 md(r"""
 ## Comparison with Cell Ranger
 
-We load the three fragment files, keep the nuclear chromosomes (Cell Ranger leaves out
+We load the two fragment files, keep the nuclear chromosomes (Cell Ranger leaves out
 chrM) and compare them on Cell Ranger's ~500 called cells. These are the definitions of
 the parity gates in `tests/parity/fastq_to_fragments/MANIFEST.md`, which also has the
-results with Cell Ranger ATAC 2.2.0 re-run on the same FASTQs.
+results with Cell Ranger ATAC 2.2.0 re-run on the same FASTQs, for all three
+aligners on the full data.
 """)
 code(r"""
 NUCLEAR = [f"chr{i}" for i in range(1, 23)] + ["chrX", "chrY"]
@@ -250,7 +281,7 @@ def load(path):
     df["barcode"] = df["barcode"].str.replace("-1", "", regex=False)
     return df[df["chrom"].isin(NUCLEAR)].reset_index(drop=True)
 
-frags = {"Cell Ranger": load(CR_FRAGMENTS), "chromap": load(res_chromap), "bwa-mem2": load(res_bwa)}
+frags = {"Cell Ranger": load(CR_FRAGMENTS), "chromap": load(res_chromap)}
 {k: len(v) for k, v in frags.items()}
 """)
 
@@ -260,7 +291,7 @@ md(r"""
 with most fragments (K = number of Cell Ranger cells). Cell Ranger's own caller is not
 a top-K rule (it fits a mixture model and removes gel-bead multiplets), so even its own
 fragment file gives the same overlap with its cell calls. What matters is that the
-top-K sets of the three files agree with each other:
+top-K sets of the two files agree with each other:
 """)
 code(r"""
 counts = {k: v["barcode"].value_counts() for k, v in frags.items()}
@@ -272,9 +303,9 @@ for k in top:
           f"with Cell Ranger's top-{K} {jac_set(top[k], top['Cell Ranger']):.3f}")
 """)
 code(r"""
-fig, axes = plt.subplots(1, 2, figsize=(9, 4))
+fig, ax = plt.subplots(figsize=(4.5, 4))
 x = counts["Cell Ranger"].reindex(cr_cells).fillna(0)
-for ax, k in zip(axes, ("chromap", "bwa-mem2")):
+for k in ("chromap",):
     y = counts[k].reindex(cr_cells).fillna(0)
     ax.scatter(x, y, s=6, alpha=0.6)
     lim = [0, max(x.max(), y.max()) * 1.05]
@@ -286,10 +317,10 @@ fig.tight_layout()
 
 md(r"""
 **The same fragments?** For each cell, the Jaccard index of the exact
-(chrom, start, end) sets. bwa-mem2 is the aligner inside Cell Ranger (as bwa), so it
-reproduces most fragments base for base; chromap is a different aligner with its own
-mapping-quality model, so more fragments differ at the margin (repeats near the MAPQ
-cut-off, soft-clipped ends).
+(chrom, start, end) sets. chromap is a different aligner from Cell Ranger's bwa, with its
+own mapping-quality model, so some fragments differ at the margin. On the full data
+bwa-mem2 reproduces Cell Ranger's fragments more closely (median per-cell Jaccard 0.991
+vs 0.974 for chromap; see the parity manifest).
 """)
 code(r"""
 def keys(df):
@@ -302,7 +333,7 @@ def by_cell(df):
 
 cells_ref = by_cell(frags["Cell Ranger"])
 jac = {}
-for k in ("chromap", "bwa-mem2"):
+for k in ("chromap",):
     other = by_cell(frags[k])
     jac[k] = [np.intersect1d(cells_ref[c], other.get(c, []), assume_unique=True).size
               / np.union1d(cells_ref[c], other.get(c, [])).size for c in cr_cells]
@@ -314,7 +345,7 @@ ax.legend()
 """)
 
 md(r"""
-**Fragment length** shows the nucleosome ladder in all three files:
+**Fragment length** shows the nucleosome ladder in both files:
 """)
 code(r"""
 fig, ax = plt.subplots(figsize=(6, 3.5))
