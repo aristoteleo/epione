@@ -4,7 +4,7 @@ import numpy as np, anndata as ad
 mode, seed, out = sys.argv[1], int(sys.argv[2]), sys.argv[3]
 sys.path.insert(0, os.environ["EPIONE_SRC"])
 os.makedirs(out, exist_ok=True)
-a = ad.read_h5ad(os.path.join(os.path.dirname(__file__), "..", "data", "atac_ad.h5ad"))
+a = ad.read_h5ad(os.path.join(os.environ["EPIONE_SCBASSET_PARITY_DIR"], "data", "atac_ad.h5ad"))
 t0 = time.time()
 if mode == "epione":
     import epione as epi

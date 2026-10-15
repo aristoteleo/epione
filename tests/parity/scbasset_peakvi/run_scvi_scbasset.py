@@ -4,7 +4,7 @@ import numpy as np, anndata as ad, h5py, scipy.sparse as sp
 import scvi, torch
 seed, epochs, out = int(sys.argv[1]), int(sys.argv[2]), sys.argv[3]
 os.makedirs(out, exist_ok=True)
-D = os.path.join(os.path.dirname(__file__), "..", "data")
+D = os.path.join(os.environ["EPIONE_SCBASSET_PARITY_DIR"], "data")
 a = ad.read_h5ad(f"{D}/atac_ad.h5ad")
 with h5py.File(f"{D}/processed/all_seqs.h5", "r") as f:
     codes = f["X"][:].astype(np.int64)
