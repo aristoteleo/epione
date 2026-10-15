@@ -170,6 +170,7 @@ from ._cnv import (
     cnv, cnv_make_windows, cnv_count_matrix, cnv_subclones,
     cnv_karyotype_measures, cnv_burden,
 )
+from ._atac_models import scbasset, peakvi
 
 
 __all__ = [
@@ -245,4 +246,6 @@ __all__ = [
     "lsi_spatialglue", "clr_normalize_each_cell",
     "cnv", "cnv_make_windows", "cnv_count_matrix", "cnv_subclones",
     "cnv_karyotype_measures", "cnv_burden",
+    "scbasset",
+    "peakvi",
 ]
