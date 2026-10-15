@@ -75,6 +75,9 @@ def build_decoder(cell_emb_dim: int, device: str = "cuda", checkpoint: Optional[
     """scooby with upstream LoRA, ATAC track only, on Borzoi or Flashzoi (:mod:`._backbone`; on Flashzoi
     the attention LoRA is added on the q/v rows of the fused Wqkv). ``checkpoint`` overrides the
     backbone's default weights."""
+    if backbone == "alphagenome":
+        from ._alphagenome import load_alphagenome_scooby
+        return load_alphagenome_scooby(cell_emb_dim, device=device, train=train, weights=checkpoint)
     from epione.models import scooby as sb
     from ._backbone import BACKBONES, add_attention_lora
     model = sb.load_scooby(checkpoint or BACKBONES[backbone], cell_emb_dim=cell_emb_dim, n_tracks=1, lora=True,
@@ -94,8 +97,9 @@ def set_stabilise(model, on: bool):
 
 
 def trainable_state(model) -> dict:
-    """LoRA (incl. MoLoRA experts) + cell-state hypernetworks / gate + FiLM head (everything that is trained)."""
-    return {k: v for k, v in model.state_dict().items() if "lora" in k or "cell_state_to_" in k or k.startswith("head_")}
+    """every trained parameter: LoRA / Locon adapters (incl. MoLoRA experts), cell-state hypernetworks / gate, FiLM head"""
+    keep = {n for n, p in model.named_parameters() if p.requires_grad}
+    return {k: v for k, v in model.state_dict().items() if k in keep}
 
 
 def param_groups(model, lr: float, cellstate_lr: float, weight_decay: float):

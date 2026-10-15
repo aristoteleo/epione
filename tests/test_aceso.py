@@ -128,3 +128,18 @@ def test_sliced_lora_adapts_only_given_rows_and_expert_rows():
         e.expert_lora_B.normal_()
     de = e(x) - m(x)
     assert torch.allclose(de[..., other], torch.zeros_like(de[..., other])) and not torch.allclose(de[0], de[1])
+
+
+def test_alphagenome_locon_keeps_length_and_starts_at_zero():
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("alphagenome_pytorch")
+    from alphagenome_pytorch.convolutions import StandardizedConv1d
+    from epione.models.aceso._alphagenome import Locon
+    torch.manual_seed(0)
+    x = torch.randn(2, 6, 50)
+    for conv in [StandardizedConv1d(6, 7, 5), torch.nn.Conv1d(6, 7, 15, padding="same"), torch.nn.Conv1d(6, 7, 1)]:
+        m = Locon(conv, rank=3, alpha=3)
+        assert torch.allclose(m(x), conv(x))                 # zero-initialised up conv
+        with torch.no_grad():
+            m.locon_up.weight.normal_()
+        assert m(x).shape == conv(x).shape                   # same output length as the original

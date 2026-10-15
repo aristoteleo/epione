@@ -20,7 +20,8 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-BACKBONES = {"borzoi": "johahi/borzoi-replicate-0", "flashzoi": "johahi/flashzoi-replicate-0"}
+BACKBONES = {"borzoi": "johahi/borzoi-replicate-0", "flashzoi": "johahi/flashzoi-replicate-0",
+             "alphagenome": "gtca/alphagenome_pytorch"}     # AlphaGenome: see _alphagenome.py
 
 
 def is_flashed(core) -> bool:
@@ -41,7 +42,7 @@ def v_rows(mha) -> torch.Tensor:
 def unwrap_linear(m):
     """the nn.Linear / nn.Conv1d under any stack of adapter wrappers (peft base_layer, .base)"""
     while not isinstance(m, (nn.Linear, nn.Conv1d)):
-        m = getattr(m, "base_layer", None) or getattr(m, "base")
+        m = getattr(m, "base_layer", None) or getattr(m, "original_layer", None) or getattr(m, "base")
     return m
 
 

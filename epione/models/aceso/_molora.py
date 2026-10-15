@@ -111,10 +111,16 @@ class AcesoDecoder(nn.Module):
         assert core.n_tracks == 1, "ACESO decoder: ATAC only"
         assert not core.use_transform_borzoi_emb
         K = config.n_experts
-        for parent, attr, rows in _expert_targets(core, config.n_expert_blocks):
+        self.alphagenome = getattr(core, "ag", None) is not None
+        if self.alphagenome:
+            from ._alphagenome import ag_expert_targets
+            targets, depth = ag_expert_targets(core, config.n_expert_blocks), len(core.ag.tower.blocks)
+        else:
+            targets, depth = _expert_targets(core, config.n_expert_blocks), len(core.transformer)
+        for parent, attr, rows in targets:
             base = parent._modules[attr]
             parent._modules[attr] = ExpertLoRA(base, K, config.rank, config.alpha, rows=rows)
-        self.n_low = len(core.transformer) - config.n_expert_blocks
+        self.n_low = depth - config.n_expert_blocks
         self.cell_state_to_gate = nn.Sequential(nn.Linear(cell_emb_dim, config.gate_hidden), nn.GELU(),
                                                 nn.Linear(config.gate_hidden, K))
         nn.init.zeros_(self.cell_state_to_gate[-1].weight); nn.init.zeros_(self.cell_state_to_gate[-1].bias)
@@ -141,6 +147,13 @@ class AcesoDecoder(nn.Module):
         """[1, 4, L] (as scooby's forward) -> [K, 1920, bins]: one embedding per expert."""
         c, K = self.core, self.config.n_experts
         assert sequence.shape[0] == 1, "one sequence per call (as upstream training)"
+        if self.alphagenome:                                     # AlphaGenome: lower trunk once, upper per expert
+            trunk, pair, inter, L = c.lower(sequence, self.n_low)
+            ex = lambda t: t.expand(K, *t.shape[1:])
+            args = (ex(trunk), ex(pair), {k: ex(v) for k, v in inter.items()}, L, self.n_low)
+            if self.training and self.config.checkpoint_upper:
+                return torch.utils.checkpoint.checkpoint(c.upper, *args, use_reentrant=False)
+            return c.upper(*args)
         x = c.conv_dna(sequence)
         x_unet0 = c.res_tower(x)
         x_unet1 = c.unet1(x_unet0)
