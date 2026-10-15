@@ -41,7 +41,7 @@ _MODULES = {
     "_state": ["load_epiagent", "embed_cells", "UFEConfig", "finetune_ufe", "knn_gate"],
     "_panel": ["mgi_orthologs", "hvg_rank", "PanelSpace", "PanelSampler", "thin_counts"],
     "_encoder": ["StateEncoder", "EncoderConfig", "train_encoder", "predict_states", "alignment_loss"],
-    "_decoder": ["DecoderConfig", "MultiFragmentReader", "build_decoder", "train_decoder", "profile_pearson"],
+    "_decoder": ["DecoderConfig", "MultiFragmentReader", "build_decoder", "train_decoder", "profile_pearson", "trainable_state", "recalibrate_bn"],
     "_molora": ["AcesoDecoder", "MoLoRAConfig", "ExpertLoRA", "PrototypeGate", "build_aceso_decoder"],
     "_backbone": ["BACKBONES", "SlicedLoRA", "add_attention_lora"],
     "_filmhead": ["FiLMHeadDecoder", "FiLMConfig", "build_film_decoder"],

@@ -160,3 +160,32 @@ def test_prototype_gate_routes_clusters_to_different_experts():
     top = pi.argmax(1).numpy().reshape(4, 50)
     assert all(len(set(r)) == 1 for r in top) and len({r[0] for r in top}) == 4    # each cluster -> its own expert
     assert float(pi.max(1).values.mean()) > 0.9                                     # far from uniform
+
+
+def test_trainable_state_keeps_batchnorm_statistics():
+    """BN running statistics change after warm-up; a checkpoint must carry them (and recalibrate_bn re-estimates them)"""
+    torch = pytest.importorskip("torch")
+    import torch.nn as nn
+    from epione.models.aceso._decoder import trainable_state, recalibrate_bn
+
+    class M(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.conv, self.bn, self.head = nn.Conv1d(4, 8, 3, padding=1), nn.BatchNorm1d(8), nn.Linear(8, 1)
+            for p in list(self.conv.parameters()) + list(self.bn.parameters()):
+                p.requires_grad = False
+
+        def forward_seq_to_emb(self, x):
+            return self.bn(self.conv(x))
+
+    m = M()
+    st = trainable_state(m)
+    assert {"bn.running_mean", "bn.running_var", "bn.num_batches_tracked", "head.weight", "head.bias"} <= set(st)
+    assert "conv.weight" not in st and "bn.weight" not in st
+    g = torch.Generator().manual_seed(0)
+    seqs = [torch.randn(50, 4, generator=g) * 3 + 1 for _ in range(5)]
+    assert recalibrate_bn(m, seqs, device="cpu") == 5
+    with torch.no_grad():
+        h = torch.cat([m.conv(s[None].permute(0, 2, 1)) for s in seqs], 0)
+    assert torch.allclose(m.bn.running_mean, h.mean((0, 2)), atol=1e-4)
+    assert not m.bn.training and m.bn.momentum == 0.1

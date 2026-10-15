@@ -96,10 +96,42 @@ def set_stabilise(model, on: bool):
                 m.eval()
 
 
+def _bn_buffer_names(model) -> set:
+    import torch.nn as nn
+    return {f"{mn}.{bn}" if mn else bn for mn, m in model.named_modules() if isinstance(m, nn.modules.batchnorm._BatchNorm)
+            for bn, _ in m.named_buffers(recurse=False)}
+
+
 def trainable_state(model) -> dict:
-    """every trained parameter: LoRA / Locon adapters (incl. MoLoRA experts), cell-state hypernetworks / gate, FiLM head"""
-    keep = {n for n, p in model.named_parameters() if p.requires_grad}
+    """every trained parameter (LoRA / Locon adapters incl. MoLoRA experts, cell-state hypernetworks / gate, FiLM head)
+    and the BatchNorm running statistics: upstream freezes BN only during warm-up, so Borzoi's / Flashzoi's BN
+    statistics change during training and the model is wrong without them (2026-10-15: a checkpoint without them
+    scored val r 0.004 instead of 0.16; AlphaGenome's RMSBatchNorm never updates its statistics)."""
+    keep = {n for n, p in model.named_parameters() if p.requires_grad} | _bn_buffer_names(model)
     return {k: v for k, v in model.state_dict().items() if k in keep}
+
+
+def recalibrate_bn(model, sequences, device="cuda") -> int:
+    """Re-estimate BatchNorm running statistics (cumulative average) from one-hot training sequences [L, 4], for
+    checkpoints saved without them (before 2026-10-15). Only the BN layers are in training mode; no gradients.
+    Returns the number of sequences used. ``model`` needs ``forward_seq_to_emb``."""
+    import torch
+    import torch.nn as nn
+    bns = [m for m in model.modules() if isinstance(m, nn.modules.batchnorm._BatchNorm)]
+    mom = [m.momentum for m in bns]
+    for m in bns:
+        m.reset_running_stats(); m.momentum = None
+    model.eval()
+    for m in bns:
+        m.train()
+    n = 0
+    with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16, enabled=str(device).startswith("cuda")):
+        for x in sequences:
+            model.forward_seq_to_emb(torch.as_tensor(x)[None].permute(0, 2, 1).to(device)); n += 1
+    for m, mo in zip(bns, mom):
+        m.momentum = mo
+    model.eval()
+    return n
 
 
 def param_groups(model, lr: float, cellstate_lr: float, weight_decay: float):
