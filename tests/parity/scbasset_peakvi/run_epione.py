@@ -6,7 +6,7 @@ import epione as epi
 seed, epochs, out = int(sys.argv[1]), int(sys.argv[2]), sys.argv[3]
 patience = int(sys.argv[4]) if len(sys.argv) > 4 else 50
 os.makedirs(out, exist_ok=True)
-a = ad.read_h5ad(os.path.join(os.path.dirname(__file__), "..", "data", "atac_ad.h5ad"))
+a = ad.read_h5ad(os.path.join(os.environ["EPIONE_SCBASSET_PARITY_DIR"], "data", "atac_ad.h5ad"))
 t0 = time.time()
 m = epi.tl.scbasset(a, os.environ["HG38_FASTA"], max_epochs=epochs, patience=patience, seed=seed, log_every=1)
 el = time.time() - t0
