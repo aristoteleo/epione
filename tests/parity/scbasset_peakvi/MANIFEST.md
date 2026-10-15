@@ -224,3 +224,25 @@ on both sides; each run took about 8.5 min.
 - **Reading.** At the 200-epoch cap, B-cell TF activities are not
   reproducible from seed to seed with either implementation. This is a
   property of the model at this budget, not a port difference.
+
+### Information (no gate) · scvi-tools SCBASSET vs official, 3 seeds, 200 epochs
+
+| metric | scvi-tools mean ± SD | official mean ± SD | \|Δ\| | the G2 rule would give |
+|---|---|---|---|---|
+| ARI | 0.589 ± 0.019 | 0.450 ± 0.045 | 0.139 | fail |
+| AMI | 0.710 ± 0.014 | 0.640 ± 0.012 | 0.070 | fail |
+| kNN accuracy | 0.835 ± 0.012 | 0.794 ± 0.007 | 0.041 | fail |
+| silhouette | 0.085 ± 0.009 | 0.059 ± 0.003 | 0.026 | pass |
+| test AUROC | 0.797 ± 0.003 | 0.672 ± 0.003 | 0.125 | fail † |
+
+At the same epoch budget, scvi-tools SCBASSET does not behave like the
+official code; this confirms the discovery reading. Its embeddings score
+higher on these labels.
+
+† scvi-tools draws its own random 90/10 split, so about 90 % of the official
+test peaks were in its training set. Its test AUROC is therefore inflated and
+not comparable.
+
+Which deviation drives the embedding gain (for example the 4x larger
+cell-embedding init, or keeping the last epoch) was not investigated.
+Epione stays with the official code.
