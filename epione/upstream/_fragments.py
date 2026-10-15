@@ -301,7 +301,7 @@ def _collect_from_reads(
     max_fragment_length: Optional[int],
     require_proper_pair: bool,
     tid_to_cid: np.ndarray,
-) -> None:
+) -> Dict[str, object]:
     pending: Dict[str, object] = {}
     for r in reads:
         if r.is_secondary or r.is_supplementary or not r.is_paired:
@@ -339,6 +339,7 @@ def _collect_from_reads(
             continue
         collector.add(int(cid), s, e, bc)
         stats.fragments += 1
+    return pending
 
 
 def _chunk_worker(args):
@@ -349,9 +350,13 @@ def _chunk_worker(args):
     stats = PairStats()
     with pysam.AlignmentFile(bam, "rb") as fh:
         tid_to_cid = _tid_map(fh, chroms)
-        _collect_from_reads(fh.fetch(region), collector, stats, tid_to_cid=tid_to_cid, **kw)
+        left = _collect_from_reads(fh.fetch(region), collector, stats, tid_to_cid=tid_to_cid, **kw)
+    # Mates the region did not contain: pairs split across references
+    # (mate mapped) or with an unplaced unmapped mate.
+    n_left = len(left)
+    n_left_mate_mapped = sum(1 for r in left.values() if not r.mate_is_unmapped and not r.is_unmapped)
     d = collector.finalize()
-    return d, collector.barcodes, stats
+    return d, collector.barcodes, stats, (n_left, n_left_mate_mapped)
 
 
 def _tid_map(fh, chroms: Sequence[str]) -> np.ndarray:
@@ -397,10 +402,24 @@ def collect_fragments(
     if indexed and threads > 1:
         from multiprocessing import get_context
 
-        jobs = [(bam, c, kw, chroms) for c in chroms if c in refs]
+        with pysam.AlignmentFile(bam, "rb") as fh:
+            mapped = {s.contig: s.total for s in fh.get_index_statistics()}
+            n_unplaced = fh.nocoordinate
+        # Every reference with reads, so the pair counters match the
+        # single-pass path; largest first for load balance.
+        jobs = [(bam, c, kw, chroms) for c in sorted(refs, key=lambda c: -mapped.get(c, 0))
+                if mapped.get(c, 0)]
         with get_context("spawn").Pool(min(threads, len(jobs) or 1)) as pool:
             parts = pool.map(_chunk_worker, jobs)
-        return _merge_parts(parts, chroms)
+        n_left = sum(p[3][0] for p in parts)
+        n_left_mm = sum(p[3][1] for p in parts)
+        frags, chroms_out, names, stats = _merge_parts([p[:3] for p in parts], chroms)
+        # Both reads of a split pair are left over in some region; a read with
+        # an unplaced mate pairs with one of the n_unplaced reads, and the
+        # remaining unplaced reads are unmapped pairs.
+        stats.pairs += (n_left + n_unplaced) // 2
+        stats.both_mapped += n_left_mm // 2
+        return frags, chroms_out, names, stats
 
     collector = FragmentCollector(chroms)
     stats = PairStats()

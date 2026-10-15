@@ -196,3 +196,15 @@ time. Index building (once per genome, GRCh38 2020-A): chromap 3 m 43 s (4 threa
 Scripts: `parity_barcodes.py` (G1), `parity_fragments.py` (G2–G6, G8),
 `parity_snapatac2.py` (G7). Data, references and Cell Ranger outputs live outside the
 repository.
+
+### Follow-up: parallel BAM → fragments (no change to outputs)
+
+The bwa-mem2 / bowtie2 path now coordinate-sorts and indexes the aligner BAM first and collects
+fragments one reference per worker, instead of one single-threaded pass over the unsorted BAM.
+The per-reference workers also return the reads whose mate they did not see (pairs split
+across references, unmapped mates without a coordinate), so the pair counters match the single
+pass. Checked on the D1 bwa-mem2 BAM (16 threads): the 10,892,576 nuclear + chrM fragment
+records, with their counts, are identical to the file of the run reported above, and
+`pairs` / `both_mapped` / `passing` / `with_barcode` are identical to its `qc_summary.json`.
+Fragment collection took 266 s single-threaded and 65 s in parallel. The gate results above
+therefore stand without a re-run.
