@@ -72,6 +72,7 @@ motif = [
     'torch',         # find_motifs_genome GPU PWM scan
     'mpmath',        # extreme-tail binomial
     'logomaker',     # PWM logos in epione.pl.homer_motif_table
+    'pychromvar',    # epi.tl.add_motif_matrix (CPU MOODS scan) / get_bg_peaks -> compute_deviations
 ]
 footprint = [
     'MOODS-python',
@@ -107,8 +108,8 @@ test = [
     'patsy',
     'pydeseq2',
     'inmoose',
-    # pychromvar is lazy-imported by tl._background_peaks and exercised by
-    # the existing tests/test_chromvar.py tests.
+    # pychromvar is lazy-imported by tl._background_peaks / tl._motif_matrix
+    # (also in the `motif` extra) and exercised by tests/test_chromvar.py.
     'pychromvar',
     # igraph + leidenalg drive the community-detection path used by
     # tl._coaccessibility (tests/test_coaccessibility.py).
@@ -157,6 +158,7 @@ multimodal = [
     'scvi-tools>=1.3',
     'openTSNE>=1.0',
     'mudataoom',
+    'pyccasc',       # epi.tl.integrate(method='cca') (imports as cca_py)
 ]
 doublets = [
     # epi.pp.scdblfinder / amulet / clamulet (scATAC mode of the omicverse scDblFinder port).
