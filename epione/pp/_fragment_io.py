@@ -45,7 +45,26 @@ from typing import Callable, Iterator, NamedTuple, Optional
 
 import numpy as np
 
-__all__ = ["FragmentChunk", "map_fragment_chunks", "resolve_n_jobs", "BarcodeLookup"]
+__all__ = ["FragmentChunk", "map_fragment_chunks", "resolve_n_jobs", "BarcodeLookup",
+           "release_free_memory"]
+
+
+def release_free_memory() -> None:
+    """Hand memory freed by the worker threads back to the OS.
+
+    Thousands of few-MB per-chunk arrays are freed from per-thread malloc
+    arenas (and pyarrow's pool), which keep the pages: without this the
+    process RSS stays GBs above what is live. Best effort (glibc only)."""
+    try:
+        import pyarrow as pa
+        pa.default_memory_pool().release_unused()
+    except Exception:
+        pass
+    try:
+        import ctypes
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except Exception:
+        pass
 
 _BGZF_MAGIC = b"\x1f\x8b\x08\x04"
 _GZIP_MAGIC = b"\x1f\x8b"

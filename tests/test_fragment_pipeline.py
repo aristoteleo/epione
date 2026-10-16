@@ -565,3 +565,16 @@ def test_store_long_fragments(tmp_path):
         epi.pp.add_tile_matrix(ad, bin_size=bin_size, counting_strategy=strat)
         ref = _legacy_tile(gz, list(ad.obs_names), cs, bin_size, strat)
         assert (ad.X != ref).nnz == 0 and ad.X.nnz == ref.nnz
+
+
+def test_tile_matrix_chrom_order_differs(frag_files):
+    """chrom_sizes order != file order (tile bases decrease along the file):
+    the per-cell merge must fall back to a full sort and stay exact."""
+    import epione as epi
+    cs = dict(reversed(list(CHROM_SIZES.items())))
+    ad = epi.pp.import_fragments(frag_files["bgzf"], chrom_sizes=cs, min_num_fragments=1)
+    epi.pp.add_tile_matrix(ad, bin_size=500)
+    ref = _legacy_tile(frag_files["bgzf"], list(ad.obs_names), cs, 500, "paired-insertion")
+    np.testing.assert_array_equal(ad.X.indptr, ref.indptr)
+    np.testing.assert_array_equal(ad.X.indices, ref.indices)
+    np.testing.assert_array_equal(ad.X.data, ref.data)

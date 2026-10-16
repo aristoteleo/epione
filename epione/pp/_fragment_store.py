@@ -242,6 +242,41 @@ def _kernels():
                 j += 1
 
     @jit
+    def qc_chunk(kind, bc, count, start, end, n_bc, with_store):
+        """Per-barcode QC counts of one parsed chunk (+ store length column)."""
+        nf = np.zeros(n_bc, dtype=np.int64)
+        reads = np.zeros(n_bc, dtype=np.int64)
+        nm = np.zeros(n_bc, dtype=np.int64)
+        rows = np.zeros(n_bc, dtype=np.int64)
+        n = bc.shape[0]
+        lens = np.empty(n if with_store else 0, dtype=np.uint16)
+        n_long = 0
+        for i in range(n):
+            b = bc[i]
+            k = kind[i]
+            if k == 1:
+                nf[b] += 1
+                reads[b] += count[i]
+            elif k == 2:
+                nm[b] += 1
+            if with_store:
+                rows[b] += 1
+                ln = np.int64(end[i]) - np.int64(start[i])
+                if ln < 0 or ln >= 65535:
+                    lens[i] = 65535
+                    n_long += 1
+                else:
+                    lens[i] = ln
+        long_rows = np.empty(n_long, dtype=np.int64)
+        if n_long:
+            j = 0
+            for i in range(n):
+                if lens[i] == 65535:
+                    long_rows[j] = i
+                    j += 1
+        return nf, reads, nm, rows, lens, long_rows
+
+    @jit
     def _end(p, start, lens, lpos, lend):
         ln = lens[p]
         if ln != 65535:
@@ -249,24 +284,63 @@ def _kernels():
         return np.int64(lend[np.searchsorted(lpos, p)])
 
     @jit
-    def tss_pileup(r0, r1, indptr, chrom, start, lens, lpos, lend, row_map, tss_off, tss, up, down, mx):
+    def _bound(tss, a, b, pos, value, right):
+        """searchsorted(tss[a:b], value, side) + a, walking from ``pos``
+        (cuts of one cell come in genomic order, so the answer is usually
+        a few steps away); falls back to bisection on long jumps."""
+        steps = 0
+        if right:
+            while pos < b and tss[pos] <= value and steps < 16:
+                pos += 1
+                steps += 1
+            while pos > a and tss[pos - 1] > value and steps < 16:
+                pos -= 1
+                steps += 1
+            if steps >= 16:
+                return a + np.searchsorted(tss[a:b], value, side="right")
+        else:
+            while pos < b and tss[pos] < value and steps < 16:
+                pos += 1
+                steps += 1
+            while pos > a and tss[pos - 1] >= value and steps < 16:
+                pos -= 1
+                steps += 1
+            if steps >= 16:
+                return a + np.searchsorted(tss[a:b], value, side="left")
+        return pos
+
+    @jit
+    def tss_pileup(r0, r1, indptr, chrom, start, lens, lpos, lend, row_map, tss_off, tss,
+                   up, down, mx):
         nf = up + down + 1
         for i in range(r0, r1):
             s_cell = row_map[i]
             if s_cell < 0:
                 continue
+            prev_c = -1
+            lo0 = hi0 = lo1 = hi1 = 0
             for p in range(indptr[s_cell], indptr[s_cell + 1]):
                 c = chrom[p]
                 a = tss_off[c]
                 b = tss_off[c + 1]
                 if a == b:
                     continue
+                if c != prev_c:
+                    prev_c = c
+                    lo0 = hi0 = lo1 = hi1 = a
                 s = np.int64(start[p])
                 e = _end(p, start, lens, lpos, lend)
                 for which in range(2):
-                    cut = s if which == 0 else e - 1
-                    lo = a + np.searchsorted(tss[a:b], cut - down, side="left")
-                    hi = a + np.searchsorted(tss[a:b], cut + up, side="right")
+                    if which == 0:
+                        cut = s
+                        lo0 = _bound(tss, a, b, lo0, cut - down, False)
+                        hi0 = _bound(tss, a, b, hi0, cut + up, True)
+                        lo, hi = lo0, hi0
+                    else:
+                        cut = e - 1
+                        lo1 = _bound(tss, a, b, lo1, cut - down, False)
+                        hi1 = _bound(tss, a, b, hi1, cut + up, True)
+                        lo, hi = lo1, hi1
                     for k in range(lo, hi):
                         t = tss[k]
                         if s < t + down + 1 and e > t - up:
@@ -298,6 +372,82 @@ def _kernels():
         return m
 
     @jit
+    def _row_sorted(p0, p1, chrom, start, lens, lpos, lend, count, unit, base, bin_size,
+                    fragment_mode, out):
+        """Packed (tile << 32 | weight) insertions of one cell, sorted by tile,
+        in out[:m]. A cell's fragments are stored in file (genomic) order, so
+        the start tiles are already sorted and the end tiles nearly so: sort
+        the end tiles by (capped) insertion sort and merge, falling back to a
+        full sort whenever that assumption does not hold."""
+        if fragment_mode:
+            m = _row_tiles(p0, p1, chrom, start, lens, lpos, lend, count, base, bin_size,
+                           True, out)
+            out[:m] = np.sort(out[:m])
+            return m
+        n = p1 - p0
+        A = np.empty(n, dtype=np.int64)
+        B = np.empty(n, dtype=np.int64)
+        na = 0
+        nb_ = 0
+        a_sorted = True
+        for p in range(p0, p1):
+            b0 = base[chrom[p]]
+            if b0 < 0:
+                continue
+            w = np.int64(1) if unit else np.int64(count[p])
+            t1 = b0 + np.int64(start[p]) // bin_size
+            t2 = b0 + (_end(p, start, lens, lpos, lend) - 1) // bin_size
+            A[na] = (t1 << 32) | w
+            if na and t1 < (A[na - 1] >> 32):
+                a_sorted = False
+            na += 1
+            if t2 != t1:
+                B[nb_] = (t2 << 32) | w
+                nb_ += 1
+        m = na + nb_
+        ok = a_sorted
+        if ok:
+            moves = 0
+            cap = 8 * nb_ + 64
+            for k in range(1, nb_):
+                v = B[k]
+                key = v >> 32
+                j = k - 1
+                while j >= 0 and (B[j] >> 32) > key:
+                    B[j + 1] = B[j]
+                    j -= 1
+                    moves += 1
+                B[j + 1] = v
+                if moves > cap:
+                    ok = False
+                    break
+        if not ok:
+            out[:na] = A[:na]
+            out[na:m] = B[:nb_]
+            out[:m] = np.sort(out[:m])
+            return m
+        i = 0
+        j = 0
+        q = 0
+        while i < na and j < nb_:
+            if (A[i] >> 32) <= (B[j] >> 32):
+                out[q] = A[i]
+                i += 1
+            else:
+                out[q] = B[j]
+                j += 1
+            q += 1
+        while i < na:
+            out[q] = A[i]
+            i += 1
+            q += 1
+        while j < nb_:
+            out[q] = B[j]
+            j += 1
+            q += 1
+        return m
+
+    @jit
     def _row_len(p0, p1, chrom, start, lens, lpos, lend, base, bin_size, fragment_mode):
         m = 0
         for p in range(p0, p1):
@@ -323,18 +473,15 @@ def _kernels():
             p0, p1 = indptr[s_cell], indptr[s_cell + 1]
             buf = np.empty(_row_len(p0, p1, chrom, start, lens, lpos, lend, base, bin_size,
                                     fragment_mode), dtype=np.int64)
-            m = _row_tiles(p0, p1, chrom, start, lens, lpos, lend, count, base, bin_size,
-                           fragment_mode, buf)
+            m = _row_sorted(p0, p1, chrom, start, lens, lpos, lend, count, False, base,
+                            bin_size, fragment_mode, buf)
             if m == 0:
                 continue
-            for k in range(m):
-                t = buf[k] >> 32
-                if t < 0 or t >= n_tiles:
-                    bad[0] = 1
-            seg = np.sort(buf[:m] >> 32)
+            if (buf[0] >> 32) < 0 or (buf[m - 1] >> 32) >= n_tiles:
+                bad[0] = 1
             u = 1
             for k in range(1, m):
-                if seg[k] != seg[k - 1]:
+                if (buf[k] >> 32) != (buf[k - 1] >> 32):
                     u += 1
             nnz[i] = u
 
@@ -348,11 +495,11 @@ def _kernels():
             p0, p1 = indptr[s_cell], indptr[s_cell + 1]
             buf = np.empty(_row_len(p0, p1, chrom, start, lens, lpos, lend, base, bin_size,
                                     fragment_mode), dtype=np.int64)
-            m = _row_tiles(p0, p1, chrom, start, lens, lpos, lend, count, base, bin_size,
-                           fragment_mode, buf)
+            m = _row_sorted(p0, p1, chrom, start, lens, lpos, lend, count, False, base,
+                            bin_size, fragment_mode, buf)
             if m == 0:
                 continue
-            seg = np.sort(buf[:m])
+            seg = buf
             q = out_indptr[i]
             cur = seg[0] >> 32
             acc = np.int64(0)
@@ -376,27 +523,16 @@ def _kernels():
             if s_cell < 0:
                 continue
             p0, p1 = indptr[s_cell], indptr[s_cell + 1]
-            buf = np.empty(2 * (p1 - p0), dtype=np.int64)
-            m = 0
-            for p in range(p0, p1):
-                b0 = base[chrom[p]]
-                if b0 < 0:
-                    continue
-                ts = b0 + np.int64(start[p]) // tile_size
-                te = b0 + (_end(p, start, lens, lpos, lend) - 1) // tile_size
-                buf[m] = ts
-                m += 1
-                if te != ts:
-                    buf[m] = te
-                    m += 1
+            seg = np.empty(2 * (p1 - p0), dtype=np.int64)
+            m = _row_sorted(p0, p1, chrom, start, lens, lpos, lend, start, True, base,
+                            tile_size, False, seg)
             if m == 0:
                 continue
-            seg = np.sort(buf[:m])
             k = 0
             while k < m:
-                t = seg[k]
+                t = seg[k] >> 32
                 c = 0
-                while k < m and seg[k] == t:
+                while k < m and (seg[k] >> 32) == t:
                     c += 1
                     k += 1
                 if ceiling > 0 and c > ceiling:
@@ -420,7 +556,7 @@ def _kernels():
                 res[c] = t
         return neg
 
-    _KERNELS.update(scatter_chunk=scatter_chunk, tss_pileup=tss_pileup,
+    _KERNELS.update(qc_chunk=qc_chunk, scatter_chunk=scatter_chunk, tss_pileup=tss_pileup,
                     tile_count=tile_count, tile_fill=tile_fill,
                     gene_score=gene_score, chrom_max_tile=chrom_max_tile)
     return _KERNELS

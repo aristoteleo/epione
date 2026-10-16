@@ -152,11 +152,12 @@ def _scan_cell_qc(fragment_file, *, valid_chroms, chrM, whitelist, n_jobs,
     """
     import pyarrow as pa
     import pyarrow.compute as pc
-    from ._fragment_io import map_fragment_chunks, resolve_n_jobs
+    from ._fragment_io import map_fragment_chunks, resolve_n_jobs, release_free_memory
 
     wl = None if whitelist is None else pa.array(sorted(whitelist), type=pa.string())
     i32 = np.iinfo(np.int32)
-    from ._fragment_store import LONG
+    from ._fragment_store import _kernels as _store_kernels
+    qc_chunk = _store_kernels()["qc_chunk"]
 
     def per_chunk(ch):
         if len(ch) == 0:
@@ -172,27 +173,22 @@ def _scan_cell_qc(fragment_file, *, valid_chroms, chrM, whitelist, n_jobs,
             ok = pc.is_in(ch.barcode_names, value_set=wl).to_numpy(
                 zero_copy_only=False)
             kind = np.where(ok[bc], kind, 0)
-        frag = kind == 1
-        nf = np.bincount(bc[frag], minlength=n_bc)
-        reads = np.rint(np.bincount(bc[frag], weights=ch.count[frag],
-                                    minlength=n_bc)).astype(np.int64)
-        nm = np.bincount(bc[kind == 2], minlength=n_bc)
         cols = None
+        fits = store and (len(ch.start) == 0 or (
+            ch.start.min() >= i32.min and ch.end.min() >= i32.min
+            and ch.start.max() <= i32.max and ch.end.max() <= i32.max
+            and ch.count.max() <= i32.max))
+        # One nogil pass: QC counters (+ the store's length column).
+        nf, reads, nm, rows, lens, long_rows = qc_chunk(
+            kind, bc, ch.count, ch.start, ch.end, n_bc, bool(fits))
         if store:
-            fits = (len(ch.start) == 0 or (
-                ch.start.min() >= i32.min and ch.end.min() >= i32.min
-                and ch.start.max() <= i32.max and ch.end.max() <= i32.max
-                and ch.count.max() <= i32.max))
             if fits:
-                ln = ch.end - ch.start
-                long_ = (ln < 0) | (ln >= LONG)
-                long_rows = np.flatnonzero(long_)
                 cols = (
-                    np.bincount(bc, minlength=n_bc),
+                    rows,
                     ch.chrom.astype(_small_int(len(ch.chrom_names) - 1, signed=True)),
                     ch.chrom_names,
                     ch.start.astype(np.int32),
-                    np.where(long_, LONG, ln).astype(np.uint16),
+                    lens,
                     ch.count.astype(_small_int(int(ch.count.max()) if len(ch.count) else 0)),
                     bc.astype(_small_int(n_bc - 1)),
                     long_rows, ch.end[long_rows].astype(np.int32),
@@ -201,7 +197,9 @@ def _scan_cell_qc(fragment_file, *, valid_chroms, chrM, whitelist, n_jobs,
                 cols = False
         return ch.barcode_names, nf, reads, nm, cols
 
-    index: dict = {}
+    # Global barcode ids in order of first appearance; looked up with
+    # pyarrow's hash join instead of a Python dict per chunk.
+    known = pa.array([], type=pa.string())
     chrom_index: dict = {}
     nf_l, rd_l, nm_l, rows_l, chunks = [], [], [], [], []
     store_ok = bool(store)
@@ -209,9 +207,13 @@ def _scan_cell_qc(fragment_file, *, valid_chroms, chrM, whitelist, n_jobs,
         if res is None:
             continue
         names, nf, rd, nm, cols = res
-        pos = np.fromiter(
-            (index.setdefault(b, len(index)) for b in names.to_pylist()),
-            dtype=np.int64, count=len(names))
+        idx = pc.index_in(names, value_set=known)
+        new = idx.is_null()
+        n_new = new.true_count
+        if n_new:
+            known = pa.concat_arrays([known, names.filter(new)])
+            idx = pc.index_in(names, value_set=known)
+        pos = idx.to_numpy(zero_copy_only=False).astype(np.int64)
         nf_l.append((pos, nf)); rd_l.append((pos, rd)); nm_l.append((pos, nm))
         if store_ok:
             if cols is False:
@@ -224,7 +226,7 @@ def _scan_cell_qc(fragment_file, *, valid_chroms, chrM, whitelist, n_jobs,
             rows_l.append((pos, rows))
             chunks.append((pos, rows, chrom, cmap, start, lens, count, bc,
                            long_rows, long_end))
-    n = len(index)
+    n = len(known)
     acc = []
     for parts in (nf_l, rd_l, nm_l):
         a = np.zeros(n, dtype=np.int64)
@@ -233,12 +235,14 @@ def _scan_cell_qc(fragment_file, *, valid_chroms, chrM, whitelist, n_jobs,
         acc.append(a)
     del nf_l, rd_l, nm_l
     seen = (acc[0] > 0) | (acc[2] > 0)
-    names = list(index)
+    names = known.to_pylist()
+    del known
     order = sorted((i for i in range(n) if seen[i]), key=names.__getitem__)
     barcodes = [names[i] for i in order]
     order = np.asarray(order, dtype=np.int64)
     nf, nr, nm = acc[0][order], acc[1][order], acc[2][order]
     if not store_ok:
+        release_free_memory()
         return barcodes, nf, nr, nm, None
 
     # ---- CSR-by-cell fragment store for the cells that will be kept ----
@@ -296,6 +300,7 @@ def _scan_cell_qc(fragment_file, *, valid_chroms, chrM, whitelist, n_jobs,
                        long_pos=o_long_pos[order_l], long_end=o_long_end[order_l],
                        spill_dir=spill_dir)
     del cols_out
+    release_free_memory()
     return barcodes, nf, nr, nm, st
 
 
@@ -750,6 +755,8 @@ def add_tile_matrix(
             for col in var_df.columns:
                 adata.var[col] = var_df[col].values
 
+    from ._fragment_io import release_free_memory
+    release_free_memory()
     console.level2(f"tile matrix nnz={X.nnz:,}")
     return adata
 

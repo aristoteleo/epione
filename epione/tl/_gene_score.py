@@ -920,6 +920,9 @@ def add_gene_score_matrix(
             score = score.toarray()
         source = "adata.X"
 
+    from ..pp._fragment_io import release_free_memory
+    release_free_memory()
+
     # ----- 3. depth normalisation + log -----
     row_sums = score.sum(axis=1, keepdims=True)
     row_sums = np.where(row_sums > 0, row_sums, 1.0)
