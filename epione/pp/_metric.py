@@ -114,6 +114,7 @@ def tsse(
     exclude_chroms: list[str] | str | None = ["chrM", "M", "chrMT", "MT"],
     flank_size: int = 2000,
     inplace: bool = True,
+    n_jobs: Optional[int] = None,
 ) -> dict | None:
     """Per-cell TSS enrichment score (ENCODE-style), pure Python.
 
@@ -144,6 +145,9 @@ def tsse(
     inplace
         When True, stores ``adata.obs['tsse']``, ``adata.uns['TSS_profile']``,
         ``adata.uns['library_tsse']``, ``adata.uns['frac_overlap_TSS']``.
+    n_jobs
+        Threads used to decompress / parse the fragment file. ``None``
+        (default) uses every CPU available to the process.
 
     Returns
     -------
@@ -201,7 +205,7 @@ def tsse(
     result = tss_enrichment(
         adata, features=features,
         extend_upstream=flank_size, extend_downstream=flank_size,
-        n_tss=1_000_000, return_tss=True,
+        n_tss=1_000_000, return_tss=True, n_jobs=n_jobs,
     )
     # ``tss_enrichment`` already stores ``tss_score`` in ``obs``.
     # Build the snapATAC2-equivalent exports on top.
@@ -254,6 +258,7 @@ def tss_enrichment(
     return_tss: bool = True,
     random_state=None,
     barcodes: Optional[str] = None,
+    n_jobs: Optional[int] = None,
 ) -> np.ndarray | list[np.ndarray] | None:
     """
     Calculate TSS enrichment according to ENCODE guidelines. Adds a column `tss_score` to the `.obs` DataFrame and
@@ -279,6 +284,9 @@ def tss_enrichment(
     barcodes
         Column name in the .obs of the AnnData
         with barcodes corresponding to the ones in the fragments file.
+    n_jobs
+        Threads used to decompress / parse the fragment file. ``None``
+        (default) uses every CPU available to the process.
 
     Returns
     ----------
@@ -301,12 +309,6 @@ def tss_enrichment(
 
     n = adata.n_obs
     n_features = extend_downstream + extend_upstream + 1
-
-    # Dictionary with matrix positions
-    if barcodes and barcodes in _obs_columns(adata):
-        d = {k: v for k, v in zip(adata.obs.loc[:, barcodes], range(n))}
-    else:
-        d = {k: v for k, v in zip(list(adata.obs_names), range(n))}
 
     # Not sparse since we expect most positions to be filled
     mx = np.zeros((n, n_features), dtype=int)
@@ -345,26 +347,29 @@ def tss_enrichment(
     else:
         tss_coord = features["Start"].astype(int).values
 
-    for i in tqdm(
-        range(features.shape[0]), desc="Fetching Regions..."
-    ):  # iterate over features (e.g. genes)
-        f = features.iloc[i]
-        tss = int(tss_coord[i])
-        region_start = tss - extend_upstream
-        region_end = tss + extend_downstream + 1     # inclusive TSS position
-        for fr in fragments.fetch(f.Chromosome, region_start, region_end):
-            try:
-                rowind = d[fr.name]  # cell barcode
-            except KeyError:
-                continue
-            # Match ArchR: count Tn5 insertion events (one at fragment
-            # start, one at end - 1), not fragment coverage. Coverage
-            # pileup "leaks" into the flank region and artificially
-            # lowers the centre/flank TSSe ratio.
-            for cut in (fr.start, fr.end - 1):
-                col = cut - region_start
-                if 0 <= col < n_features:
-                    mx[rowind, col] += 1
+    # One parallel pass over the fragment file replaces a tabix query per
+    # TSS (same counts: every fragment overlapping a TSS window adds its
+    # two Tn5 insertions, ``start`` and ``end - 1``, when they fall inside).
+    chroms_feat = features.Chromosome.astype(str).to_numpy()
+    tss_by_chrom = {
+        c: np.sort(tss_coord[chroms_feat == c].astype(np.int64))
+        for c in pd.unique(chroms_feat)
+    }
+    if barcodes and barcodes in _obs_columns(adata):
+        row_keys = list(adata.obs.loc[:, barcodes])
+    else:
+        row_keys = list(adata.obs_names)
+    from ._fragment_store import get_fragment_store, tss_pileup as _store_tss
+    store = get_fragment_store(adata)
+    row_map = store.covering_row_map(row_keys) if store is not None else None
+    if row_map is not None:
+        _store_tss(store, mx, row_map, tss_by_chrom, extend_upstream,
+                   extend_downstream, n_jobs=n_jobs)
+    else:
+        _tss_pileup_stream(
+            adata.uns["files"]["fragments"], mx, row_keys, tss_by_chrom,
+            extend_upstream, extend_downstream, n_jobs=n_jobs,
+        )
 
     fragments.close()
 
@@ -391,6 +396,65 @@ def tss_enrichment(
     else:
         return None
 
+
+
+def _tss_pileup_stream(fragment_file, mx, row_keys, tss_by_chrom: dict,
+                       extend_upstream: int, extend_downstream: int,
+                       n_jobs=None) -> None:
+    """Add per-cell Tn5 insertion counts around every TSS into ``mx``
+    (``n_cells x (up + down + 1)``), in place.
+
+    For a TSS ``t`` the window is ``[t - up, t + down]``; a fragment
+    ``[s, e)`` is considered when it overlaps the window (the tabix query
+    the original implementation used) and each of its insertions ``s``
+    and ``e - 1`` inside the window increments column ``cut - (t - up)``.
+    TSSs listed several times count several times, as before.
+    """
+    from ._fragment_io import BarcodeLookup, map_fragment_chunks
+
+    up, down = int(extend_upstream), int(extend_downstream)
+    n_features = up + down + 1
+    lookup = BarcodeLookup(row_keys)
+    flat = mx.reshape(-1)
+    size = flat.size
+
+    def per_chunk(ch):
+        if len(ch) == 0:
+            return None
+        cell_all = lookup(ch.barcode_names)[ch.barcode]
+        keys = []
+        for code, name in enumerate(ch.chrom_names):
+            tss = tss_by_chrom.get(name)
+            if tss is None or len(tss) == 0:
+                continue
+            m = (ch.chrom == code) & (cell_all >= 0)
+            if not m.any():
+                continue
+            s = ch.start[m]; e = ch.end[m]; cell = cell_all[m]
+            for cut in (s, e - 1):
+                lo = np.searchsorted(tss, cut - down, side="left")
+                hi = np.searchsorted(tss, cut + up, side="right")
+                k = hi - lo
+                tot = int(k.sum())
+                if tot == 0:
+                    continue
+                rep = np.repeat(np.arange(len(cut)), k)
+                j = lo[rep] + (np.arange(tot) - (np.cumsum(k) - k)[rep])
+                t = tss[j]
+                ok = (s[rep] < t + down + 1) & (e[rep] > t - up)
+                col = cut[rep] - (t - up)
+                keys.append((cell[rep] * n_features + col)[ok])
+        if not keys:
+            return None
+        u, c = np.unique(np.concatenate(keys), return_counts=True)
+        return u, c
+
+    for res in map_fragment_chunks(fragment_file, per_chunk, n_jobs=n_jobs):
+        if res is not None:
+            u, c = res
+            if len(u) and (u[0] < 0 or u[-1] >= size):
+                raise IndexError("TSS pileup index out of range")
+            flat[u] += c.astype(flat.dtype, copy=False)
 
 
 def _calculate_tss_score(data, flank_size: int = 100, center_size: int = 101):

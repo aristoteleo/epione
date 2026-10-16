@@ -46,6 +46,9 @@ dependencies = [
     'scanpy',
     'pyBigWig>=0.3',
     'pysam',
+    'pyarrow',       # epione.pp._fragment_io: vectorised fragment parsing
+    'numba',         # fragment-store / LSI kernels (already required by scanpy)
+    'isal',          # epione.pp._fragment_io: fast BGZF inflate (falls back to zlib)
     'pyranges',
     'pyfaidx',
     'biopython',     # epione.core.motifs: `from Bio import motifs`
