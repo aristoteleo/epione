@@ -127,6 +127,178 @@ def _ensure_tabix_index(path: Union[str, Path]) -> Path:
     )
 
 
+def _small_int(max_value: int, signed: bool = False):
+    """Smallest integer dtype holding ``0..max_value``."""
+    for dt in ((np.int8, np.int16, np.int32) if signed else (np.uint8, np.uint16, np.int32)):
+        if max_value <= np.iinfo(dt).max:
+            return dt
+    return np.int64
+
+
+def _scan_cell_qc(fragment_file, *, valid_chroms, chrM, whitelist, n_jobs,
+                  min_num_fragments=1, store=False):
+    """Per-barcode ``(n_fragment, total reads, n_mito)`` over the file.
+
+    Same rules as the original per-line loop: a fragment on a chrM name
+    counts towards ``n_mito``; otherwise it must be on a ``chrom_sizes``
+    chromosome to count towards ``n_fragment`` (one per row) and the total
+    read count (5th column). Barcodes are returned sorted.
+
+    With ``store=True`` the same single pass also keeps every fragment of
+    the cells that pass ``min_num_fragments`` and returns them as a
+    :class:`~epione.pp._fragment_store.FragmentStore` (CSR by cell, cells in
+    the returned barcode order); ``None`` if a coordinate does not fit in
+    int32.
+    """
+    import pyarrow as pa
+    import pyarrow.compute as pc
+    from ._fragment_io import map_fragment_chunks, resolve_n_jobs
+
+    wl = None if whitelist is None else pa.array(sorted(whitelist), type=pa.string())
+    i32 = np.iinfo(np.int32)
+    from ._fragment_store import LONG
+
+    def per_chunk(ch):
+        if len(ch) == 0:
+            return None
+        # 0 = skip, 1 = counted fragment, 2 = mitochondrial.
+        kind_lut = np.asarray(
+            [2 if c in chrM else (1 if c in valid_chroms else 0)
+             for c in ch.chrom_names], dtype=np.int8)
+        kind = kind_lut[ch.chrom]
+        bc = ch.barcode
+        n_bc = len(ch.barcode_names)
+        if wl is not None:
+            ok = pc.is_in(ch.barcode_names, value_set=wl).to_numpy(
+                zero_copy_only=False)
+            kind = np.where(ok[bc], kind, 0)
+        frag = kind == 1
+        nf = np.bincount(bc[frag], minlength=n_bc)
+        reads = np.rint(np.bincount(bc[frag], weights=ch.count[frag],
+                                    minlength=n_bc)).astype(np.int64)
+        nm = np.bincount(bc[kind == 2], minlength=n_bc)
+        cols = None
+        if store:
+            fits = (len(ch.start) == 0 or (
+                ch.start.min() >= i32.min and ch.end.min() >= i32.min
+                and ch.start.max() <= i32.max and ch.end.max() <= i32.max
+                and ch.count.max() <= i32.max))
+            if fits:
+                ln = ch.end - ch.start
+                long_ = (ln < 0) | (ln >= LONG)
+                long_rows = np.flatnonzero(long_)
+                cols = (
+                    np.bincount(bc, minlength=n_bc),
+                    ch.chrom.astype(_small_int(len(ch.chrom_names) - 1, signed=True)),
+                    ch.chrom_names,
+                    ch.start.astype(np.int32),
+                    np.where(long_, LONG, ln).astype(np.uint16),
+                    ch.count.astype(_small_int(int(ch.count.max()) if len(ch.count) else 0)),
+                    bc.astype(_small_int(n_bc - 1)),
+                    long_rows, ch.end[long_rows].astype(np.int32),
+                )
+            else:
+                cols = False
+        return ch.barcode_names, nf, reads, nm, cols
+
+    index: dict = {}
+    chrom_index: dict = {}
+    nf_l, rd_l, nm_l, rows_l, chunks = [], [], [], [], []
+    store_ok = bool(store)
+    for res in map_fragment_chunks(fragment_file, per_chunk, n_jobs=n_jobs):
+        if res is None:
+            continue
+        names, nf, rd, nm, cols = res
+        pos = np.fromiter(
+            (index.setdefault(b, len(index)) for b in names.to_pylist()),
+            dtype=np.int64, count=len(names))
+        nf_l.append((pos, nf)); rd_l.append((pos, rd)); nm_l.append((pos, nm))
+        if store_ok:
+            if cols is False:
+                store_ok = False
+                chunks = []
+                continue
+            rows, chrom, chrom_names, start, lens, count, bc, long_rows, long_end = cols
+            cmap = np.asarray([chrom_index.setdefault(c, len(chrom_index))
+                               for c in chrom_names], dtype=np.int64)
+            rows_l.append((pos, rows))
+            chunks.append((pos, rows, chrom, cmap, start, lens, count, bc,
+                           long_rows, long_end))
+    n = len(index)
+    acc = []
+    for parts in (nf_l, rd_l, nm_l):
+        a = np.zeros(n, dtype=np.int64)
+        for pos, v in parts:
+            np.add.at(a, pos, v)
+        acc.append(a)
+    del nf_l, rd_l, nm_l
+    seen = (acc[0] > 0) | (acc[2] > 0)
+    names = list(index)
+    order = sorted((i for i in range(n) if seen[i]), key=names.__getitem__)
+    barcodes = [names[i] for i in order]
+    order = np.asarray(order, dtype=np.int64)
+    nf, nr, nm = acc[0][order], acc[1][order], acc[2][order]
+    if not store_ok:
+        return barcodes, nf, nr, nm, None
+
+    # ---- CSR-by-cell fragment store for the cells that will be kept ----
+    from ._fragment_store import FragmentStore, _kernels
+    from concurrent.futures import ThreadPoolExecutor
+    keep = nf >= int(min_num_fragments)
+    obs_pos = np.full(n, -1, dtype=np.int64)            # global id -> kept cell
+    obs_pos[order[keep]] = np.arange(int(keep.sum()))
+    total = np.zeros(int(keep.sum()), dtype=np.int64)
+    for pos, rows in rows_l:
+        cell = obs_pos[pos]
+        m = cell >= 0
+        np.add.at(total, cell[m], rows[m])
+    del rows_l
+    indptr = np.zeros(len(total) + 1, dtype=np.int64)
+    np.cumsum(total, out=indptr[1:])
+    n_frag = int(indptr[-1])
+    chrom_dt = _small_int(len(chrom_index) - 1, signed=True)
+    count_dt = np.result_type(np.uint8, *[c[6].dtype for c in chunks])
+    from ._fragment_store import allocate_columns
+    cols_out, spill_dir = allocate_columns(
+        n_frag, {"chrom": chrom_dt, "start": np.int32, "len": np.uint16, "count": count_dt},
+        spill=(store == "disk"))
+    o_chrom, o_start, o_len, o_count = (cols_out[c] for c in ("chrom", "start", "len", "count"))
+    cur = indptr[:-1].copy()
+    jobs = []
+    n_long = 0
+    for pos, rows, chrom, cmap, start, lens, count, bc, long_rows, long_end in chunks:
+        cell = obs_pos[pos]
+        m = cell >= 0
+        dest = np.where(m, cur[np.maximum(cell, 0)], -1)
+        cur[cell[m]] += rows[m]
+        n_kept_long = int((dest[bc[long_rows]] >= 0).sum()) if len(long_rows) else 0
+        jobs.append((dest, bc, chrom, cmap.astype(chrom_dt), start, lens, count,
+                     long_rows, long_end, n_long))
+        n_long += n_kept_long
+    chunks.clear()
+    o_long_pos = np.empty(n_long, dtype=np.int64)
+    o_long_end = np.empty(n_long, dtype=np.int32)
+    scatter = _kernels()["scatter_chunk"]
+
+    def run(j):
+        dest, bc, chrom, cmap, start, lens, count, long_rows, long_end, off = j
+        scatter(dest, bc, chrom, cmap, start, lens, count, long_rows, long_end,
+                o_chrom, o_start, o_len, o_count, off, o_long_pos, o_long_end)
+
+    with ThreadPoolExecutor(max_workers=resolve_n_jobs(n_jobs)) as pool:
+        for _ in pool.map(run, jobs):
+            pass
+    del jobs
+    del o_chrom, o_start, o_len, o_count
+    order_l = np.argsort(o_long_pos, kind="stable")
+    st = FragmentStore(fragment_file, [b for b, k in zip(barcodes, keep) if k],
+                       list(chrom_index), indptr, cols_out,
+                       long_pos=o_long_pos[order_l], long_end=o_long_end[order_l],
+                       spill_dir=spill_dir)
+    del cols_out
+    return barcodes, nf, nr, nm, st
+
+
 # ---------------------------------------------------------------------------
 # Public API — fragment import
 # ---------------------------------------------------------------------------
@@ -139,7 +311,8 @@ def import_fragments(
     min_num_fragments: int = 200,
     whitelist: Optional[Union[Path, list]] = None,
     chrM: list = ("chrM", "M", "chrMT", "MT"),
-    n_jobs: int = 1,
+    n_jobs: Optional[int] = None,
+    store_fragments: Union[bool, str] = True,
     **kwargs,
 ) -> AnnData:
     """Scan a bgzipped fragments.tsv.gz and build a per-cell QC AnnData.
@@ -172,6 +345,20 @@ def import_fragments(
         one barcode per line).
     chrM
         Chromosome names to treat as mitochondrial (affects ``frac_mito``).
+    n_jobs
+        Threads used to decompress / parse the fragment file. ``None``
+        (default) uses every CPU available to the process.
+    store_fragments
+        Keep the imported cells' fragments (CSR by cell, ~10 bytes per
+        fragment) so ``tsse`` / ``add_tile_matrix`` /
+        ``add_gene_score_matrix`` reuse them instead of re-reading the file.
+        ``True`` (default) keeps them in memory; ``"disk"`` in
+        memory-mapped files under ``$TMPDIR`` (lower resident memory between
+        steps, at the cost of writing them out); ``False`` disables the
+        store. Its token is recorded in
+        ``adata.uns['files']['fragment_store']``; free it with
+        ``epi.pp.release_fragment_store(adata)``. Results are identical
+        either way.
 
     Returns
     -------
@@ -188,7 +375,7 @@ def import_fragments(
                 import_fragments(
                     f, chrom_sizes=chrom_sizes, file=file[i] if file else None,
                     min_num_fragments=min_num_fragments, whitelist=whitelist,
-                    chrM=chrM, n_jobs=1,
+                    chrM=chrM, n_jobs=n_jobs, store_fragments=store_fragments,
                 )
                 for i, f in enumerate(fragment_file)
             ]
@@ -209,39 +396,11 @@ def import_fragments(
             whitelist_set = set(whitelist)
 
     console.level1(f"scanning {fragment_file}")
-    # Per-cell counters.
-    n_frag = defaultdict(int)
-    n_uniq = defaultdict(int)
-    n_mito = defaultdict(int)
-    seen = set()
-
-    for chrom, start, end, bc, cnt in _open_fragment_file(fragment_file):
-        if whitelist_set is not None and bc not in whitelist_set:
-            continue
-        if chrom not in valid_chroms and chrom not in chrM_set:
-            continue
-        if chrom in chrM_set:
-            # Count mito reads (pre-dedup); ArchR's fragments file has
-            # already collapsed PCR duplicates, so cnt here is effectively
-            # the duplicate multiplicity.
-            n_mito[bc] += 1
-        else:
-            # ``n_fragment`` = number of *unique* fragment rows for this
-            # cell (one per row of the fragments file). This matches
-            # ArchR's ``nFrags`` metric. The optional 5th column gives
-            # the pre-dedup read count, which we use for frac_dup.
-            n_frag[bc] += 1
-            n_reads = cnt                           # pre-dedup read count
-            # ``frac_dup`` = 1 - (unique fragments / total reads).
-            # Track total-reads per cell in ``n_uniq`` (reused slot); the
-            # name is misleading but keeps the rest of the code unchanged.
-            n_uniq[bc] += n_reads
-
-    # Build per-cell DataFrame.
-    barcodes = sorted(set(n_frag) | set(n_mito))
-    nf = np.asarray([n_frag[b] for b in barcodes], dtype=np.int64)
-    n_total_reads = np.asarray([n_uniq[b] for b in barcodes], dtype=np.int64)
-    nm = np.asarray([n_mito[b] for b in barcodes], dtype=np.int64)
+    barcodes, nf, n_total_reads, nm, store = _scan_cell_qc(
+        fragment_file, valid_chroms=valid_chroms, chrM=chrM_set,
+        whitelist=whitelist_set, n_jobs=n_jobs,
+        min_num_fragments=min_num_fragments, store=store_fragments,
+    )
 
     # Apply min fragments filter.
     keep = nf >= int(min_num_fragments)
@@ -261,6 +420,9 @@ def import_fragments(
         "files": {"fragments": str(fragment_file)},
         "reference_sequences": chrom_sizes,
     }
+    if store is not None:
+        from ._fragment_store import register
+        uns["files"]["fragment_store"] = register(store)
 
     console.level2(f"imported {len(barcodes):,} cells  "
                    f"({int(nf.sum()):,} unique fragments)")
@@ -402,10 +564,110 @@ def _tile_grid(chrom_sizes: dict, bin_size: int) -> tuple[dict, int, list]:
     for chrom, length in chrom_sizes.items():
         offsets[chrom] = base
         n = (int(length) + bin_size - 1) // bin_size
-        for i in range(n):
-            labels.append(f"{chrom}:{i*bin_size}-{(i+1)*bin_size - 1}")
+        labels.extend([f"{chrom}:{s}-{s + bin_size - 1}"
+                       for s in range(0, n * bin_size, bin_size)])
         base += n
     return offsets, base, labels
+
+
+def _tile_matrix_stream(fragment_file, barcodes, chrom_offsets: dict,
+                        n_tiles: int, bin_size: int, *, counting_strategy: str,
+                        chrM: set, n_jobs=None) -> sp.csr_matrix:
+    """Cell x tile count matrix (int32 CSR, canonical) from one parallel
+    pass over the fragment file.
+
+    Equivalent to accumulating ``(cell, tile, count)`` triplets for every
+    fragment and calling ``coo_matrix(..., dtype=int32).tocsr()``: each
+    worker reduces its chunk to sorted unique ``cell * n_tiles + tile``
+    keys, the partial results are merged per block of rows (in parallel)
+    and summed in int64, then cast to int32 like the COO constructor.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    from ._fragment_io import (BarcodeLookup, map_fragment_chunks,
+                               resolve_n_jobs, sorted_reduce)
+
+    n_cells = len(barcodes)
+    lookup = BarcodeLookup(barcodes)
+    key_max = max(n_cells * n_tiles, 1)
+
+    def per_chunk(ch):
+        if len(ch) == 0:
+            return None
+        base_lut = np.asarray(
+            [-1 if (c in chrM or c not in chrom_offsets) else chrom_offsets[c]
+             for c in ch.chrom_names], dtype=np.int64)
+        cell = lookup(ch.barcode_names)[ch.barcode]
+        base = base_lut[ch.chrom]
+        m = (cell >= 0) & (base >= 0)
+        if not m.any():
+            return None
+        cell = cell[m]; base = base[m]
+        start = ch.start[m]; end = ch.end[m]; cnt = ch.count[m]
+        t1 = base + start // bin_size
+        t2 = base + (end - 1) // bin_size
+        if counting_strategy == "fragment":
+            span = np.maximum(t2 - t1 + 1, 0)
+            rep = np.repeat(np.arange(len(t1)), span)
+            first = np.cumsum(span) - span
+            tiles = t1[rep] + (np.arange(len(rep)) - first[rep])
+            rows = cell[rep]; w = cnt[rep]
+        else:
+            # "insertion" and "paired-insertion" are counted identically
+            # (both ends, one entry when they share a tile), as before.
+            two = t2 != t1
+            tiles = np.concatenate([t1, t2[two]])
+            rows = np.concatenate([cell, cell[two]])
+            w = np.concatenate([cnt, cnt[two]])
+        if len(tiles) and (tiles.min() < 0 or tiles.max() >= n_tiles):
+            raise ValueError("column index exceeds matrix dimensions")
+        return sorted_reduce(rows * n_tiles + tiles, w, key_max)
+
+    parts = [r for r in map_fragment_chunks(fragment_file, per_chunk, n_jobs=n_jobs)
+             if r is not None and len(r[0])]
+
+    # Merge the per-chunk sorted keys block-of-rows by block-of-rows.
+    n_jobs = resolve_n_jobs(n_jobs)
+    n_blocks = max(1, min(n_cells, 4 * n_jobs))
+    row_edges = np.linspace(0, n_cells, n_blocks + 1).astype(np.int64)
+    key_edges = row_edges * n_tiles
+
+    def merge_block(j):
+        lo, hi = key_edges[j], key_edges[j + 1]
+        ks, ws = [], []
+        for k, w in parts:
+            i0, i1 = np.searchsorted(k, [lo, hi])
+            if i1 > i0:
+                ks.append(k[i0:i1]); ws.append(w[i0:i1])
+        if not ks:
+            return np.zeros(0, np.int64), np.zeros(0, np.int64)
+        if len(ks) == 1:
+            return ks[0], ws[0]
+        return sorted_reduce(np.concatenate(ks), np.concatenate(ws), key_max,
+                             runs=True)
+
+    with ThreadPoolExecutor(max_workers=n_jobs) as pool:
+        blocks = list(pool.map(merge_block, range(n_blocks)))
+    del parts
+    nnz = int(sum(len(k) for k, _ in blocks))
+    idx_dtype = np.int32 if max(nnz, n_tiles, n_cells) < np.iinfo(np.int32).max else np.int64
+    indices = np.empty(nnz, dtype=idx_dtype)
+    data = np.empty(nnz, dtype=np.int32)
+    counts = np.zeros(n_cells, dtype=np.int64)
+    pos = 0
+    for k, w in blocks:
+        n = len(k)
+        if n:
+            rows = k // n_tiles
+            indices[pos:pos + n] = k - rows * n_tiles
+            data[pos:pos + n] = w            # int64 -> int32 as coo(dtype=int32)
+            counts += np.bincount(rows, minlength=n_cells)
+            pos += n
+    indptr = np.zeros(n_cells + 1, dtype=idx_dtype)
+    np.cumsum(counts, out=indptr[1:])
+    X = sp.csr_matrix((data, indices, indptr), shape=(n_cells, n_tiles))
+    X.has_sorted_indices = True
+    X.has_canonical_format = True
+    return X
 
 
 def add_tile_matrix(
@@ -415,6 +677,7 @@ def add_tile_matrix(
     counting_strategy: Literal["insertion", "paired-insertion", "fragment"] = "paired-insertion",
     chrM: list = ("chrM", "M", "chrMT", "MT"),
     verbose: bool = True,
+    n_jobs: Optional[int] = None,
 ) -> AnnData:
     """Bin fragments into per-cell 500 bp tile counts, write to ``adata.X``.
 
@@ -426,6 +689,10 @@ def add_tile_matrix(
       contribute 1 total (matches ArchR / snapATAC2 default)
     - ``"fragment"``         — each fragment contributes 1 to every tile
       it overlaps
+
+    Each contribution is weighted by the fragment's read count (5th
+    column). ``n_jobs`` threads decompress / parse the fragment file
+    (``None`` = every CPU available to the process).
     """
     if "files" not in adata.uns or "fragments" not in adata.uns["files"]:
         raise ValueError("adata.uns['files']['fragments'] missing — "
@@ -438,7 +705,6 @@ def add_tile_matrix(
     chrom_offsets, n_tiles, tile_labels = _tile_grid(chrom_sizes, bin_size)
 
     barcodes = list(adata.obs_names)
-    bc_to_idx = {b: i for i, b in enumerate(barcodes)}
     n_cells = len(barcodes)
 
     console.level1(
@@ -446,37 +712,20 @@ def add_tile_matrix(
         f"({bin_size} bp bins, strategy={counting_strategy})",
     )
 
-    rows, cols, data = [], [], []
-    chrM_set = set(chrM)
-    for chrom, start, end, bc, cnt in _open_fragment_file(fragment_file):
-        if bc not in bc_to_idx:
-            continue
-        if chrom in chrM_set or chrom not in chrom_offsets:
-            continue
-        i = bc_to_idx[bc]
-        base = chrom_offsets[chrom]
-        t1 = base + start // bin_size
-        t2 = base + (end - 1) // bin_size
-
-        if counting_strategy == "insertion":
-            rows.append(i); cols.append(t1); data.append(cnt)
-            if t2 != t1:
-                rows.append(i); cols.append(t2); data.append(cnt)
-        elif counting_strategy == "paired-insertion":
-            rows.append(i); cols.append(t1); data.append(cnt)
-            if t2 != t1:
-                rows.append(i); cols.append(t2); data.append(cnt)
-        elif counting_strategy == "fragment":
-            for t in range(t1, t2 + 1):
-                rows.append(i); cols.append(t); data.append(cnt)
-        else:
-            raise ValueError(f"unknown counting_strategy={counting_strategy!r}")
-
-    X = sp.coo_matrix(
-        (data, (rows, cols)),
-        shape=(n_cells, n_tiles), dtype=np.int32,
-    ).tocsr()
-    X.sum_duplicates()
+    if counting_strategy not in ("insertion", "paired-insertion", "fragment"):
+        raise ValueError(f"unknown counting_strategy={counting_strategy!r}")
+    from ._fragment_store import get_fragment_store, tile_matrix as _store_tiles
+    store = get_fragment_store(adata)
+    row_map = store.covering_row_map(barcodes) if store is not None else None
+    if row_map is not None:
+        X = _store_tiles(store, row_map, chrom_offsets, n_tiles, bin_size,
+                         counting_strategy=counting_strategy, chrM=set(chrM),
+                         n_jobs=n_jobs)
+    else:
+        X = _tile_matrix_stream(
+            fragment_file, barcodes, chrom_offsets, n_tiles, bin_size,
+            counting_strategy=counting_strategy, chrM=set(chrM), n_jobs=n_jobs,
+        )
 
     # Write back. The incoming AnnData usually has **0 vars** (the output of
     # import_fragments), so assigning the (n_cells, n_tiles) matrix to ``.X``
@@ -485,12 +734,13 @@ def add_tile_matrix(
     # fall back to lazy assignment for backed / AnnDataOOM inputs.
     var_df = pd.DataFrame(index=pd.Index(tile_labels, name="tile", dtype=str))
     try:
-        rebuilt = AnnData(
-            X=X, obs=adata.obs, var=var_df, uns=dict(adata.uns),
+        # One (re)initialisation instead of building a temporary AnnData and
+        # copying it in (each pass re-validates 6M+ var names).
+        adata._init_as_actual(
+            X=X, obs=adata.obs.copy(), var=var_df, uns=dict(adata.uns),
             obsm=dict(adata.obsm) if len(adata.obsm) else None,
             obsp=dict(adata.obsp) if len(adata.obsp) else None,
         )
-        adata._init_as_actual(rebuilt)
     except Exception:
         # backed / AnnDataOOM: assignment is lazy and shape-tolerant.
         adata.X = X

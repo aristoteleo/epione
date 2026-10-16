@@ -53,6 +53,19 @@ from ..utils import console
 def _binarize(X):
     """Return a binary (0/1) copy of X with dtype float32."""
     if sp.issparse(X):
+        if X.format == "csr":
+            # Same result as copy().astype(float32) + (data > 0) +
+            # eliminate_zeros(), without the intermediate float32 copy.
+            data = (X.data > 0).astype(np.float32)
+            if data.all():
+                # Structure unchanged: share indices / indptr with X (read-only
+                # use downstream) instead of copying them.
+                out = sp.csr_matrix((data, X.indices, X.indptr), shape=X.shape, copy=False)
+            else:
+                out = sp.csr_matrix((data, X.indices.copy(), X.indptr.copy()), shape=X.shape)
+                out.eliminate_zeros()
+            out.has_sorted_indices = bool(X.has_sorted_indices)
+            return out
         out = X.copy().astype(np.float32)
         out.data = (out.data > 0).astype(np.float32)
         out.eliminate_zeros()
@@ -60,19 +73,33 @@ def _binarize(X):
     return (X > 0).astype(np.float32)
 
 
+def _all_positive(a: np.ndarray, chunk: int = 1 << 24) -> bool:
+    """``(a > 0).all()`` without a full-size boolean temporary."""
+    for i in range(0, len(a), chunk):
+        if not (a[i:i + chunk] > 0).all():
+            return False
+    return True
+
+
 def _row_sums(X):
+    from ._lsi_kernels import BinaryCSR
+    if isinstance(X, BinaryCSR):
+        return X.row_sums()
     if sp.issparse(X):
         return np.asarray(X.sum(axis=1)).ravel()
     return X.sum(axis=1)
 
 
 def _col_sums(X):
+    from ._lsi_kernels import BinaryCSR
+    if isinstance(X, BinaryCSR):
+        return X.col_sums()
     if sp.issparse(X):
         return np.asarray(X.sum(axis=0)).ravel()
     return X.sum(axis=0)
 
 
-def _tf_logidf(X, scale_to: float = 10000.0):
+def _tf_logidf(X, scale_to: float = 10000.0, n_jobs=None):
     """Seurat v3 / ArchR LSIMethod=2 normalisation.
 
     Computes log1p( (X / rowSums(X)) * idf * scale_to )
@@ -88,6 +115,11 @@ def _tf_logidf(X, scale_to: float = 10000.0):
     row = _row_sums(X)
     row_safe = np.where(row > 0, row, 1.0)
 
+    if sp.issparse(X) and X.format == "csr" and X.dtype == np.float32:
+        # Threaded, bit-identical form of the generic branch below.
+        from ._lsi_kernels import tf_logidf_data
+        return tf_logidf_data(X, (1.0 / row_safe).astype(np.float32),
+                              idf.astype(np.float32), scale_to, n_jobs=n_jobs)
     if sp.issparse(X):
         X = X.tocsr()
         # tf = X / row
@@ -104,7 +136,106 @@ def _tf_logidf(X, scale_to: float = 10000.0):
         return np.log1p(tf).astype(np.float32)
 
 
-def _randomized_svd(X, n_components: int, random_state: int = 0, device: str = "cpu"):
+class _ThreadedCSR(sp.csr_matrix):
+    """``csr_matrix`` whose sparse x dense products run on ``n_jobs``
+    threads over row blocks.
+
+    Each block is multiplied by SciPy's own ``csr_matvecs`` kernel (which
+    releases the GIL) and every output row is computed exactly as in the
+    single call, so results are bit-identical. ``.T`` is a lazy
+    :class:`_CSRTranspose` (no copy), bit-identical as well.
+    """
+
+    _n_jobs = 1
+    _transposed = None
+
+    @classmethod
+    def wrap(cls, X, n_jobs: int):
+        out = cls(X, copy=False)
+        out._n_jobs = max(1, int(n_jobs))
+        return out
+
+    def _blocks(self):
+        blocks = getattr(self, "_row_blocks", None)
+        if blocks is None:
+            n_rows = self.shape[0]
+            nb = max(1, min(n_rows, 4 * self._n_jobs))
+            edges = np.linspace(0, n_rows, nb + 1).astype(np.int64)
+            blocks = []
+            for r0, r1 in zip(edges[:-1], edges[1:]):
+                a, b = self.indptr[r0], self.indptr[r1]
+                blocks.append(sp.csr_matrix(
+                    (self.data[a:b], self.indices[a:b], self.indptr[r0:r1 + 1] - a),
+                    shape=(int(r1 - r0), self.shape[1]), copy=False))
+            self._row_blocks = blocks
+        return blocks
+
+    def _matmul_multivector(self, other):
+        if self._n_jobs <= 1 or self.ndim != 2:
+            return super()._matmul_multivector(other)
+        from concurrent.futures import ThreadPoolExecutor
+        other = np.ascontiguousarray(other)
+        with ThreadPoolExecutor(max_workers=self._n_jobs) as pool:
+            parts = list(pool.map(lambda blk: blk @ other, self._blocks()))
+        return np.vstack(parts)
+
+    def _rmatmul_dispatch(self, other):
+        # other @ A == (A.T @ other.T).T, as SciPy evaluates it (csc_matvecs
+        # on the transpose), via the lazy transpose.
+        if self._n_jobs <= 1 or np.isscalar(other) or sp.issparse(other):
+            return super()._rmatmul_dispatch(other)
+        other = np.asarray(other)
+        if other.ndim != 2:
+            return super()._rmatmul_dispatch(other)
+        return (self.transpose() @ other.T).T
+
+    def transpose(self, axes=None, copy=False):
+        if axes is not None or copy or self._n_jobs <= 1:
+            return super().transpose(axes=axes, copy=copy)
+        if self._transposed is None:
+            self._transposed = _CSRTranspose(self)
+        return self._transposed
+
+
+class _CSRTranspose:
+    """Lazy ``A.T`` of a :class:`_ThreadedCSR` for ``randomized_svd``.
+
+    ``A.T @ Q`` runs a numba kernel over column (= output row) ranges of
+    ``A`` on ``n_jobs`` threads; every output row accumulates its entries in
+    increasing row-of-``A`` order with the same float operations as SciPy's
+    ``csc_matvecs`` (what ``A.T @ Q`` calls), so it is bit-identical without
+    materialising the transpose. ``Q.T @ A.T`` is evaluated as
+    ``(A @ Q).T`` exactly like SciPy's ``__rmatmul__``.
+    """
+
+    __array_ufunc__ = None          # ndarray @ self -> self.__rmatmul__
+
+    def __init__(self, base):
+        self._base = base
+        self.shape = (base.shape[1], base.shape[0])
+        self.dtype = base.dtype
+        self.ndim = 2
+
+    @property
+    def T(self):
+        return self._base
+
+    def transpose(self, *args, **kwargs):
+        return self._base
+
+    def __matmul__(self, other):
+        from ._lsi_kernels import csr_t_matmul
+        other = np.asarray(other)
+        if other.ndim == 1:
+            return csr_t_matmul(self._base, other[:, None], self._base._n_jobs)[:, 0]
+        return csr_t_matmul(self._base, other, self._base._n_jobs)
+
+    def __rmatmul__(self, other):
+        return (self._base @ np.asarray(other).T).T
+
+
+def _randomized_svd(X, n_components: int, random_state: int = 0, device: str = "cpu",
+                    n_jobs: Optional[int] = None):
     """Randomized SVD returning U, s, Vt with largest singular values first."""
     n_components = int(min(n_components, min(X.shape) - 1))
     if device != "cpu":
@@ -114,6 +245,9 @@ def _randomized_svd(X, n_components: int, random_state: int = 0, device: str = "
         from ..core._gpu_ops import randomized_svd
         return randomized_svd(X, n_components, dev=torch_device(device),
                               random_state=random_state, n_iter="auto")
+    if sp.issparse(X) and X.format == "csr" and X.has_sorted_indices:
+        from ..pp._fragment_io import resolve_n_jobs
+        X = _ThreadedCSR.wrap(X, resolve_n_jobs(n_jobs))
     U, s, Vt = sklearn.utils.extmath.randomized_svd(
         X, n_components=n_components,
         random_state=random_state, n_iter="auto",
@@ -179,6 +313,7 @@ def _correlate_with_depth(U: np.ndarray, depth: np.ndarray) -> np.ndarray:
 
 def _variable_features_from_clusters(
     X_bin, clusters: np.ndarray, var_features: int, scale_to: float = 10000.0,
+    binary: bool = False,
 ) -> np.ndarray:
     """Top-N variable features across cluster pseudobulks.
 
@@ -196,11 +331,21 @@ def _variable_features_from_clusters(
     n_feat = X_bin.shape[1]
     pb = np.zeros((len(uniq), n_feat), dtype=np.float32)
 
+    from ._lsi_kernels import BinaryCSR
     X_csr = X_bin.tocsr() if sp.issparse(X_bin) else X_bin
+    group_sums = None
+    if isinstance(X_csr, BinaryCSR) or (
+            binary and sp.issparse(X_csr) and X_csr.dtype == np.float32):
+        # One pass instead of a row subset per cluster; sums of 0/1 float32
+        # values are exact integers, so identical to sub.sum(axis=0).
+        from ._lsi_kernels import group_col_sums
+        group_sums = group_col_sums(X_csr, idx.ravel(), len(uniq))
 
     for i, c in enumerate(uniq):
         sel = np.where(labels == c)[0]
-        if sp.issparse(X_csr):
+        if group_sums is not None:
+            sums = group_sums[i]
+        elif sp.issparse(X_csr):
             sub = X_csr[sel]
             sums = np.asarray(sub.sum(axis=0)).ravel()
         else:
@@ -254,6 +399,26 @@ class _TorchKNNTransformer:
         )
 
 
+def _pynndescent_no_compress(n_obs: int, n_neighbors: int, metric: str, random_state):
+    """``PyNNDescentTransformer`` configured exactly as
+    ``scanpy.pp.neighbors(transformer=None)`` configures it, whose
+    ``fit_transform`` skips the final ``index_.compress_index()``."""
+    import scanpy as sc
+    from pynndescent import PyNNDescentTransformer
+
+    class _NoCompress(PyNNDescentTransformer):
+        def fit_transform(self, X, y=None, **fit_params):
+            self.fit(X, compress_index=False)
+            return self.transform(X=None)
+
+    return _NoCompress(
+        n_neighbors=n_neighbors, metric=metric, metric_kwds={},
+        random_state=random_state, n_jobs=sc.settings.n_jobs,
+        n_trees=min(64, 5 + round(n_obs ** 0.5 / 20.0)),
+        n_iters=max(5, round(np.log2(n_obs))),
+    )
+
+
 def _knn_leiden(
     emb: np.ndarray, n_neighbors: int, resolution: float, seed: int,
     device: str = "cpu",
@@ -274,6 +439,18 @@ def _knn_leiden(
             tmp, use_rep="X_emb",
             n_neighbors=int(n_neighbors), metric="cosine", random_state=seed,
             transformer=_TorchKNNTransformer(int(n_neighbors), "cosine", device),
+        )
+    elif emb.shape[0] >= 4096:
+        # The transformer scanpy picks itself for >= 4096 cells (same
+        # PyNNDescentTransformer arguments, so the same graph), minus the
+        # post-fit ``compress_index`` that only prepares (and JIT-compiles)
+        # the query path -- this throw-away graph is never queried.
+        sc.pp.neighbors(
+            tmp, use_rep="X_emb",
+            n_neighbors=int(n_neighbors), metric="cosine", random_state=seed,
+            transformer=_pynndescent_no_compress(
+                n_obs=emb.shape[0], n_neighbors=int(n_neighbors),
+                metric="cosine", random_state=seed),
         )
     else:
         sc.pp.neighbors(
@@ -314,6 +491,7 @@ def iterative_lsi(
     copy: bool = False,
     verbose: bool = True,
     device: str = "cpu",
+    n_jobs: Optional[int] = None,
 ) -> Optional[AnnData]:
     """Perform ArchR-style iterative LSI on a cell-by-feature matrix.
 
@@ -377,6 +555,10 @@ def iterative_lsi(
         variable features of later rounds -- can differ slightly from the
         CPU run, as they do between CPU seeds. TF-logIDF, feature selection
         and Leiden stay on the CPU. Needs ``pip install epione[gpu]``.
+    n_jobs
+        Threads for the sparse x dense products of the CPU randomized SVD
+        (row-blocked SciPy kernels; results are bit-identical to a single
+        thread). ``None`` (default) uses every CPU available to the process.
 
     Examples
     --------
@@ -420,10 +602,18 @@ def iterative_lsi(
             X_full = np.vstack(parts)
     n_obs, n_vars = X_full.shape
 
-    # 1. Binarise if requested
-    X_bin = _binarize(X_full) if binarize else X_full
-    if sp.issparse(X_bin):
-        X_bin = X_bin.tocsr()
+    # 1. Binarise if requested. For a CSR matrix with only positive stored
+    # values the binary matrix is its structure with all-ones data: keep it
+    # as a data-free view (every derived quantity is identical) instead of
+    # allocating a float32 copy of the values.
+    from ._lsi_kernels import BinaryCSR, csr_select
+    if (binarize and sp.issparse(X_full) and X_full.format == "csr"
+            and X_full.has_sorted_indices and X_full.nnz and _all_positive(X_full.data)):
+        X_bin = BinaryCSR(X_full.indptr, X_full.indices, X_full.shape)
+    else:
+        X_bin = _binarize(X_full) if binarize else X_full
+        if sp.issparse(X_bin):
+            X_bin = X_bin.tocsr()
 
     # 2. Initial top-accessibility feature set
     features = _select_top_features(X_bin, n_keep=total_features, filter_quantile=filter_quantile)
@@ -464,7 +654,12 @@ def iterative_lsi(
 
         # Subset to current feature mask
         feat_idx = np.where(features)[0]
-        if sp.issparse(X_bin):
+        if isinstance(X_bin, BinaryCSR) or (sp.issparse(X_bin) and X_bin.format == "csr"):
+            # == X_bin[fit_idx][:, feat_idx], threaded
+            X_sub = csr_select(
+                X_bin, feat_idx, n_jobs=n_jobs,
+                rows=None if np.array_equal(fit_idx, np.arange(n_obs)) else fit_idx)
+        elif sp.issparse(X_bin):
             X_sub = X_bin[fit_idx][:, feat_idx]
         else:
             X_sub = X_bin[np.ix_(fit_idx, feat_idx)]
@@ -476,9 +671,12 @@ def iterative_lsi(
             )
 
         # TF-logIDF + SVD
-        X_norm = _tf_logidf(X_sub, scale_to=scale_to)
+        X_norm = _tf_logidf(X_sub, scale_to=scale_to, n_jobs=n_jobs)
+        # Only its column sums are needed later; free the values now.
+        sub_col_sums = _col_sums(X_sub)
+        del X_sub
         U, s, Vt = _randomized_svd(X_norm, n_components=n_components, random_state=seed + it,
-                                   device=device)
+                                   device=device, n_jobs=n_jobs)
 
         # Depth-correlation filter
         depth_fit = depth_all[fit_idx]
@@ -493,11 +691,13 @@ def iterative_lsi(
         if len(fit_idx) == n_obs:
             U_full = U
         else:
-            if sp.issparse(X_bin):
+            if isinstance(X_bin, BinaryCSR) or (sp.issparse(X_bin) and X_bin.format == "csr"):
+                X_rest = csr_select(X_bin, feat_idx, n_jobs=n_jobs)
+            elif sp.issparse(X_bin):
                 X_rest = X_bin[:, feat_idx]
             else:
                 X_rest = X_bin[:, feat_idx]
-            X_rest_norm = _tf_logidf(X_rest, scale_to=scale_to)
+            X_rest_norm = _tf_logidf(X_rest, scale_to=scale_to, n_jobs=n_jobs)
             U_full = _project(X_rest_norm, Vt.T, s)
             # Overwrite the rows we actually fitted with the exact values
             U_full[fit_idx] = U
@@ -526,6 +726,7 @@ def iterative_lsi(
             # Variable-feature selection for the next round
             features = _variable_features_from_clusters(
                 X_bin, clusters, var_features=var_features, scale_to=scale_to,
+                binary=binarize,
             )
             if verbose:
                 console.info(
@@ -562,7 +763,7 @@ def iterative_lsi(
 
             # LSI model for projecting new profiles (epione.tl.LSIModel):
             # IDF denominators over the fitted cells and the dim scaling.
-            fit_sums = _col_sums(X_sub).astype(np.float64)
+            fit_sums = sub_col_sums.astype(np.float64)
             adata.uns[key_added] = {
                 "stdev": s.astype(np.float32),
                 "feature_sums": fit_sums,
