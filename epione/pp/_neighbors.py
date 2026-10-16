@@ -301,6 +301,7 @@ def neighbors(
     if backend != "epione":
         raise ValueError(f"backend must be 'epione' or 'rapids', got {backend!r}")
     from ..core._gpu import resolve_device, is_torch_device
+    from ._fragment_io import resolve_n_jobs
     device = resolve_device(device)
     print(f"Computing neighbors with n_neighbors={n_neighbors}")
     
@@ -332,7 +333,10 @@ def neighbors(
             algorithm="auto" if X.shape[0] > 100 else "brute",
             metric=metric,
             metric_params=dict(metric_kwds),
-            n_jobs=-1
+            # Exact search: the thread count does not change the result; stay
+            # within the CPU budget (affinity / OMP_NUM_THREADS) instead of
+            # joblib's machine-wide -1.
+            n_jobs=resolve_n_jobs(None),
         )
         nn.fit(X)
         distances, indices = nn.kneighbors(X)

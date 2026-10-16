@@ -372,6 +372,8 @@ def tss_enrichment(
         )
 
     fragments.close()
+    from ._fragment_io import release_free_memory
+    release_free_memory()
 
     anno = pd.DataFrame(
         {"TSS_position": range(-extend_upstream, extend_downstream + 1)},
