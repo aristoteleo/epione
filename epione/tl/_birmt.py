@@ -591,23 +591,28 @@ def birmt(
     t: Union[int, Literal["gap"]] = "gap",
     delta: float = 0.25,
     t_max: int = 100,
-    cluster: bool = True,
+    cluster: Optional[bool] = None,
     resolutions: Optional[Sequence[float]] = None,
     n_seeds: int = 10,
     key_added: str = "X_birmt",
     cluster_key: str = "birmt",
     seed: int = 0,
     n_jobs: Optional[int] = None,
-    version: Literal[1, 2] = 1,
+    version: Literal[1, 2] = 2,
     **v2_options,
 ) -> AnnData:
     """BiRMT embedding and clustering of a cells x features accessibility
     matrix (binarised). See the module docstring for the method and refs.
 
-    ``version=2`` runs BiRMT-2 (:func:`epione.tl._birmt2.birmt2`: multiscale
-    tile pyramid and DNA-sequence graph prior); ``v2_options`` are passed to
-    it (e.g. ``tile_sizes``, ``genome``, ``seq_lambda``). The default
-    ``version=1`` is unchanged.
+    **Default (``version=2``): BiRMT-2**, Epione's default cell embedding
+    (:func:`epione.tl._birmt2.birmt2`: matrix-free biwhitening, block
+    Krylov SVD, cell-score optimal shrinkage), stored in
+    ``obsm['X_birmt']``; cluster it with the usual
+    ``epi.pp.neighbors(adata, use_rep='X_birmt')`` + ``epi.tl.clusters``.
+    For ``version=2`` the label-free Markov-time-1 partition is off by
+    default (``cluster=True`` turns it on); ``v2_options`` are passed to
+    :func:`~epione.tl._birmt2.birmt2`. ``version=1`` reproduces BiRMT v1
+    exactly (its defaults, including ``cluster=True``, are unchanged).
 
     Parameters
     ----------
@@ -648,7 +653,8 @@ def birmt(
         ``delta``, capped at ``t_max``) or a fixed integer.
     cluster, resolutions, n_seeds
         Step 4 (Markov-stability resolution selection); grid defaults to
-        :func:`default_resolutions`.
+        :func:`default_resolutions`. ``cluster=None``: ``True`` for
+        ``version=1``, ``False`` for ``version=2``.
 
     Returns
     -------
@@ -661,6 +667,8 @@ def birmt(
     """
     if version == 2:
         from ._birmt2 import birmt2
+        if cluster is None:
+            cluster = False
         if shrinkage is not None:
             v2_options["shrinkage"] = shrinkage
         return birmt2(adata, layer=layer, min_cells=min_cells, k_max=k_max, n_neighbors=n_neighbors,
@@ -672,6 +680,8 @@ def birmt(
         raise TypeError(f"unexpected arguments for version=1: {sorted(v2_options)}")
     if shrinkage is None:
         shrinkage = "frobenius"
+    if cluster is None:
+        cluster = True
     import time
     t0 = time.time()
     nt = _set_threads(n_jobs)
