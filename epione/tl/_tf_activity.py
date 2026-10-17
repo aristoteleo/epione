@@ -239,14 +239,21 @@ if _HAS_NUMBA:
                 if alpha > -1.0:
                     alpha = -1.0
                 ssum = 0.0
+                bad = False
                 for k in range(K):
                     r = p1[k] - p0[k]
                     v = p2[k] - 2.0 * p1[k] + p0[k]
                     q = p0[k] - 2.0 * alpha * r + alpha * alpha * v
-                    pt[k] = q if q > 1e-300 else 1e-300
-                    ssum += pt[k]
-                for k in range(K):
-                    pt[k] /= ssum
+                    if q <= 0.0 and p2[k] > 0.0:
+                        bad = True        # step leaves the simplex: EM components
+                    pt[k] = q             # set to 0 could never recover
+                    ssum += q
+                if bad or ssum <= 0.0:
+                    for k in range(K):    # alpha = -1 is the plain double EM step
+                        pt[k] = p2[k]
+                else:
+                    for k in range(K):
+                        pt[k] = max(pt[k], 0.0) / ssum
                 lt = _em_map(lik, pt, prior0, pn)       # stabilising EM step
                 l2 = _em_map(lik, p2, prior0, tmp)
                 if lt < l2:                              # monotone fallback
