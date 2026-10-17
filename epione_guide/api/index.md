@@ -101,6 +101,7 @@ linked above.
 
 | Task | Functions |
 |---|---|
+| Cell embedding (default: BiRMT-2, `obsm['X_birmt']`) | {func}`epione.tl.birmt` |
 | LSI / iterative LSI | {func}`epione.tl.lsi`, {func}`epione.tl.iterative_lsi` |
 | Learned scATAC embeddings: scBasset (sequence CNN, PyTorch rewrite of the official code) and PeakVI (scvi-tools) (`pip install epione[multimodal]`) | {func}`epione.tl.scbasset`, {func}`epione.tl.peakvi` |
 | UMAP / t-SNE / PCA | {func}`epione.tl.umap`, {func}`epione.tl.tsne` (openTSNE / FIt-SNE), {func}`epione.pl.umap`, {func}`epione.pl.tsne`, {func}`epione.pl.pca`, {func}`epione.pl.diffmap`, {func}`epione.pl.draw_graph` |
