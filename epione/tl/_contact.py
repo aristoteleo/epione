@@ -345,106 +345,157 @@ def _glasso_kernels():
     if _GL_KERNELS:
         return _GL_KERNELS
     import numba
-    jit = numba.njit(cache=True, nogil=True)
+    jit = numba.njit(cache=True, nogil=True, fastmath={"reassoc", "contract", "arcp", "nsz"})  # no nnan/ninf: finiteness checks stay valid
 
     @jit
-    def glasso(S, alpha, max_iter, tol, enet_max_iter, enet_tol):
+    def _inv_spd(A):
+        """Inverse of a symmetric positive-definite matrix (Gauss-Jordan, no LAPACK call)."""
+        m = A.shape[0]
+        W = A.copy()
+        Inv = np.eye(m)
+        for c in range(m):
+            piv = W[c, c]
+            for k in range(m):
+                W[c, k] /= piv
+                Inv[c, k] /= piv
+            for r in range(m):
+                if r != c:
+                    f = W[r, c]
+                    if f != 0.0:
+                        for k in range(m):
+                            W[r, k] -= f * W[c, k]
+                            Inv[r, k] -= f * Inv[c, k]
+        return Inv
+
+    @jit
+    def glasso(S, alpha, max_iter, tol, enet_max_iter, enet_tol, tol_c=1e-4, shrink=0.95):
         m = S.shape[0]
-        C = S * 0.95
+        C = S * shrink
         for i in range(m):
             C[i, i] = S[i, i]
-        P = np.linalg.inv(C)
-        idx = np.empty(m - 1, dtype=np.int64)
-        W11 = np.empty((m - 1, m - 1))
-        row = np.empty(m - 1)
-        w = np.empty(m - 1)
+        P = _inv_spd(C)
+        w = np.zeros(m)
+        grad = np.zeros(m)
+        act = np.empty(m, dtype=np.int64)
+        it = 0
         for it in range(max_iter):
+            dc_max = 0.0
             for j in range(m):
-                k = 0
-                for a in range(m):
-                    if a != j:
-                        idx[k] = a
-                        k += 1
-                for a in range(m - 1):
-                    row[a] = S[j, idx[a]]
-                    for b in range(m - 1):
-                        W11[a, b] = C[idx[a], idx[b]]
+                # row j: lasso min 0.5 w'C_{-j,-j} w - S_{-j,j}'w + alpha |w|_1 in full index
+                # space with w[j] = 0 (no sub-matrix copies); warm start from P[:, j]
                 den = P[j, j] + 1000.0 * 2.220446049250313e-16
-                for a in range(m - 1):
-                    w[a] = -P[idx[a], j] / den
-                # lasso on the Gram matrix: min 0.5 w'W11 w - row'w + alpha |w|_1
+                for a in range(m):
+                    w[a] = -P[a, j] / den
+                w[j] = 0.0
+                for a in range(m):
+                    grad[a] = S[j, a]
+                for bb in range(m):
+                    wb = w[bb]
+                    if wb != 0.0:
+                        for a in range(m):
+                            grad[a] -= C[bb, a] * wb     # C symmetric: row access
+                full = True
+                n_act = 0
                 for _ in range(enet_max_iter):
                     w_max = 0.0
                     d_w_max = 0.0
-                    for a in range(m - 1):
-                        if W11[a, a] == 0.0:
+                    n_loop = m if full else n_act
+                    for t in range(n_loop):
+                        aa = t if full else act[t]
+                        if aa == j or C[aa, aa] == 0.0:
                             continue
-                        w_old = w[a]
-                        tmp = row[a]
-                        for b in range(m - 1):
-                            tmp -= W11[a, b] * w[b]
-                        tmp += W11[a, a] * w_old
+                        w_old = w[aa]
+                        tmp = grad[aa] + C[aa, aa] * w_old
                         if tmp > alpha:
-                            w[a] = (tmp - alpha) / W11[a, a]
+                            wn = (tmp - alpha) / C[aa, aa]
                         elif tmp < -alpha:
-                            w[a] = (tmp + alpha) / W11[a, a]
+                            wn = (tmp + alpha) / C[aa, aa]
                         else:
-                            w[a] = 0.0
-                        dw = abs(w[a] - w_old)
-                        if dw > d_w_max:
-                            d_w_max = dw
-                        if abs(w[a]) > w_max:
-                            w_max = abs(w[a])
+                            wn = 0.0
+                        if wn != w_old:
+                            dlt = wn - w_old
+                            w[aa] = wn
+                            for bb in range(m):
+                                grad[bb] -= C[aa, bb] * dlt
+                            if abs(dlt) > d_w_max:
+                                d_w_max = abs(dlt)
+                        if abs(wn) > w_max:
+                            w_max = abs(wn)
+                    if full:
+                        n_act = 0
+                        for aa in range(m):
+                            if w[aa] != 0.0:
+                                act[n_act] = aa
+                                n_act += 1
                     if w_max == 0.0 or d_w_max / w_max < enet_tol:
-                        break
+                        if full:
+                            break
+                        full = True
+                    else:
+                        full = False
                 dot = 0.0
-                for a in range(m - 1):
-                    dot += C[idx[a], j] * w[a]
+                for aa in range(m):
+                    dot += C[aa, j] * w[aa]
                 pjj = 1.0 / (C[j, j] - dot)
+                for aa in range(m):
+                    if aa != j:
+                        P[aa, j] = -pjj * w[aa]
+                        P[j, aa] = -pjj * w[aa]
                 P[j, j] = pjj
-                for a in range(m - 1):
-                    P[idx[a], j] = -pjj * w[a]
-                    P[j, idx[a]] = -pjj * w[a]
-                for a in range(m - 1):
-                    acc = 0.0
-                    for b in range(m - 1):
-                        acc += W11[a, b] * w[b]
-                    C[j, idx[a]] = acc
-                    C[idx[a], j] = acc
-            # duality gap (sklearn _dual_gap)
+                # new covariance row: C_{-j,j} = C_{-j,-j} w  (= S_{-j,j} - grad, the lasso residual)
+                for aa in range(m):
+                    if aa != j:
+                        nv = S[j, aa] - grad[aa]
+                        d = abs(nv - C[aa, j])
+                        if d > dc_max:
+                            dc_max = d
+                        C[aa, j] = nv
+                        C[j, aa] = nv
             gap = -float(m)
             l1 = 0.0
-            for a in range(m):
-                for b in range(m):
-                    gap += S[a, b] * P[a, b]
-                    if a != b:
-                        l1 += abs(P[a, b])
+            for aa in range(m):
+                for bb in range(m):
+                    gap += S[aa, bb] * P[aa, bb]
+                    if aa != bb:
+                        l1 += abs(P[aa, bb])
             gap += alpha * l1
-            if abs(gap) < tol:
+            if abs(gap) < tol or dc_max < tol_c:
                 break
-        return P
+        return P, it + 1
 
     @jit
-    def pcor_block(g0, g1, Z, gene_ptr, cols, out_ptr, n_conf, alpha, max_iter, tol, out):
-        n = Z.shape[0]
+    def pcor_block(g0, g1, Z, gene_ptr, cols, out_ptr, n_conf, alpha, max_iter, tol, out, iters):
+        n = Z.shape[1]
         for g in range(g0, g1):
             c0, c1 = gene_ptr[g], gene_ptr[g + 1]
             m = c1 - c0
             if m < 2:
                 continue
-            S = np.zeros((m, m))
+            # S = X X' / (n - 1) with plain loops: no BLAS call inside the threaded kernel
+            # (a multi-threaded BLAS here oversubscribes the cores ~25x)
+            S = np.empty((m, m))
             for a in range(m):
-                ca = cols[c0 + a]
+                ra = Z[cols[c0 + a]]
                 for b in range(a, m):
-                    cb = cols[c0 + b]
+                    rb = Z[cols[c0 + b]]
                     acc = 0.0
                     for r in range(n):
-                        acc += Z[r, ca] * Z[r, cb]
+                        acc += ra[r] * rb[r]
                     S[a, b] = acc / (n - 1)
                     S[b, a] = S[a, b]
             for a in range(m):
                 S[a, a] = 1.0
-            P = glasso(S, alpha, max_iter, tol, 100, 1e-4)
+            # a gene uncorrelated with every other variable is its own glasso component
+            # (Witten, Friedman & Simon 2011): rho = 0 exactly, no fit needed
+            iso = True
+            for a in range(1, m):
+                if abs(S[0, a]) > alpha:
+                    iso = False
+                    break
+            if iso:
+                continue
+            P, nit = glasso(S, alpha, max_iter, tol, 100, 1e-4)
+            iters[g] = nit
             ok = True
             for a in range(m):
                 for b in range(m):
@@ -459,64 +510,161 @@ def _glasso_kernels():
             for a in range(n_pk):
                 out[out_ptr[g] + a] = -P[0, 1 + a] / (d0 * np.sqrt(max(P[1 + a, 1 + a], 1e-12)))
 
-    _GL_KERNELS.update(glasso=glasso, pcor_block=pcor_block)
+    @jit
+    def mc_sums(r0, r1, mptr, midx, indptr, indices, data, out):
+        for i in range(r0, r1):
+            for t in range(mptr[i], mptr[i + 1]):
+                c = midx[t]
+                for q in range(indptr[c], indptr[c + 1]):
+                    out[i, indices[q]] += data[q]
+
+    @jit
+    def log_std_cols(c0, c1, S, rowscale, out):
+        """out[j, :] = standardise(log1p(S[:, j] * rowscale)) (ddof 1; zero variance -> 0);
+        output is variables x observations."""
+        n = S.shape[0]
+        for j in range(c0, c1):
+            mu = 0.0
+            for i in range(n):
+                v = np.log1p(S[i, j] * rowscale[i])
+                out[j, i] = v
+                mu += v
+            mu /= n
+            ss = 0.0
+            for i in range(n):
+                d = out[j, i] - mu
+                ss += d * d
+            sd = np.sqrt(ss / (n - 1))
+            if sd > 0:
+                for i in range(n):
+                    out[j, i] = (out[j, i] - mu) / sd
+            else:
+                for i in range(n):
+                    out[j, i] = 0.0
+
+    @jit
+    def pair_dot(a0, a1, rows_a, rows_b, Z, out):
+        n = Z.shape[1]
+        for q in range(a0, a1):
+            ra = Z[rows_a[q]]
+            rb = Z[rows_b[q]]
+            acc = 0.0
+            for r in range(n):
+                acc += ra[r] * rb[r]
+            out[q] = acc / (n - 1)
+
+    @jit
+    def abc_den(c, a, tss, window, gamma, s0, out):
+        n = len(c)
+        for i in range(len(tss)):
+            t = tss[i]
+            lo = np.searchsorted(c, t - window, side="left")
+            hi = np.searchsorted(c, t + window, side="right")
+            acc = 0.0
+            for k in range(lo, hi):
+                d = abs(c[k] - t)
+                if d < s0:
+                    d = s0
+                acc += a[k] * (d / s0) ** (-gamma)
+            out[i] = acc
+
+
+    _GL_KERNELS.update(glasso=glasso, pcor_block=pcor_block, abc_den=abc_den, mc_sums=mc_sums,
+                       log_std_cols=log_std_cols, pair_dot=pair_dot)
     return _GL_KERNELS
 
 
-def _pcor_all_genes(Zg, Zp, F, gene_cols, peak_lists, alpha, n_jobs=None,
-                    max_iter=200, tol=1e-4):
-    """Partial correlations for many genes at once (numba, threads over genes).
+def _threaded(fn, n, n_jobs, *args):
+    """Run ``fn(b0, b1, *args)`` over ``range(n)`` in contiguous blocks on threads."""
+    from concurrent.futures import ThreadPoolExecutor
+    from ..pp._fragment_io import resolve_n_jobs
+    nj = resolve_n_jobs(n_jobs)
+    edges = np.linspace(0, n, min(n, 4 * nj) + 1).astype(np.int64)
+    blocks = [(edges[i], edges[i + 1]) for i in range(len(edges) - 1) if edges[i + 1] > edges[i]]
+    if nj > 1 and len(blocks) > 1:
+        with ThreadPoolExecutor(max_workers=nj) as ex:
+            list(ex.map(lambda b: fn(b[0], b[1], *args), blocks))
+    else:
+        for b in blocks:
+            fn(b[0], b[1], *args)
 
-    ``Zg`` (n × genes) and ``Zp`` (n × peaks) are standardised metacell
-    matrices, ``F`` (n × K) the confounders; gene ``i`` uses column
-    ``gene_cols[i]`` of ``Zg`` and the peak columns ``peak_lists[i]``.
-    Zero-variance columns are all-zero after standardisation, which
-    decouples them in the graphical lasso (block-diagonal ``R``), so they
-    get ρ = 0 exactly as if they had been dropped. Genes whose fit is not
-    finite are refitted with the sklearn path (with identity shrinkage).
-    Returns the concatenated ρ in the order of ``peak_lists``."""
+
+def _metacell_log_std(X, M, scale, out=None, n_jobs=None):
+    """Standardised ``log1p(scale * S / rowsum(S))`` of the metacell sums ``S = M @ X``
+    (``M`` the 0/1 membership CSR), returned TRANSPOSED (features × n_mc, float64), threaded numba;
+    written into ``out`` when given."""
+    k = _glasso_kernels()
+    X = X.tocsr() if sp.issparse(X) else sp.csr_matrix(X)
+    M = M.tocsr()
+    S = np.zeros((M.shape[0], X.shape[1]), dtype=np.float64)
+    _threaded(k["mc_sums"], M.shape[0], n_jobs, M.indptr.astype(np.int64), M.indices.astype(np.int64),
+              X.indptr.astype(np.int64), X.indices, X.data, S)
+    tot = S.sum(axis=1)
+    rowscale = np.where(tot > 0, scale / np.where(tot > 0, tot, 1.0), 0.0)
+    if out is None:
+        out = np.empty((S.shape[1], S.shape[0]), dtype=np.float64)
+    _threaded(k["log_std_cols"], S.shape[1], n_jobs, S, rowscale, out)
+    return out
+
+
+def _pcor_rows(ZT, gene_rows, peak_lists, conf_rows, alpha, n_jobs=None, max_iter=200, tol=1e-4):
+    """Partial correlations for many genes (numba, threads over genes) from one matrix ``ZT``
+    (variables × observations, standardised rows): gene ``i`` = row ``gene_rows[i]``, its peaks =
+    rows ``peak_lists[i]``, confounders = rows ``conf_rows`` (shared). Returns concatenated ρ."""
     from concurrent.futures import ThreadPoolExecutor
     from ..pp._fragment_io import resolve_n_jobs
     k = _glasso_kernels()
-    n = Zg.shape[0]
-    Kc = 0 if F is None else F.shape[1]
-    Fz = np.zeros((n, 0)) if F is None else np.nan_to_num(_standardise(F))
-    Z = np.ascontiguousarray(np.hstack([np.nan_to_num(Zg), np.nan_to_num(Zp), Fz]), dtype=np.float64)
-    off_p = Zg.shape[1]
-    off_f = off_p + Zp.shape[1]
+    Kc = len(conf_rows)
     sizes = np.array([1 + len(pl) + Kc for pl in peak_lists], dtype=np.int64)
     gene_ptr = np.r_[0, np.cumsum(sizes)].astype(np.int64)
     cols = np.empty(gene_ptr[-1], dtype=np.int64)
     out_ptr = np.r_[0, np.cumsum([len(pl) for pl in peak_lists])].astype(np.int64)
-    fcols = off_f + np.arange(Kc, dtype=np.int64)
-    for i, (gc, pl) in enumerate(zip(gene_cols, peak_lists)):
+    conf_rows = np.asarray(conf_rows, dtype=np.int64)
+    for i, (gr, pl) in enumerate(zip(gene_rows, peak_lists)):
         a = gene_ptr[i]
-        cols[a] = gc
-        cols[a + 1:a + 1 + len(pl)] = off_p + np.asarray(pl, dtype=np.int64)
-        cols[a + 1 + len(pl):gene_ptr[i + 1]] = fcols
+        cols[a] = gr
+        cols[a + 1:a + 1 + len(pl)] = pl
+        cols[a + 1 + len(pl):gene_ptr[i + 1]] = conf_rows
     out = np.zeros(out_ptr[-1])
     n_genes = len(peak_lists)
+    iters = np.zeros(n_genes, dtype=np.int64)
     nj = resolve_n_jobs(n_jobs)
-    # blocks balanced by cost (~m^3 per gene)
     cost = np.cumsum(sizes.astype(np.float64) ** 3)
     n_blk = max(1, min(n_genes, 8 * nj))
     edges = np.searchsorted(cost, np.linspace(0, cost[-1], n_blk + 1)[1:-1]) if n_genes else []
     bounds = np.unique(np.r_[0, edges, n_genes]).astype(np.int64)
 
     def run(b):
-        k["pcor_block"](bounds[b], bounds[b + 1], Z, gene_ptr, cols, out_ptr, Kc, float(alpha),
-                        int(max_iter), float(tol), out)
+        k["pcor_block"](bounds[b], bounds[b + 1], ZT, gene_ptr, cols, out_ptr, Kc, float(alpha),
+                        int(max_iter), float(tol), out, iters)
     if nj > 1 and len(bounds) > 2:
         with ThreadPoolExecutor(max_workers=nj) as ex:
             list(ex.map(run, range(len(bounds) - 1)))
     else:
         for b in range(len(bounds) - 1):
             run(b)
-    bad = [i for i in range(n_genes) if not np.isfinite(out[out_ptr[i]:out_ptr[i + 1]]).all()]
-    for i in bad:
-        y = Zg[:, gene_cols[i]]
-        P = Zp[:, np.asarray(peak_lists[i], dtype=np.int64)]
-        out[out_ptr[i]:out_ptr[i + 1]] = _pcor_one_gene(y, P, F, alpha)
+    for i in range(n_genes):
+        if not np.isfinite(out[out_ptr[i]:out_ptr[i + 1]]).all():
+            F = ZT[conf_rows].T if Kc else None
+            out[out_ptr[i]:out_ptr[i + 1]] = _pcor_one_gene(
+                ZT[gene_rows[i]], ZT[np.asarray(peak_lists[i], dtype=np.int64)].T, F, alpha)
+    _pcor_rows.last_iters = iters
+    return out
+
+
+def _pcor_all_genes(Zg, Zp, F, gene_cols, peak_lists, alpha, n_jobs=None, max_iter=200, tol=1e-4):
+    """Column-major convenience wrapper of :func:`_pcor_rows` (``Zg`` n × genes, ``Zp`` n × peaks,
+    ``F`` n × K confounders)."""
+    n = Zg.shape[0]
+    Kc = 0 if F is None else F.shape[1]
+    ZT = np.vstack([np.nan_to_num(Zg).T, np.nan_to_num(Zp).T] +
+                   ([np.nan_to_num(_standardise(F)).T] if Kc else [])).astype(np.float64)
+    off = Zg.shape[1]
+    conf = np.arange(off + Zp.shape[1], off + Zp.shape[1] + Kc, dtype=np.int64)
+    out = _pcor_rows(np.ascontiguousarray(ZT), list(gene_cols),
+                     [off + np.asarray(p, dtype=np.int64) for p in peak_lists], conf, alpha,
+                     n_jobs=n_jobs, max_iter=max_iter, tol=tol)
+    _pcor_all_genes.last_iters = _pcor_rows.last_iters
     return out
 
 
@@ -582,6 +730,25 @@ def _pairs_within(peaks: pd.DataFrame, genes: pd.DataFrame, max_distance: int):
 # Enhancer–gene links
 # ---------------------------------------------------------------------------
 
+def _abc_denominators(peaks: pd.DataFrame, genes: pd.DataFrame, act: np.ndarray, gamma: float,
+                      s0: float, window: int) -> np.ndarray:
+    """``sum_{p: |c_p - TSS_g| <= window} a_p C(|c_p - TSS_g|)`` for every gene (numba,
+    no pair materialisation)."""
+    _den = _glasso_kernels()["abc_den"]
+    out = np.zeros(len(genes))
+    pk_by = {ch: d for ch, d in peaks.groupby("chrom", sort=False)}
+    for ch, g in genes.groupby("chrom", sort=False):
+        p = pk_by.get(ch)
+        if p is None:
+            continue
+        p = p.sort_values("center")
+        res = np.zeros(len(g))
+        _den(p["center"].to_numpy(np.float64), act[p["peak_idx"].to_numpy()].astype(np.float64),
+             g["tss"].to_numpy(np.float64), float(window), float(gamma), float(s0), res)
+        out[g.index.to_numpy()] = res
+    return out
+
+
 _LINK_METHODS = ("abc_pcor", "abc", "pcor_contact", "pcor", "contact", "pearson_contact")
 
 
@@ -610,6 +777,7 @@ def contact_links(
     rna_layer: Optional[str] = None,
     n_jobs: Optional[int] = None,
     solver: Literal["numba", "sklearn"] = "numba",
+    confounders: Literal["glasso", "residualize"] = "glasso",
     key_added: str = "contact_links",
     inplace: bool = True,
     verbose: bool = True,
@@ -679,6 +847,12 @@ def contact_links(
     n_jobs
         Threads for the per-gene graphical-lasso fits (``None`` = the CPU
         budget, as Epione's fragment tools).
+    confounders
+        ``"glasso"``: the confounder factors enter the graphical lasso as
+        (penalised) variables; ``"residualize"``: they are projected out of
+        every variable first (exact, unpenalised conditioning), and the
+        graphical lasso runs on the gene and its local peaks only (smaller
+        problems, faster).
     solver
         ``"numba"`` (default): Epione's nogil numba graphical lasso, threads
         over genes; ``"sklearn"``: ``sklearn.covariance.graphical_lasso``
@@ -708,6 +882,9 @@ def contact_links(
     X = adata.layers[layer] if layer else adata.X
     X = sp.csr_matrix(X) if not sp.issparse(X) else X.tocsr()
 
+    import time as _time
+    _t0 = _time.time()
+    _tick = (lambda msg: console.info(f"[contact_links] {msg} ({_time.time() - _t0:.1f}s)")) if verbose else (lambda msg: None)
     # --- metacells (shared by gamma fit and correlations) ---
     M = None
     if needs_corr or (isinstance(gamma, str) and gamma == "fit"):
@@ -716,6 +893,7 @@ def contact_links(
         emb = np.asarray(adata.obsm[use_rep])
         M = _metacell_membership(emb, n_metacells, k_neighbors, seed)
 
+    _tick("metacells")
     # --- gamma ---
     gamma_info = None
     if isinstance(gamma, str):
@@ -741,6 +919,7 @@ def contact_links(
     pb = np.asarray(X[mask].sum(axis=0)).ravel().astype(np.float64)
     act = pb * (1e6 / max(pb.sum(), 1.0))
 
+    _tick("activity")
     # --- pairs within the output window ---
     p_idx, g_row, dist = _pairs_within(peaks, gdf, max_distance)
     contact = powerlaw_contact(dist, g_val, s0)
@@ -748,15 +927,15 @@ def contact_links(
         console.info(f"[contact_links] {len(peaks):,} peaks | {len(gdf):,} genes | "
                      f"{len(p_idx):,} pairs ≤ {max_distance:,} bp | gamma = {g_val:.3f}")
 
+    _tick("pairs")
     # --- ABC denominators over abc_window ---
     abc = np.zeros(len(p_idx))
     if needs_abc or method == "abc_pcor":
-        dp, dg, dd = _pairs_within(peaks, gdf, abc_window)
-        denom = np.bincount(dg, weights=act[dp] * powerlaw_contact(dd, g_val, s0),
-                            minlength=len(gdf))
+        denom = _abc_denominators(peaks, gdf, act, g_val, s0, abc_window)
         den = denom[g_row]
         abc = np.where(den > 0, act[p_idx] * contact / np.where(den > 0, den, 1.0), 0.0)
 
+    _tick("ABC")
     # --- correlations ---
     pcor = np.zeros(len(p_idx))
     pear = np.zeros(len(p_idx))
@@ -768,12 +947,8 @@ def contact_links(
         R = rna.layers[rna_layer] if rna_layer else rna.X
         R = sp.csr_matrix(R) if not sp.issparse(R) else R.tocsr()
         gcol = pd.Index(rna.var_names.astype(str)).get_indexer(gdf["gene_name"])
-        Sp = (M @ X).toarray()
-        Sg = (M @ R).toarray()
-        Lp = _log_cpm(Sp)
-        tot = Sg.sum(axis=1, keepdims=True)
-        tot[tot == 0] = 1.0
-        Lg = np.log1p(Sg * (1e4 / tot))[:, gcol]
+        n_mc = M.shape[0]
+        n_g, n_p = len(gdf), X.shape[1]
         F = None
         if n_confounders > 0:
             E = (M @ emb) / np.asarray(M.sum(axis=1))
@@ -781,16 +956,23 @@ def contact_links(
             U, s, _ = np.linalg.svd(E, full_matrices=False)
             k = min(n_confounders, U.shape[1])
             F = U[:, :k] * s[:k]
-        Zp = _standardise(Lp)
-        Zg = _standardise(Lg)
-        n_mc = Lp.shape[0]
+        Kc = 0 if F is None else F.shape[1]
+        # one matrix, variables x metacells: [genes | peaks | confounders], standardised rows
+        ZT = np.empty((n_g + n_p + Kc, n_mc), dtype=np.float64)
+        ZT[:n_g] = _metacell_log_std(R, M, 1e4, n_jobs=n_jobs)[gcol]       # log-CP10k genes
+        _metacell_log_std(X, M, 1e6, out=ZT[n_g:n_g + n_p], n_jobs=n_jobs)  # log-CPM peaks
+        if Kc:
+            ZT[n_g + n_p:] = np.nan_to_num(_standardise(F)).T
+        conf_rows = np.arange(n_g + n_p, n_g + n_p + Kc, dtype=np.int64)
+        _tick("aggregation + normalisation")
         within = np.abs(dist) <= corr_window
-        # Pearson for every in-window pair
         wi = np.flatnonzero(within)
-        for a in range(0, len(wi), 500_000):
-            sl = wi[a:a + 500_000]
-            pear[sl] = (Zp[:, p_idx[sl]] * Zg[:, g_row[sl]]).sum(axis=0) / (n_mc - 1)
-        pear = np.nan_to_num(pear)
+        kk = _glasso_kernels()
+        pv = np.zeros(len(wi))
+        _threaded(kk["pair_dot"], len(wi), n_jobs, g_row[wi].astype(np.int64),
+                  (n_g + p_idx[wi]).astype(np.int64), ZT, pv)
+        pear[wi] = np.nan_to_num(pv)
+        _tick("pearson")
         if method != "pearson_contact":
             order = np.argsort(g_row[wi], kind="stable")
             wi_sorted = wi[order]
@@ -799,22 +981,32 @@ def contact_links(
             slices = [wi_sorted[a:b] for a, b in zip(brk[:-1], brk[1:])]
             if verbose:
                 console.info(f"[contact_links] graphical lasso for {len(slices):,} genes "
-                             f"(alpha = {glasso_alpha}, K = {0 if F is None else F.shape[1]})")
+                             f"(alpha = {glasso_alpha}, K = {Kc})")
+            if Kc and confounders == "residualize":
+                # condition on the confounders exactly (unpenalised): project them out of every
+                # variable, then the graphical lasso runs on [gene, local peaks] only
+                Q, _ = np.linalg.qr(np.column_stack([np.ones(n_mc), F]))
+                V = ZT[:n_g + n_p]
+                V = V - (V @ Q) @ Q.T
+                ZT = np.ascontiguousarray(np.nan_to_num(_standardise(V.T)).T)
+                conf_rows = np.zeros(0, dtype=np.int64)
+            gene_rows = [int(g_row[sl[0]]) for sl in slices]
+            peak_lists = [(n_g + p_idx[sl]).astype(np.int64) for sl in slices]
             if solver == "numba":
-                rho = _pcor_all_genes(Zg, Zp, F, [int(g_row[sl[0]]) for sl in slices],
-                                      [p_idx[sl] for sl in slices], glasso_alpha, n_jobs=n_jobs)
-                pcor[np.concatenate(slices) if slices else np.zeros(0, np.int64)] = rho
+                rho = _pcor_rows(ZT, gene_rows, peak_lists, conf_rows, glasso_alpha, n_jobs=n_jobs)
             else:
-                jobs = [(sl, Lg[:, g_row[sl[0]]], Lp[:, p_idx[sl]]) for sl in slices]
+                Fu = ZT[conf_rows].T if len(conf_rows) else None
+                args = [(ZT[g], ZT[pl].T) for g, pl in zip(gene_rows, peak_lists)]
                 if n_jobs and n_jobs != 1:
                     from joblib import Parallel, delayed
                     res = Parallel(n_jobs=n_jobs)(
-                        delayed(_pcor_one_gene)(y, P, F, glasso_alpha) for _, y, P in jobs)
+                        delayed(_pcor_one_gene)(y, P, Fu, glasso_alpha) for y, P in args)
                 else:
-                    res = [_pcor_one_gene(y, P, F, glasso_alpha) for _, y, P in jobs]
-                for (sl, _, _), r in zip(jobs, res):
-                    pcor[sl] = r
+                    res = [_pcor_one_gene(y, P, Fu, glasso_alpha) for y, P in args]
+                rho = np.concatenate(res) if res else np.zeros(0)
+            pcor[np.concatenate(slices) if slices else np.zeros(0, np.int64)] = rho
 
+    _tick("correlations")
     if method == "abc_pcor":
         score = abc * (eps + np.maximum(pcor, 0.0))
     elif method == "abc":

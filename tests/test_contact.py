@@ -258,7 +258,7 @@ def test_numba_glasso_matches_sklearn():
         A = rng.standard_normal((300, m)) @ (np.eye(m) + 0.3 * rng.standard_normal((m, m)))
         R = np.corrcoef(A.T)
         _, P_ref = graphical_lasso(R, alpha=alpha, max_iter=500, tol=1e-8, enet_tol=1e-8)
-        P = _glasso_kernels()["glasso"](R.copy(), alpha, 500, 1e-8, 1000, 1e-8)
+        P, _ = _glasso_kernels()["glasso"](R.copy(), alpha, 500, 1e-8, 1000, 1e-8)
         np.testing.assert_allclose(P, P_ref, atol=1e-4, rtol=1e-3)
 
 
