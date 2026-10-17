@@ -131,7 +131,7 @@ def test_birmt2_reduces_to_v1_and_tiles_run():
     import epione as epi
     a, labels = _peaks_adata(seed=3)
     b = a.copy()
-    epi.tl.birmt(a, cluster=False, n_jobs=1)
+    epi.tl.birmt(a, cluster=False, n_jobs=1, version=1)
     epi.tl.birmt(b, cluster=False, n_jobs=1, version=2, shrinkage="frobenius", svd="v1")
     np.testing.assert_allclose(np.abs(b.obsm["X_birmt"]), np.abs(a.obsm["X_birmt"]), rtol=1e-4, atol=1e-7)
     c = a.copy()
@@ -151,7 +151,7 @@ def test_version1_rejects_v2_options():
     import epione as epi
     a, _ = _peaks_adata(seed=4)
     with pytest.raises(TypeError):
-        epi.tl.birmt(a, cluster=False, tile_sizes=[1000])
+        epi.tl.birmt(a, cluster=False, tile_sizes=[1000], version=1)
 
 
 def test_score_shrinkage_is_frobenius_without_feature_cosine():
@@ -240,8 +240,40 @@ def test_fast_denoise_recovers_planted_rank_and_clusters():
     import epione as epi
     from sklearn.metrics import adjusted_rand_score
     a, labels = _peaks_adata(m=400, seed=8)
-    epi.tl.birmt(a, version=2, n_jobs=1)
+    epi.tl.birmt(a, version=2, n_jobs=1, cluster=True)
     info = a.uns["X_birmt"]
     assert info["levels"][0]["rank"] >= 3
     assert adjusted_rand_score(labels, a.obs["birmt"].astype(str)) > 0.9
     assert "X_birmt_W" in a.obsp
+
+
+def test_default_embedding_path():
+    """Default pipeline: epi.tl.birmt() -> BiRMT-2 embedding in obsm['X_birmt']
+    (no label-free partition), then Epione's neighbors + Leiden, and the
+    helpers whose use_rep defaults to 'X_birmt'."""
+    import epione as epi
+    from sklearn.metrics import adjusted_rand_score
+    a, labels = _peaks_adata(m=400, seed=9)
+    epi.tl.birmt(a, n_jobs=1)
+    assert a.uns["X_birmt"]["version"] == 2
+    assert "birmt" not in a.obs and "X_birmt_W" not in a.obsp
+    epi.pp.neighbors(a, use_rep="X_birmt", n_neighbors=15)
+    epi.tl.clusters(a)
+    key = a.obs.columns[-1]
+    from sklearn.metrics import homogeneity_score
+    # Leiden at resolution 1 may split planted types, but must not mix them
+    assert homogeneity_score(labels, a.obs[key].astype(str)) > 0.9
+    import inspect
+    for f in (epi.tl.harmony, epi.tl.add_impute_weights, epi.tl.peak_to_gene, epi.tl.coaccessibility,
+              epi.tl.add_trajectory, epi.tl.correlate_matrices):
+        assert inspect.signature(f).parameters["use_rep"].default == "X_birmt", f
+    a.obs["batch"] = np.where(np.arange(a.n_obs) % 2, "b1", "b2")
+    epi.tl.harmony(a, batch_key="batch", verbose=False)
+    assert a.obsm["X_harmony"].shape == a.obsm["X_birmt"].shape
+
+
+def test_version1_still_default_clusters():
+    import epione as epi
+    a, _ = _peaks_adata(m=300, seed=10)
+    epi.tl.birmt(a, version=1, n_seeds=2, resolutions=[0.5, 1.0], n_jobs=1)
+    assert "birmt" in a.obs and "rank" in a.uns["X_birmt"]

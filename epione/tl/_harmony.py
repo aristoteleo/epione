@@ -584,7 +584,7 @@ def harmony(
     adata,
     batch_key: Union[str, Sequence[str]] = "Sample",
     *,
-    use_rep: str = "X_iterative_lsi",
+    use_rep: str = "X_birmt",
     key_added: str = "X_harmony",
     theta: Optional[Union[float, Sequence[float]]] = None,
     sigma: float = 0.1,
@@ -632,7 +632,7 @@ def harmony(
         ``adata.uns['harmony']`` (parameters, objective trace, iterations).
     """
     if use_rep not in adata.obsm:
-        raise KeyError(f"adata.obsm[{use_rep!r}] not found — run iterative_lsi first")
+        raise KeyError(f"adata.obsm[{use_rep!r}] not found — run epi.tl.birmt (default embedding, obsm['X_birmt']) or pass use_rep='X_iterative_lsi' after epi.tl.iterative_lsi")
     keys = [batch_key] if isinstance(batch_key, str) else list(batch_key)
     missing = [k for k in keys if k not in adata.obs]
     if missing:

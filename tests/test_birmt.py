@@ -130,7 +130,7 @@ def test_birmt_end_to_end_recovers_groups():
     import epione as epi
     from sklearn.metrics import adjusted_rand_score
     ad = _blocks_atac()
-    epi.tl.birmt(ad, n_seeds=4, resolutions=[0.3, 0.5, 1.0, 2.0], n_jobs=1)
+    epi.tl.birmt(ad, n_seeds=4, resolutions=[0.3, 0.5, 1.0, 2.0], n_jobs=1, version=1)
     assert ad.obsm["X_birmt"].shape[0] == ad.n_obs
     info = ad.uns["X_birmt"]
     assert info["rank"] >= 3          # 4 groups -> rank >= 3 (+ mean)
