@@ -47,6 +47,8 @@ _OCCUPANCY_ATTRS = {
     "tf_occupancy", "OccupancyResult", "occupancy_from_counts",
     "neighbourhood_logsumexp", "site_insertion_counts", "OCCUPANCY_DEFAULTS",
 }
+# Default per-site TF binding entry point (method='occupancy' | 'print').
+_TF_BINDING_ATTRS = {"tf_binding", "TF_BINDING_METHODS"}
 # HINT-ATAC (RGT rgt-hint): bias-corrected signal, HMM footprints, differential.
 _HINT_ATTRS = {
     "HintBias", "HintHMM", "HintDifferentialResult", "fetch_hint_file",
@@ -91,6 +93,9 @@ def __getattr__(name):
         return getattr(mod, name)
     if name in _OCCUPANCY_ATTRS:
         mod = importlib.import_module("._occupancy", __name__)
+        return getattr(mod, name)
+    if name in _TF_BINDING_ATTRS:
+        mod = importlib.import_module("._tf_binding", __name__)
         return getattr(mod, name)
     if name in _HINT_ATTRS:
         mod = importlib.import_module("._hint", __name__)

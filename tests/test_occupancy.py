@@ -145,3 +145,57 @@ def test_tf_occupancy_recovers_planted_bound_sites(tmp_path):
     assert au > 0.8
     long = res.to_frame()
     assert len(long) == n_sites and {"occupancy_score", "n_short"} <= set(long.columns)
+
+
+# ---------------------------------------------------------------------------
+# Default entry point: epi.tl.tf_binding
+# ---------------------------------------------------------------------------
+
+def _small_adata(tmp_path):
+    ad = pytest.importorskip("anndata")
+    frags = []
+    for _ in range(2000):
+        s = int(RNG.integers(0, 6000)); L = int(RNG.integers(40, 400))
+        frags.append(("chr1", s, s + L, f"c{RNG.integers(0, 12)}"))
+    f = _write_fragments(tmp_path / "small.tsv.gz", frags)
+    adata = ad.AnnData(obs=pd.DataFrame({"grp": ["a"] * 6 + ["b"] * 6}, index=[f"c{i}" for i in range(12)]))
+    adata.uns["files"] = {"fragments": f}
+    sites = pd.DataFrame({"chrom": "chr1", "start": [500, 520, 3000, 5000], "end": [510, 530, 3010, 5010],
+                          "strand": ["+", "-", "+", "+"], "motif": ["A", "A", "B", "A"],
+                          "score": [9.0, 11.0, 10.0, 12.0]})
+    return adata, sites
+
+
+def test_tf_binding_default_is_occupancy(tmp_path):
+    from epione.tl import tf_binding, tf_occupancy, TF_BINDING_METHODS
+    import inspect
+    assert inspect.signature(tf_binding).parameters["method"].default == "occupancy"
+    assert TF_BINDING_METHODS[0] == "occupancy"
+    adata, sites = _small_adata(tmp_path)
+    res = tf_binding(adata, sites, verbose=False)
+    ref = tf_occupancy(adata, sites, verbose=False)
+    assert isinstance(res, O.OccupancyResult)
+    np.testing.assert_array_equal(res.score, ref.score)
+    grp = tf_binding(adata, sites, groupby="grp", min_cells_per_group=1, verbose=False)
+    assert grp.groups == ["a", "b"] and grp.score.shape == (2, 4)
+    np.testing.assert_array_equal(grp.n_all.sum(0), ref.n_all[0])   # groups partition the cells
+
+
+def test_tf_binding_print_dispatch(tmp_path, monkeypatch):
+    """method='print' forwards to the unchanged PRINT function with the peaks and strand-aware sites."""
+    from epione.tl import _print, tf_binding
+    adata, sites = _small_adata(tmp_path)
+    seen = {}
+
+    def fake(adata_, regions, *, groupby, sites, **kw):
+        seen.update(regions=regions, groupby=groupby, sites=sites, kw=kw)
+        return "print-result"
+    monkeypatch.setattr(_print, "tf_binding_score", fake)
+    peaks = pd.DataFrame({"chrom": ["chr1"], "start": [0], "end": [6000]})
+    out = tf_binding(adata, sites, method="print", regions=peaks, groupby="grp", tile=5)
+    assert out == "print-result" and seen["groupby"] == "grp" and seen["kw"] == {"tile": 5}
+    assert list(seen["sites"].columns) == ["chrom", "start", "end", "strand"]
+    with pytest.raises(ValueError, match="regions"):
+        tf_binding(adata, sites, method="print", groupby="grp")
+    with pytest.raises(ValueError, match="unknown method"):
+        tf_binding(adata, sites, method="tobias")

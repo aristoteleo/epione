@@ -492,6 +492,13 @@ def tf_binding_score(
 ) -> TFBindingResult:
     """PRINT TF binding probability for every site in some regions.
 
+    Not Epione's default per-site binding score since 2026-10: the default
+    is :func:`~epione.tl.tf_binding` (``method='occupancy'``,
+    :func:`~epione.tl.tf_occupancy`), which ranked ChIP-bound sites better
+    on held-out ENCODE cell types (median AUROC 0.89-0.91 vs 0.72-0.77
+    here) and runs ~70x faster. This function is unchanged and remains
+    bit-identical to scPrinter; it is also ``tf_binding(..., method='print')``.
+
     Footprints are computed over each whole region (a peak, typically
     ~1 kb) at the model's six scales, then the 201-bp multi-scale
     footprint around each site is scored by PRINT's pretrained binding
