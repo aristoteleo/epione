@@ -210,9 +210,15 @@ def mp_median(gamma: float) -> float:
     lo, hi = (1 - np.sqrt(g)) ** 2, (1 + np.sqrt(g)) ** 2
 
     def dens(t):
+        if t <= 0.0:          # gamma = 1: the lower edge is 0 (density -> 0/0)
+            return 0.0
         return np.sqrt(max((hi - t) * (t - lo), 0.0)) / (2 * np.pi * g * t)
 
     def cdf(t):
+        # F(lo) = 0 exactly; never hand quad an empty interval (some SciPy
+        # versions evaluate the integrand at the endpoint, NaN at t = 0)
+        if t <= lo:
+            return 0.0
         return quad(dens, lo, t, limit=200)[0]
 
     return brentq(lambda t: cdf(t) - 0.5, lo, hi, xtol=1e-12)
