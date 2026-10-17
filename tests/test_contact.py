@@ -190,7 +190,7 @@ def _gs_inputs():
 
 def test_contact_gene_score_weights():
     ad, ann, X, starts = _gs_inputs()
-    contact_gene_score(ad, ann, gamma=1.0, s0=5000, window=100_000, ceiling=None,
+    contact_gene_score(ad, ann, gamma=1.0, s0=5000, window=100_000, distance="tss", compete=False, ceiling=None,
                        scale_to=1.0, verbose=False)
     centres = starts + 250
     raw = []
@@ -202,7 +202,7 @@ def test_contact_gene_score_weights():
     exp = raw / raw.sum(1, keepdims=True)
     np.testing.assert_allclose(ad.obsm["contact_gene_score"], exp, rtol=1e-4)
     # compete: per-feature weights summed over genes are 1 where any gene contacts
-    contact_gene_score(ad, ann, gamma=1.0, s0=5000, window=400_000, compete=True,
+    contact_gene_score(ad, ann, gamma=1.0, s0=5000, window=400_000, distance="tss", compete=True,
                        ceiling=None, scale_to=1.0, key_added="cmp", verbose=False)
     w1 = powerlaw_contact(np.abs(centres - 100_000), 1.0, 5000)
     w2 = powerlaw_contact(np.abs(centres - 260_000), 1.0, 5000)
