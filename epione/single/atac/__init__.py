@@ -2,7 +2,8 @@
 
 Flat API — call as ``epi.single.atac.X``:
 
-  - Peak calling: :func:`macs3` (per-cluster MACS3), :func:`merge_peaks`.
+  - Peak calling: :func:`macs3` (per-cluster MACS3), :func:`merge_peaks`,
+    :func:`scan_peaks` (CellScan: cells-as-replicates scan statistic).
   - Pseudobulk: :func:`pseudobulk`, :func:`pseudobulk_with_fragments`,
     fragment-file readers, performance-backend helpers.
   - Motif annotation: :func:`add_dna_sequence`, :func:`match_motif`.
@@ -16,6 +17,7 @@ this module's surface).
 from __future__ import annotations
 
 from ._call_peaks import macs3, merge_peaks
+from ._scan_peaks import scan_peaks
 
 from ._pseudobulk import (
     pseudobulk,
@@ -33,6 +35,7 @@ from ._motif import add_dna_sequence, match_motif
 __all__ = [
     "macs3",
     "merge_peaks",
+    "scan_peaks",
     "pseudobulk",
     "pseudobulk_with_fragments",
     "read_fragments_from_file",

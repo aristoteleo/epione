@@ -21,6 +21,7 @@ from . import atac, hic
 from .atac import (  # noqa: F401
     macs3,
     merge_peaks,
+    scan_peaks,
     pseudobulk,
     pseudobulk_with_fragments,
     read_fragments_from_file,
@@ -38,6 +39,7 @@ __all__ = [
     "hic",
     "macs3",
     "merge_peaks",
+    "scan_peaks",
     "pseudobulk",
     "pseudobulk_with_fragments",
     "read_fragments_from_file",
