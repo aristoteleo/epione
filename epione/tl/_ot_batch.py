@@ -380,7 +380,14 @@ def biwhiten_by_batch(
         Yb = Y[rows[0]:rows[-1] + 1] if contiguous else Y[rows]
         nb_, mcb = len(rows), int(max(5, np.ceil(2 * np.log(len(rows)))))
         ip, ix, iv = Yb.indptr, Yb.indices, Yb.data
-        present = np.bincount(ix, minlength=m) >= mcb
+        cnt_b = np.bincount(ix, minlength=m)
+        # every cell must keep >= 1 feature: if a cell's features are all below
+        # the floor, the floor of this batch is lowered to the largest value
+        # that keeps every cell (= min over cells of the cell's most frequent
+        # feature count)
+        row_max = np.maximum.reduceat(cnt_b[ix], ip[:-1].astype(np.int64)) if len(ix) else np.zeros(nb_)
+        mcb = int(min(mcb, row_max.min()))
+        present = cnt_b >= mcb
         mp_ = int(present.sum())
         # masked Sinkhorn (features absent from the block get y = 0): row sums
         # = #present features, column sums of present features = n_b
@@ -419,7 +426,7 @@ def biwhiten_by_batch(
             for j, r in enumerate(rows):
                 data[Y.indptr[r]:Y.indptr[r + 1]] = d[ip[j]:ip[j + 1]]
         info.append(dict(n_cells=int(nb_), n_features=mp_, alpha=float(alpha),
-                         sinkhorn_iter=int(it)))
+                         sinkhorn_iter=int(it), feature_floor=int(mcb)))
     Yw = sp.csr_matrix((data, Y.indices.copy(), Y.indptr.copy()), shape=Y.shape)
     Yw.eliminate_zeros()
     return Yw, xs, info
