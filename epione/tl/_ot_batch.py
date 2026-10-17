@@ -389,24 +389,37 @@ def biwhiten_by_batch(
         mcb = int(min(mcb, row_max.min()))
         present = cnt_b >= mcb
         mp_ = int(present.sum())
+        # Cells with deg_i * n_b < m_b cannot reach the row target m_b (each column
+        # carries at most n_b): the scaling problem has no solution with them
+        # (Sinkhorn diverges). They are excluded from the Sinkhorn iteration and
+        # row-scaled afterwards with the batch's converged feature scaling
+        # (out-of-sample cells); a no-op whenever every cell is feasible.
+        deg = k["seg_sum"](ip, ix, iv, present.astype(np.float64))
+        ins = deg * nb_ >= mp_
+        n_in = int(ins.sum())
+        if n_in == 0:
+            raise ValueError("no cell of the batch satisfies the biwhitening feasibility condition")
         # masked Sinkhorn (features absent from the block get y = 0): row sums
-        # = #present features, column sums of present features = n_b
-        x = np.ones(nb_)
+        # = #present features, column sums of present features = #in-sample cells
+        x = ins.astype(np.float64)
         y = np.zeros(m)
         it = 0
         for it in range(1, max_iter + 1):
             cs = k["col_sum"](ip, ix, iv, x, m, nchunk)
-            y = np.where(present, nb_ / np.maximum(cs, 1e-300), 0.0)
+            y = np.where(present, n_in / np.maximum(cs, 1e-300), 0.0)
             rs = k["seg_sum"](ip, ix, iv, y)
-            if np.any(rs <= 0):
-                raise ValueError(f"{int((rs <= 0).sum())} cells have no feature open in "
+            if np.any(rs[ins] <= 0):
+                raise ValueError(f"{int((rs[ins] <= 0).sum())} cells have no feature open in "
                                  f">= {mcb} cells of their batch")
-            x = mp_ / rs
+            x = np.where(ins, mp_ / np.maximum(rs, 1e-300), 0.0)
             cs = y * k["col_sum"](ip, ix, iv, x, m, nchunk)
-            if np.max(np.abs(cs[present] / nb_ - 1.0)) < tol:
+            if np.max(np.abs(cs[present] / n_in - 1.0)) < tol:
                 break
         else:
             console.warn(f"[ot_batch] biwhitening Sinkhorn did not reach tol={tol} in {max_iter} iterations")
+        if n_in < nb_:
+            rs = k["seg_sum"](ip, ix, iv, y)
+            x = np.where(ins, x, mp_ / np.maximum(rs, 1e-300))
         d = np.empty(Yb.nnz)
         k["scaled_data"](ip, ix, iv, np.sqrt(x), np.sqrt(y), d)
         # noise scale (Eq. 24) on the block restricted to its present features
@@ -426,7 +439,8 @@ def biwhiten_by_batch(
             for j, r in enumerate(rows):
                 data[Y.indptr[r]:Y.indptr[r + 1]] = d[ip[j]:ip[j + 1]]
         info.append(dict(n_cells=int(nb_), n_features=mp_, alpha=float(alpha),
-                         sinkhorn_iter=int(it), feature_floor=int(mcb)))
+                         sinkhorn_iter=int(it), feature_floor=int(mcb),
+                         n_out_of_sample=int(nb_ - n_in)))
     Yw = sp.csr_matrix((data, Y.indices.copy(), Y.indptr.copy()), shape=Y.shape)
     Yw.eliminate_zeros()
     return Yw, xs, info
