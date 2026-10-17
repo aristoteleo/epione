@@ -236,7 +236,7 @@ def correlate_matrices(
     remove_from_name2: Optional[Sequence[str]] = ("underscore", "dash"),
     log2_norm1: bool = True,
     log2_norm2: bool = True,
-    use_rep: str = "X_iterative_lsi",
+    use_rep: str = "X_birmt",
     dims_to_use: Optional[Sequence[int]] = None,
     scale_dims: bool = False,
     depth_key: Optional[str] = None,

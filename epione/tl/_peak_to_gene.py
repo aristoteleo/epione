@@ -10,7 +10,7 @@ Idea
 ----
 Single cells are too sparse for peak-gene correlation. Instead:
 
-1. Cluster the embedding (e.g. `adata.obsm["X_iterative_lsi"]`) into ``n_metacells``
+1. Cluster the embedding (default `adata.obsm["X_birmt"]` from `epi.tl.birmt`) into ``n_metacells``
    anchor cells, and aggregate each anchor's ``k_neighbors`` nearest cells into
    a pseudobulk. Do this for both the peak matrix and the gene (expression or
    gene-score) matrix.
@@ -215,7 +215,7 @@ def peak_to_gene(
     gene_obsm: Optional[str] = None,
     gene_names: Optional[list] = None,
     gene_annotation: Union[pd.DataFrame, str, None] = None,
-    use_rep: str = "X_iterative_lsi",
+    use_rep: str = "X_birmt",
     n_metacells: int = 500,
     k_neighbors: int = 100,
     max_distance: int = 250_000,
@@ -235,7 +235,7 @@ def peak_to_gene(
     adata
         Cells x peaks AnnData. ``adata.var_names`` must be interval-style
         (``chr:start-end``) and ``adata.obsm[use_rep]`` must hold an embedding
-        (typically the output of :func:`epione.tl.iterative_lsi`).
+        (default ``'X_birmt'``, the output of :func:`epione.tl.birmt`; ``'X_iterative_lsi'`` for :func:`epione.tl.iterative_lsi`).
     rna
         Per-cell gene expression. May be ``None`` – in that case
         ``adata.obsm[gene_obsm]`` is used as the gene matrix, and ``gene_names``
@@ -290,7 +290,7 @@ def peak_to_gene(
     # -- 1. Resolve embedding ------------------------------------------------
     if use_rep not in adata.obsm:
         raise KeyError(
-            f"adata.obsm[{use_rep!r}] not found – run iterative_lsi first."
+            f"adata.obsm[{use_rep!r}] not found – run epi.tl.birmt (default embedding, obsm['X_birmt']) or pass use_rep='X_iterative_lsi' after epi.tl.iterative_lsi."
         )
     emb = np.asarray(adata.obsm[use_rep])
 
