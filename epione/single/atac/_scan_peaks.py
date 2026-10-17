@@ -687,11 +687,13 @@ def scan_peaks(
         labels = np.zeros(n_cells, np.int64)
         group_names = ["all"]
     else:
-        lab = adata.obs[groupby].astype(str).values if isinstance(groupby, str) else np.asarray(groupby).astype(str)
+        # list() also works for the lazy obs columns of backed (AnnDataOOM / snapATAC2) objects
+        lab = (np.asarray([str(g) for g in adata.obs[groupby]]) if isinstance(groupby, str)
+               else np.asarray([str(g) for g in groupby]))
         if len(lab) != n_cells:
             raise ValueError("groupby length does not match the cells")
         group_names, labels = np.unique(lab, return_inverse=True)
-        group_names = list(group_names)
+        group_names = [str(g) for g in group_names]
 
     if chrom_sizes is None:
         if fasta is None:
