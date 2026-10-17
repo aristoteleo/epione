@@ -18,6 +18,7 @@ from ._doublets import (
     archr_doublets, filter_doublets, scdblfinder, amulet, clamulet,
     combine_doublet_scores,
 )
+from ._bayes_doublets import bayes_doublets, count_overlap_loci, loading_doublet_rate
 
 
 
@@ -38,6 +39,9 @@ __all__ = [
     "scrublet",
     "neighbors",
     # doublets
+    "bayes_doublets",
+    "count_overlap_loci",
+    "loading_doublet_rate",
     "archr_doublets",
     "filter_doublets",
     "scdblfinder",
