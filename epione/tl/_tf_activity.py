@@ -902,6 +902,15 @@ def tf_activity(
 ) -> AnnData:
     """Per-cell TF activity by an empirical-Bayes conditional count model.
 
+    This is Epione's default per-cell TF / motif activity. The chromVAR port
+    (:func:`epione.tl.add_background_peaks` + :func:`epione.tl.compute_deviations`)
+    stays available for chromVAR / ArchR-compatible Z-scores.
+
+    Typical use::
+
+        epi.tl.add_motif_matrix(adata, genome_fasta=fa)   # or add_motif_occupancy
+        epi.tl.tf_activity(adata, groupby="sample")       # obsm['tf_activity']
+
     See the module docstring for the model. Uses the motif annotation in
     ``adata.varm[motif_key]`` (:func:`epione.tl.add_motif_matrix` or
     :func:`add_motif_occupancy`) and needs no background peaks.
@@ -968,9 +977,13 @@ def tf_activity(
     X = adata.layers[layer] if layer is not None else adata.X
     X = sp.csr_matrix(X)
     if gc_key not in adata.var.columns:
-        if genome_fasta is None:
+        seqs = adata.uns.get("peak_seq")      # cached by add_motif_matrix's scan
+        if seqs is not None and len(seqs) == adata.n_vars:
+            adata.var[gc_key] = _gc_from_sequences(list(seqs))
+        elif genome_fasta is not None:
+            adata.var[gc_key] = _gc_from_sequences(_peak_sequences(adata, genome_fasta))
+        else:
             raise ValueError(f"adata.var[{gc_key!r}] missing; pass genome_fasta=")
-        adata.var[gc_key] = _gc_from_sequences(_peak_sequences(adata, genome_fasta))
     peak_tot = np.asarray(X.sum(axis=0)).ravel().astype(np.float64)
     cov = [adata.var[gc_key].to_numpy(np.float64), np.log10(peak_tot + 1.0)]
     cov += [adata.var[c].to_numpy(np.float64) for c in covariates]

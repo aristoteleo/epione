@@ -150,3 +150,23 @@ def test_quasi_dispersion_paired_counts():
         r = T.tf_activity_core(Y * k, W, strata, null="theoretical", dispersion="quasi",
                                shrinkage="none", verbose=False)
         assert 0.9 < r["z"].std() < 1.1
+
+
+def test_default_pipeline_with_add_motif_matrix_cache():
+    """Default path: binary motif matrix + cached peak sequences (as written
+    by add_motif_matrix) -> tf_activity without genome_fasta or bg peaks."""
+    Y, W, gc, ko = _simulate(n_cells=300, n_peaks=2000, effect=-0.6)
+    rng = np.random.default_rng(0)
+    seqs = ["".join(rng.choice(list("GC"), int(round(400 * g))).tolist()
+                    + rng.choice(list("AT"), 400 - int(round(400 * g))).tolist()) for g in gc]
+    a = AnnData(Y.astype(np.float32))
+    a.varm["motif"] = W
+    a.uns["peak_seq"] = np.asarray(seqs, dtype=object)
+    a.obs["sample"] = np.where(np.arange(300) % 2, "s1", "s2")
+    T.tf_activity(a, groupby="sample", verbose=False)
+    np.testing.assert_allclose(a.var["gc_bias"].to_numpy(), gc, atol=0.01)
+    s = a.obsm["tf_activity"]
+    assert _auroc(-s[ko, 0], -s[~ko, 0]) > 0.85
+    p = a.uns["tf_activity_params"]
+    assert p["peak_sensitivity"] == "eb" and p["score"] == "post_mean" and p["groupby"] == "sample"
+    assert "bg_peaks" not in a.varm
