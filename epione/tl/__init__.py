@@ -140,6 +140,7 @@ from ._joint_embedding import joint_embedding
 from ._peak_to_gene import peak_to_gene
 
 from ._coaccessibility import coaccessibility
+from ._e2g import e2g_links, e2g_features, count_insertions
 from ._contact import (
     contact_links, contact_gene_score, fit_contact_gamma, powerlaw_contact,
 )
@@ -230,6 +231,9 @@ __all__ = [
     "peak_to_gene",
     "coaccessibility",
     "contact_links",
+    "e2g_links",
+    "e2g_features",
+    "count_insertions",
     "contact_gene_score",
     "fit_contact_gamma",
     "powerlaw_contact",
