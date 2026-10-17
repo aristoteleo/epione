@@ -200,3 +200,62 @@ def test_variable_window_dip_and_nb(tmp_path):
     assert np.all(sp_mod._nb_score(np.array([20, 50]), np.array([5.0, 5.0]), 0.3)
                   <= -np.array([sp_mod._kernels()["poisson_logsf"](20, 5.0),
                                 sp_mod._kernels()["poisson_logsf"](50, 5.0)]) / np.log(10) + 1e-9)
+
+
+# ---------------------------------------------------------------------------
+# call_peaks: the default entry point (CellScan) and the MACS3 path
+# ---------------------------------------------------------------------------
+
+def _adata(tmp_path, cells, rows, labels=None):
+    import anndata as ad
+    import pysam
+    frag = _write(tmp_path, rows)
+    pysam.tabix_compress(frag, frag + ".gz", force=True)
+    pysam.tabix_index(frag + ".gz", preset="bed", force=True, zerobased=True)
+    a = ad.AnnData(obs=pd.DataFrame(index=cells))
+    if labels is not None:
+        a.obs["grp"] = labels
+    a.uns["files"] = {"fragments": frag + ".gz"}
+    return a
+
+
+def test_call_peaks_default_is_cellscan_and_feeds_peak_matrix(tmp_path):
+    import epione as epi
+    from epione.single.atac import call_peaks
+    rng = np.random.default_rng(4)
+    cells, rows, real, jackpot = _fixture(rng, n_cells=200)
+    labels = np.array(["A", "B"] * 100)
+    a = _adata(tmp_path, cells, rows, labels)
+    call_peaks(a, groupby="grp", chrom_sizes={"chr1": SIZE}, kmer=None, n_jobs=2, verbose=False)
+    pk = a.uns["peaks"]
+    direct = scan_peaks(a, groupby="grp", chrom_sizes={"chr1": SIZE}, kmer=None, n_jobs=2,
+                        inplace=False, verbose=False)
+    assert list(pk.columns[:4]) == ["chrom", "start", "end", "Peaks"]
+    assert (pk["start"].to_numpy() == direct["start"].to_numpy()).all()
+    assert (pk["Peaks"] == pk.chrom + ":" + pk.start.astype(str) + "-" + pk.end.astype(str)).all()
+    assert _hits(pk, real).all() and not _hits(pk, jackpot).any()
+    # downstream: the cell x peak matrix accepts the CellScan peak set as is
+    pm = epi.pp.make_peak_matrix(a, use_rep=pk["Peaks"], verbose=False)
+    assert pm.shape == (len(cells), len(pk))
+    assert np.asarray(pm.X.sum(0)).ravel().min() > 0
+    with pytest.raises(ValueError):
+        call_peaks(a, method="nope", chrom_sizes={"chr1": SIZE})
+
+
+def test_call_peaks_macs3_path_is_unchanged(tmp_path):
+    import os
+    import shutil
+    import sys
+    macs = os.path.join(os.path.dirname(sys.executable), "macs3")
+    if not (os.path.exists(macs) or shutil.which("macs3")):
+        pytest.skip("macs3 not installed")
+    from epione.single.atac import call_peaks, macs3, merge_peaks
+    rng = np.random.default_rng(5)
+    cells, rows, real, _ = _fixture(rng, n_cells=200)
+    a = _adata(tmp_path, cells, rows)
+    got = call_peaks(a, method="macs3", chrom_sizes={"chr1": SIZE}, gsize=SIZE, inplace=False,
+                     verbose=False)
+    res = macs3(a, gsize=SIZE, inplace=False, verbose=False)
+    ref = merge_peaks({"all": res}, {"chr1": SIZE}, half_width=250)
+    pd.testing.assert_frame_equal(got.reset_index(drop=True), ref.reset_index(drop=True))
+    assert _hits(got.assign(summit=(got.start + got.end) // 2), real).all()
