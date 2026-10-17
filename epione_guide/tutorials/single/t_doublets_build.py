@@ -203,7 +203,10 @@ md(r"""
 `filter_doublets` removes cells by one of four rules:
 
 * `method="bayes"` (default) removes the cells that `bayes_doublets` calls
-  doublets (posterior probability > 0.5).
+  doublets (posterior probability > 0.5). The posterior is calibrated to the
+  Poisson-loading doublet rate of a standard 10x channel (here 11%). This chip
+  was overloaded on purpose (21% genotype doublets), so pass the known rate,
+  `epi.pp.doublets(adata, expected_doublet_rate=0.25)`, to remove more of them.
 * `method="archr"` reproduces ArchR's `filterDoublets`. Within each sample it
   removes the top `n²/100000` cells by enrichment, the expected number of
   doublets for a 10x chip. It matches ArchR exactly on ArchR's own scores
