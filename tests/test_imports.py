@@ -71,6 +71,8 @@ def test_key_public_symbols_resolve():
         "utils.distance_to_nearest_peak",
         "utils.convert_gff_to_gtf",
         "utils.merge_peaks",
+        "single.call_peaks",
+        "single.scan_peaks",
         # tl
         "tl.differential_peaks",
         "tl.iterative_lsi",

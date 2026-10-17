@@ -250,6 +250,8 @@ epiAneufinder (Ramakrishnan et al., *Nat. Commun.* 2023), ported from the R pack
 
 | Task | Functions |
 |---|---|
+| Peak set from fragments (default: CellScan; `method='macs3'` for MACS3 + merge) | {func}`epione.single.atac.call_peaks` |
+| CellScan: cells-as-replicates, Tn5-bias-corrected scan statistic | {func}`epione.single.atac.scan_peaks` |
 | MACS3 per-cluster peak calling | {func}`epione.single.atac.macs3` |
 | Merge per-sample peak sets | {func}`epione.single.atac.merge_peaks` |
 | Pseudobulk (count-based) | {func}`epione.single.atac.pseudobulk` |
