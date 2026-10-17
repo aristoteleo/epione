@@ -42,6 +42,11 @@ _PRINT_ATTRS = {
     "fetch_print_model", "PRINT_SCALES",
 }
 _PRINT_PLOT_ATTRS = {"plot_tf_binding_score"}
+# Thermodynamic occupancy: accessibility-gated Boltzmann binding, per-site score.
+_OCCUPANCY_ATTRS = {
+    "tf_occupancy", "OccupancyResult", "occupancy_from_counts",
+    "neighbourhood_logsumexp", "site_insertion_counts", "OCCUPANCY_DEFAULTS",
+}
 # HINT-ATAC (RGT rgt-hint): bias-corrected signal, HMM footprints, differential.
 _HINT_ATTRS = {
     "HintBias", "HintHMM", "HintDifferentialResult", "fetch_hint_file",
@@ -83,6 +88,9 @@ def __getattr__(name):
         return getattr(mod, name)
     if name in _PRINT_PLOT_ATTRS:
         mod = importlib.import_module("._print_plot", __name__)
+        return getattr(mod, name)
+    if name in _OCCUPANCY_ATTRS:
+        mod = importlib.import_module("._occupancy", __name__)
         return getattr(mod, name)
     if name in _HINT_ATTRS:
         mod = importlib.import_module("._hint", __name__)
@@ -195,6 +203,8 @@ __all__ = [
     "tf_binding_score", "TFBindingResult", "DispersionModel",
     "print_footprint_score", "print_footprint_pvalues",
     "fetch_print_model", "PRINT_SCALES", "plot_tf_binding_score",
+    "tf_occupancy", "OccupancyResult", "occupancy_from_counts",
+    "neighbourhood_logsumexp", "site_insertion_counts", "OCCUPANCY_DEFAULTS",
     "rank_sites_by_cut_density", "MultiScaleRegion",
     "HintBias", "HintHMM", "HintDifferentialResult", "fetch_hint_file",
     "hint_differential", "hint_footprints", "hint_match_motifs", "hint_signal",
