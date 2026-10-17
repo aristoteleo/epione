@@ -3,8 +3,8 @@
 :func:`bayes_doublets` scores every droplet by the posterior probability that
 its accessibility profile is a mixture of two singlet-type profiles rather
 than one (multinomial mixture likelihood, marginalised over the mixing
-fraction), with the doublet rate calibrated by EM from a Poisson-loading
-prior. Optional evidence terms: library size (sum of two singlet libraries)
+fraction), calibrated to the Poisson-loading doublet rate (tempered
+evidence) or by EM. Optional evidence terms: library size (sum of two singlet libraries)
 and read-overlap copy number (AMULET principle, :func:`count_overlap_loci`).
 """
 from __future__ import annotations
@@ -395,7 +395,8 @@ def _leiden(Z, k, resolution, seed, n_jobs):
     return lab
 
 
-def loading_doublet_rate(n_barcodes: int, effective_droplets: float = 62500.0) -> float:
+def loading_doublet_rate(n_barcodes: int, effective_droplets: float = 62500.0,
+                         max_cells_per_channel: int = 20000) -> float:
     """Expected heterotypic+homotypic doublet fraction among non-empty
     droplets from Poisson loading.
 
@@ -404,8 +405,14 @@ def loading_doublet_rate(n_barcodes: int, effective_droplets: float = 62500.0) -
     number of non-empty barcodes, n = D (1 - e^{-λ}), with D effective
     droplets. ``D = 62,500`` reproduces the 10x Chromium rule of thumb of
     ≈ 0.8 % multiplets per 1,000 recovered cells at low loading (ρ ≈ λ/2).
+    Inputs of more than ``max_cells_per_channel`` cells are assumed to pool
+    ceil(n / 10,000) channels of equal size.
     """
-    frac = min(float(n_barcodes) / float(effective_droplets), 0.999)
+    n = float(n_barcodes)
+    if n > max_cells_per_channel:
+        # more cells than one channel holds: assume ceil(n / 10,000) channels
+        n = n / np.ceil(n / 10000.0)
+    frac = min(n / float(effective_droplets), 0.999)
     lam = -np.log1p(-frac)
     if lam <= 0:
         return 0.0
@@ -538,7 +545,7 @@ def _fit_bayes(Xb, N, *, m=None, n_comps=30, resolution=1.0, n_neighbors=15, n_c
                rho0=0.1, prior_strength=0.0, n_iter=3, n_pairs=6, coarse=(0.2, 0.5, 0.8),
                homotypic=True, fit_kappa=True, prune_doublet_types=True, prune_min_fraction=0.95,
                prune_min_adv=0.1, loo=True,
-               calibrate_rho=True, background="auto", eps_grid=(0.0, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6), min_sigma=0.15, seed=0, n_jobs=8,
+               calibrate_rho=True, calibration="em", background="auto", eps_grid=(0.0, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6), min_sigma=0.15, seed=0, n_jobs=8,
                labels=None, verbose=True):
     """EM fit of the singlet/doublet generative model on binarised counts."""
     import scipy.sparse as sp
@@ -649,7 +656,26 @@ def _fit_bayes(Xb, N, *, m=None, n_comps=30, resolution=1.0, n_neighbors=15, n_c
         hist.append((rho, float(np.exp(log_kappa)), eps))
         if verbose:
             console.level2(f"[bayes_doublets] iter {it}: rho={rho:.4f}, kappa={np.exp(log_kappa):.3f}, K={K}")
-    if calibrate_rho:
+    temper = 1.0
+    if calibrate_rho and calibration == "loading":
+        # The multinomial likelihood ratio is over-confident on real data
+        # (cells are not exchangeable draws from a type centroid), so an EM
+        # estimate of ρ drifts far above the true doublet rate. Keep ρ at the
+        # loading expectation and temper the evidence (power likelihood,
+        # Grünwald & van Ommen 2017; Holmes & Walker 2017),
+        #     P(D | x_i) = σ(logit ρ + w · log BF_i),  0 < w <= 1,
+        # with w such that the ρ-fraction of cells with the strongest evidence
+        # (the expected number of doublets) has posterior >= 0.5: w = -logit ρ / q,
+        # q = (1 - ρ) quantile of log BF (w = 1 if that evidence is already
+        # weak). The transform is monotone in log BF: the ranking is unchanged.
+        ev = llr + ovl
+        lr = float(np.log(rho0) - np.log1p(-rho0))
+        q = float(np.quantile(ev, 1.0 - rho0))
+        temper = float(min(1.0, -lr / q)) if q > -lr else 1.0
+        rho = float(rho0)
+        logit = lr + temper * ev
+        r = 1.0 / (1.0 + np.exp(-np.clip(logit, -700, 700)))
+    elif calibrate_rho:
         # EM for the doublet rate with the likelihood ratios fixed:
         # ρ <- mean_i P(D | x_i, ρ), under the Beta prior of strength `prior_strength`
         a = prior_strength * rho0
@@ -667,7 +693,7 @@ def _fit_bayes(Xb, N, *, m=None, n_comps=30, resolution=1.0, n_neighbors=15, n_c
             rho = new_rho
         logit = np.log(rho) - np.log1p(-rho) + ev
         r = 1.0 / (1.0 + np.exp(-np.clip(logit, -700, 700)))
-    return dict(bestmix_llr=bestmix - L.max(1), prob=r, llr=llr, ovl=ovl, logit=logit, rho=rho, labels=lab, gamma=gamma,
+    return dict(temper=temper, bestmix_llr=bestmix - L.max(1), prob=r, llr=llr, ovl=ovl, logit=logit, rho=rho, labels=lab, gamma=gamma,
                 best_pair=best, pi=pi, mu=mu, sig=sig, rho_hist=hist,
                 doublet_types=np.flatnonzero(dbl_type), kappa=float(np.exp(log_kappa)), eps=eps)
 
@@ -695,6 +721,7 @@ def bayes_doublets(
     expected_doublet_rate: Optional[float] = None,
     prior_strength: float = 0.0,
     prune_doublet_types: bool = True,
+    calibration: str = "loading",
     loo: bool = False,
     t_max: float = 4.0,
     n_grid: int = 17,
@@ -738,11 +765,19 @@ def bayes_doublets(
     likelihood advantage of the own profile (evaluated leave-one-out) over the
     best other type is recovered for >= 95 % by the doublet model built from
     the other types, and that advantage is >= 0.1 nats per fragment (clearly
-    distinct parents; :func:`_cluster_mixture_fraction`; ``prune_doublet_types``). The doublet
-    rate :math:`\rho` starts from the Poisson-loading expectation
-    (:func:`loading_doublet_rate`, or ``expected_doublet_rate``) and is
-    re-estimated by EM, :math:`\rho \leftarrow \bar P(D \mid x_i, \rho)`, so the
-    probabilities are calibrated to the data.
+    distinct parents; :func:`_cluster_mixture_fraction`; ``prune_doublet_types``).
+
+    **Calibration.** The multinomial Bayes factor is over-confident on real
+    data (cells are not independent draws from a type centroid), so an EM
+    estimate of ρ overshoots (0.25-0.46 where the truth was 0.05-0.25). By
+    default (``calibration="loading"``) ρ is the Poisson-loading expectation
+    (:func:`loading_doublet_rate`, or ``expected_doublet_rate``) and the
+    evidence is tempered, :math:`P(D \mid x_i) = \sigma(\mathrm{logit}\,\rho
+    + w \log BF_i)`, :math:`0 < w \le 1` chosen so that the ρ-fraction of
+    cells with the strongest evidence (the expected doublets) reach posterior
+    0.5 (power likelihood; Grünwald & van Ommen 2017). This only rescales the
+    score, so the ranking is that of the Bayes factor. ``calibration="em"``
+    re-estimates ρ by EM instead.
 
     Optional evidence (off by default: neither improved ranking on the
     development data, GSE162690 cell-line mixtures and 10x hgmm barnyard):
@@ -781,7 +816,10 @@ def bayes_doublets(
         Optional evidence terms (see above); ``homotypic`` adds same-type
         pairs to the doublet hypothesis.
     expected_doublet_rate
-        Initial doublet rate; default from Poisson loading.
+        Doublet rate ρ (``"loading"``) or its EM start (``"em"``); default
+        from Poisson loading of ``adata.n_obs`` barcodes.
+    calibration
+        ``"loading"`` (default) or ``"em"``, see above.
     prior_strength
         Beta prior strength (pseudo-cells) keeping ρ near its initial value.
     prune_doublet_types
@@ -826,7 +864,7 @@ def bayes_doublets(
                      n_candidates=n_candidates, n_pairs=n_pairs, t_max=t_max, n_grid=n_grid,
                      pseudocount=pseudocount, use_library=use_library, use_overlap=use_overlap,
                      rho0=rho0, prior_strength=prior_strength, n_iter=n_iter, homotypic=homotypic,
-                     loo=loo, background=0.0, calibrate_rho=True,
+                     loo=loo, background=0.0, calibrate_rho=True, calibration=calibration,
                      prune_doublet_types=prune_doublet_types, seed=random_state, n_jobs=n_jobs,
                      verbose=True)
     bp = res["best_pair"]
@@ -847,6 +885,7 @@ def bayes_doublets(
         return out
     for c in out.columns:
         adata.obs[c] = out[c].values
-    adata.uns[key_added] = dict(rho=res["rho"], kappa=res["kappa"], n_types=int(res["gamma"].shape[1]),
+    adata.uns[key_added] = dict(rho=res["rho"], temper=res["temper"], calibration=calibration,
+                                kappa=res["kappa"], n_types=int(res["gamma"].shape[1]),
                                 n_features=int(Xb.shape[1]), use_library=use_library,
                                 use_overlap=use_overlap, homotypic=homotypic, n_iter=n_iter)
