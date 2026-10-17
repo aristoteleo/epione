@@ -90,8 +90,8 @@ linked above.
 |---|---|
 | Import scATAC fragments | {func}`epione.pp.import_fragments`, {func}`epione.pp.ensure_tabix_index` |
 | Per-cell QC | {func}`epione.pp.qc`, {func}`epione.pp.tss_enrichment` (alias `tsse`), {func}`epione.pp.nucleosome_signal`, {func}`epione.pp.frag_size_distr`, {func}`epione.pp.scrublet` |
-| Doublet scores | {func}`epione.pp.archr_doublets` (ArchR `addDoubletScores` port), {func}`epione.pp.scdblfinder`, {func}`epione.pp.amulet`, {func}`epione.pp.clamulet` (pyscdblfinder), {func}`epione.pp.combine_doublet_scores`, {func}`epione.pp.scrublet` |
-| Remove doublets | {func}`epione.pp.filter_doublets` |
+| Doublet scores | {func}`epione.pp.doublets` (default: {func}`epione.pp.bayes_doublets`, generative mixture-likelihood detector; `method=` selects the others), {func}`epione.pp.count_overlap_loci`, {func}`epione.pp.loading_doublet_rate`, {func}`epione.pp.archr_doublets` (ArchR `addDoubletScores` port), {func}`epione.pp.scdblfinder`, {func}`epione.pp.amulet`, {func}`epione.pp.clamulet` (pyscdblfinder), {func}`epione.pp.combine_doublet_scores`, {func}`epione.pp.scrublet` |
+| Remove doublets | {func}`epione.pp.filter_doublets` (default rule: `bayes_doublet_class`) |
 | Concatenate samples | {func}`epione.pp.concat_samples` |
 | Tile-matrix / peak-matrix / gene-activity matrix | {func}`epione.pp.add_tile_matrix`, {func}`epione.pp.make_peak_matrix`, {func}`epione.pp.make_gene_matrix` |
 | Feature selection | {func}`epione.pp.select_features` |

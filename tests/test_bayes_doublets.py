@@ -129,3 +129,31 @@ def test_public_api_writes_obs():
         assert f"bayes_doublet_{c}" in a.obs
     assert 0 < a.uns["bayes_doublet"]["rho"] < 0.75
     assert _auc(y, a.obs["bayes_doublet_score"].values) > 0.95
+
+
+def test_default_doublet_path_is_bayes():
+    """epi.pp.doublets defaults to bayes_doublets; filter_doublets defaults to its class."""
+    import anndata as ad
+    import epione as epi
+    X, N, y, _ = _planted(n=800, seed=6)
+    a = ad.AnnData(X.astype(np.float32))
+    epi.pp.doublets(a, n_comps=10, n_jobs=2)
+    assert "bayes_doublet_score" in a.obs and "doublet_score" not in a.obs
+    n_dbl = int((a.obs["bayes_doublet_class"] == "doublet").sum())
+    b = epi.pp.filter_doublets(a, inplace=False)
+    assert b.n_obs == a.n_obs - n_dbl
+    assert a.obs["doublet_removed"].sum() == n_dbl
+    with pytest.raises(KeyError):
+        epi.pp.filter_doublets(ad.AnnData(X.astype(np.float32)))
+    with pytest.raises(ValueError):
+        epi.pp.doublets(a, method="nope")
+
+
+def test_explicit_scrublet_still_available():
+    import anndata as ad
+    import epione as epi
+    X, N, y, _ = _planted(n=600, seed=7)
+    a = ad.AnnData(X.astype(np.float32))
+    a.var["selected"] = True
+    epi.pp.doublets(a, method="scrublet", n_comps=10, n_jobs=2)
+    assert "doublet_score" in a.obs and "bayes_doublet_score" not in a.obs
