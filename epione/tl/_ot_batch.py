@@ -233,7 +233,34 @@ def _kernels():
                 G[j, i] = s
         return G
 
-    _K.update(gram=gram, col_sum=col_sum, seg_sum=seg_sum, scaled_data=scaled_data, row_lse=row_lse,
+    @nb.njit(parallel=True, cache=False)
+    def select_count(indptr, indices, data, perm, colmap):
+        n = perm.shape[0]
+        cnt = np.zeros(n + 1, dtype=np.int64)
+        for r in nb.prange(n):
+            i = perm[r]
+            c = 0
+            for p in range(indptr[i], indptr[i + 1]):
+                if data[p] > 0 and colmap[indices[p]] >= 0:
+                    c += 1
+            cnt[r + 1] = c
+        return cnt
+
+    @nb.njit(parallel=True, cache=False)
+    def select_fill(indptr, indices, data, perm, colmap, out_ptr, out_idx):
+        n = perm.shape[0]
+        for r in nb.prange(n):
+            i = perm[r]
+            q = out_ptr[r]
+            for p in range(indptr[i], indptr[i + 1]):
+                if data[p] > 0:
+                    j = colmap[indices[p]]
+                    if j >= 0:
+                        out_idx[q] = j
+                        q += 1
+
+    _K.update(select_count=select_count, select_fill=select_fill,
+              gram=gram, col_sum=col_sum, seg_sum=seg_sum, scaled_data=scaled_data, row_lse=row_lse,
               col_lse=col_lse, plan_stats=plan_stats)
     return _K
 
@@ -427,24 +454,34 @@ def biwhitened_embedding(
     tm = {}
     _t = time.time()
     X = sp.csr_matrix(X)
-    Y = sp.csr_matrix((np.ones(X.nnz, dtype=np.float32), X.indices, X.indptr), shape=X.shape)
-    Y.data[X.data <= 0] = 0
-    Y.eliminate_zeros()
-    n = Y.shape[0]
+    if not X.has_sorted_indices:
+        X = X.copy()
+        X.sort_indices()
+    n, m0 = X.shape
+    kk = _kernels()
     mc = int(max(5, np.ceil(2 * np.log(n)))) if min_cells == "auto" else int(min_cells)
-    colnnz = np.bincount(Y.indices, minlength=Y.shape[1])
+    colnnz = np.bincount(X.indices[X.data > 0], minlength=m0)
     feats = np.flatnonzero(colnnz >= mc)
     if n_features is not None and len(feats) > n_features:
         order = np.argsort(-colnnz[feats], kind="stable")[:int(n_features)]
         feats = np.sort(feats[order])
     codes = np.unique(np.asarray(batch), return_inverse=True)[1]
-    # cells sorted by batch (contiguous blocks); the order is restored at the end
+    # binarise, keep `feats`, and sort cells by batch (contiguous blocks) in one
+    # pass; the cell order is restored at the end
     perm = np.argsort(codes, kind="stable")
     inv = np.empty_like(perm)
     inv[perm] = np.arange(len(perm))
-    Y = Y[perm][:, feats].tocsr()
+    colmap = np.full(m0, -1, dtype=np.int64)
+    colmap[feats] = np.arange(len(feats))
+    cnt = kk["select_count"](X.indptr, X.indices, X.data, perm, colmap)
+    ptr = np.cumsum(cnt)
+    itype = np.int32 if ptr[-1] < np.iinfo(np.int32).max else np.int64
+    ptr = ptr.astype(itype)
+    idx = np.empty(int(ptr[-1]), dtype=itype)
+    kk["select_fill"](X.indptr, X.indices, X.data, perm, colmap, ptr, idx)
+    Y = sp.csr_matrix((np.ones(len(idx), dtype=np.float32), idx, ptr), shape=(n, len(feats)))
+    Y.has_sorted_indices = True
     codes = codes[perm]
-    Y.sort_indices()
     depth = np.diff(Y.indptr).astype(np.float64)
     if np.any(depth == 0):
         raise ValueError(f"{int((depth == 0).sum())} cells have no retained feature")
@@ -640,7 +677,7 @@ def ot_batch(
     row_norm: Literal["l2", "depth", "none"] = "l2",
     shrink: bool = True,
     n_features: Optional[int] = None,
-    svd_iter: int = 4,
+    svd_iter: int = 3,
     n_subsample: int = 500,
     drop_first: bool = True,
     center: bool = True,
