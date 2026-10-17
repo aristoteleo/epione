@@ -800,6 +800,10 @@ def bayes_doublets(
     import pandas as pd
     import scipy.sparse as sp
     X = adata.layers[layer] if layer is not None else adata.X
+    if not (sp.issparse(X) or isinstance(X, np.ndarray)):
+        # backed / out-of-memory matrices (anndataoom, snapATAC2): load via a
+        # boolean column mask, the access path they support
+        X = X[:, np.ones(adata.n_vars, dtype=bool)]
     X = sp.csr_matrix(X)
     N = np.asarray(X.sum(1)).ravel().astype(np.float64)
     df = np.bincount(X.indices, minlength=X.shape[1])
