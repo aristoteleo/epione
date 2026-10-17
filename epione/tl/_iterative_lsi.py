@@ -237,7 +237,24 @@ class _CSRTranspose:
 def _randomized_svd(X, n_components: int, random_state: int = 0, device: str = "cpu",
                     n_jobs: Optional[int] = None):
     """Randomized SVD returning U, s, Vt with largest singular values first."""
+    from ._lsi_stream import TfidfStream
     n_components = int(min(n_components, min(X.shape) - 1))
+    if isinstance(X, TfidfStream):
+        if device != "cpu":
+            from ..core._gpu import empty_cache, torch_device
+            from ..core._gpu_ops import randomized_svd
+            from ._lsi_stream import TorchTfidfStream
+            dev = torch_device(device)
+            op = TorchTfidfStream(X, dev)
+            try:
+                return randomized_svd(op, n_components, dev=dev,
+                                      random_state=random_state, n_iter="auto")
+            finally:
+                op.close()
+                del op
+                empty_cache(dev)
+        from ._lsi_stream import randomized_svd_stream
+        return randomized_svd_stream(X, n_components, random_state=random_state)
     if device != "cpu":
         # torch port of sklearn's randomized_svd: same Gaussian test matrix
         # (same RandomState), same LU / QR power iterations, same sign flip.
@@ -253,6 +270,13 @@ def _randomized_svd(X, n_components: int, random_state: int = 0, device: str = "
         random_state=random_state, n_iter="auto",
     )
     return U, s, Vt
+
+
+def _stream_enabled() -> bool:
+    """Matrix-free TF-logIDF / SVD (default). ``EPIONE_LSI_STREAM=0``
+    restores the materialising implementation (for comparisons)."""
+    import os
+    return os.environ.get("EPIONE_LSI_STREAM", "1") not in ("0", "false", "False")
 
 
 def _project(X_new, V, s):
@@ -555,6 +579,20 @@ def iterative_lsi(
         variable features of later rounds -- can differ slightly from the
         CPU run, as they do between CPU seeds. TF-logIDF, feature selection
         and Leiden stay on the CPU. Needs ``pip install epione[gpu]``.
+        The device keeps at most ``EPIONE_GPU_MEMORY_GB`` (default
+        ``min(12 GiB, half the free memory)``) of the normalised matrix
+        resident and streams the remaining row blocks for every product.
+
+    Notes
+    -----
+    Memory: for a binary (or binarised) CSR input the TF-logIDF matrix of
+    each round is never materialised -- neither on the host nor as a copy
+    of the selected cells / features. The SVD runs on a matrix-free
+    operator that rebuilds bounded row blocks of the normalised subset from
+    ``adata.X`` inside every product (bit-identical to the materialised
+    matrix), so the extra host memory is a few per-cell / per-feature
+    vectors and block buffers rather than one or more copies of the input.
+    ``EPIONE_LSI_STREAM=0`` restores the materialising implementation.
     n_jobs
         Threads for the sparse x dense products of the CPU randomized SVD
         (row-blocked SciPy kernels; results are bit-identical to a single
@@ -615,6 +653,16 @@ def iterative_lsi(
         if sp.issparse(X_bin):
             X_bin = X_bin.tocsr()
 
+    # Binary CSR inputs (the ATAC default) take the matrix-free path; other
+    # inputs (counts with binarize=False, dense arrays) the materialising one.
+    from ._lsi_stream import TfidfStream
+    if (not isinstance(X_bin, BinaryCSR) and binarize and sp.issparse(X_bin)
+            and X_bin.format == "csr" and X_bin.has_sorted_indices
+            and X_bin.dtype == np.float32 and X_bin.nnz and _all_positive(X_bin.data)
+            and not (X_bin.data != 1).any()):
+        X_bin = BinaryCSR(X_bin.indptr, X_bin.indices, X_bin.shape)
+    stream = isinstance(X_bin, BinaryCSR) and _stream_enabled()
+
     # 2. Initial top-accessibility feature set
     features = _select_top_features(X_bin, n_keep=total_features, filter_quantile=filter_quantile)
     if verbose:
@@ -654,15 +702,7 @@ def iterative_lsi(
 
         # Subset to current feature mask
         feat_idx = np.where(features)[0]
-        if isinstance(X_bin, BinaryCSR) or (sp.issparse(X_bin) and X_bin.format == "csr"):
-            # == X_bin[fit_idx][:, feat_idx], threaded
-            X_sub = csr_select(
-                X_bin, feat_idx, n_jobs=n_jobs,
-                rows=None if np.array_equal(fit_idx, np.arange(n_obs)) else fit_idx)
-        elif sp.issparse(X_bin):
-            X_sub = X_bin[fit_idx][:, feat_idx]
-        else:
-            X_sub = X_bin[np.ix_(fit_idx, feat_idx)]
+        full_fit = len(fit_idx) == n_obs and np.array_equal(fit_idx, np.arange(n_obs))
 
         if verbose:
             console.info(
@@ -670,13 +710,40 @@ def iterative_lsi(
                 f"fit on {len(fit_idx):,} cells x {len(feat_idx):,} features"
             )
 
-        # TF-logIDF + SVD
-        X_norm = _tf_logidf(X_sub, scale_to=scale_to, n_jobs=n_jobs)
-        # Only its column sums are needed later; free the values now.
-        sub_col_sums = _col_sums(X_sub)
-        del X_sub
-        U, s, Vt = _randomized_svd(X_norm, n_components=n_components, random_state=seed + it,
-                                   device=device, n_jobs=n_jobs)
+        if stream:
+            # Matrix-free TF-logIDF of X_bin[fit_idx][:, feat_idx]: no copy
+            # of the subset or of its normalised values is ever built; row
+            # blocks are regenerated from X_bin inside every SVD product.
+            op = TfidfStream(X_bin, feat_idx, rows=None if full_fit else fit_idx,
+                             scale_to=scale_to, n_jobs=n_jobs)
+            sub_col_sums = op.col_sums
+            if verbose:
+                console.level2(f"[iterative_lsi]   matrix-free TF-logIDF: {op.nnz:,} nnz, "
+                               f"{len(op.blocks)} row block(s)")
+            U, s, Vt = _randomized_svd(op, n_components=n_components,
+                                       random_state=seed + it, device=device,
+                                       n_jobs=n_jobs)
+            del op
+        else:
+            if isinstance(X_bin, BinaryCSR) or (sp.issparse(X_bin) and X_bin.format == "csr"):
+                # == X_bin[fit_idx][:, feat_idx], threaded
+                X_sub = csr_select(
+                    X_bin, feat_idx, n_jobs=n_jobs,
+                    rows=None if full_fit else fit_idx)
+            elif sp.issparse(X_bin):
+                X_sub = X_bin[fit_idx][:, feat_idx]
+            else:
+                X_sub = X_bin[np.ix_(fit_idx, feat_idx)]
+
+            # TF-logIDF + SVD
+            X_norm = _tf_logidf(X_sub, scale_to=scale_to, n_jobs=n_jobs)
+            # Only its column sums are needed later; free the values now.
+            sub_col_sums = _col_sums(X_sub)
+            del X_sub
+            U, s, Vt = _randomized_svd(X_norm, n_components=n_components,
+                                       random_state=seed + it,
+                                       device=device, n_jobs=n_jobs)
+            del X_norm
 
         # Depth-correlation filter
         depth_fit = depth_all[fit_idx]
@@ -690,6 +757,15 @@ def iterative_lsi(
         # clustering / final embedding purposes.
         if len(fit_idx) == n_obs:
             U_full = U
+        elif stream:
+            # == _project(_tf_logidf(X_bin[:, feat_idx]), Vt.T, s), streamed
+            rest = TfidfStream(X_bin, feat_idx, rows=None, scale_to=scale_to,
+                               n_jobs=n_jobs)
+            U_full = rest.matmul(Vt.T)
+            del rest
+            s_safe = np.where(s > 0, s, 1.0)
+            U_full = U_full / s_safe[None, :]
+            U_full[fit_idx] = U
         else:
             if isinstance(X_bin, BinaryCSR) or (sp.issparse(X_bin) and X_bin.format == "csr"):
                 X_rest = csr_select(X_bin, feat_idx, n_jobs=n_jobs)
@@ -698,7 +774,9 @@ def iterative_lsi(
             else:
                 X_rest = X_bin[:, feat_idx]
             X_rest_norm = _tf_logidf(X_rest, scale_to=scale_to, n_jobs=n_jobs)
+            del X_rest
             U_full = _project(X_rest_norm, Vt.T, s)
+            del X_rest_norm
             # Overwrite the rows we actually fitted with the exact values
             U_full[fit_idx] = U
 
@@ -802,4 +880,7 @@ def iterative_lsi(
                     f"({emb.shape[0]:,} x {emb.shape[1]}) in adata.obsm['{key_added}']"
                 )
 
+    # per-thread block buffers are freed into malloc arenas; hand them back
+    from ..pp._fragment_io import release_free_memory
+    release_free_memory()
     return adata if copy else None

@@ -76,9 +76,35 @@ def _kernels():
             for p in range(indptr[i], indptr[i + 1]):
                 out[g, indices[p]] += 1.0 if ones else data[p]
 
+    @jit
+    def sub_counts(r0, r1, rows, indptr, indices, colmap, row_nnz, col_cnt):
+        # per-row nnz and per-column counts of X[rows][:, cols] (colmap >= 0)
+        for o in range(r0, r1):
+            i = rows[o]
+            c = 0
+            for p in range(indptr[i], indptr[i + 1]):
+                j = colmap[indices[p]]
+                if j >= 0:
+                    c += 1
+                    col_cnt[j] += 1
+            row_nnz[o] = c
+
+    @jit
+    def sub_fill(r0, r1, rows, indptr, indices, colmap, out_indices, q0):
+        # compact (re-numbered) column indices of rows[r0:r1], written to
+        # out_indices[q0:]; same entries / order as SciPy fancy indexing
+        q = q0
+        for o in range(r0, r1):
+            i = rows[o]
+            for p in range(indptr[i], indptr[i + 1]):
+                j = colmap[indices[p]]
+                if j >= 0:
+                    out_indices[q] = j
+                    q += 1
+
     _K.update(col_subset_count=col_subset_count, col_subset_fill=col_subset_fill,
               group_col_sums=group_col_sums, t_matmul=t_matmul,
-              col_counts=col_counts)
+              col_counts=col_counts, sub_counts=sub_counts, sub_fill=sub_fill)
     return _K
 
 

@@ -742,6 +742,40 @@ def _build_tile_gene_weight_matrix(
 # Public API
 # ---------------------------------------------------------------------------
 
+def _tile_gene_product(X: sp.csr_matrix, W, ceiling, n_jobs=None,
+                       block_nnz: int = 1 << 24) -> np.ndarray:
+    """Dense float32 ``clip(X.astype(float32), 0, ceiling) @ W`` computed on
+    row blocks of ``X`` (no float32 copy of the whole tile matrix). Every
+    output row is the same SciPy sparse product as on the whole matrix, so
+    the result is identical."""
+    from concurrent.futures import ThreadPoolExecutor
+    from ..core._gpu import csr_row_blocks
+    from ..pp._fragment_io import resolve_n_jobs
+    n = X.shape[0]
+    W = W.tocsr() if sp.issparse(W) else W
+    out = np.empty((n, W.shape[1]), dtype=np.float32)
+
+    def run(blk):
+        a, b = int(X.indptr[blk.start]), int(X.indptr[blk.stop])
+        Xb = sp.csr_matrix((X.data[a:b].astype(np.float32),
+                            X.indices[a:b], X.indptr[blk.start:blk.stop + 1] - a),
+                           shape=(blk.stop - blk.start, X.shape[1]), copy=False)
+        if ceiling is not None and ceiling > 0:
+            np.clip(Xb.data, 0, ceiling, out=Xb.data)
+        r = (Xb @ W).astype(np.float32)
+        out[blk] = r.toarray() if sp.issparse(r) else r
+
+    blocks = csr_row_blocks(X.indptr, block_nnz)
+    nt = min(resolve_n_jobs(n_jobs), max(len(blocks), 1))
+    if nt <= 1:
+        for blk in blocks:
+            run(blk)
+    else:
+        with ThreadPoolExecutor(max_workers=nt) as pool:
+            list(pool.map(run, blocks))
+    return out
+
+
 def add_gene_score_matrix(
     adata: AnnData,
     gene_anno: pd.DataFrame,
@@ -893,12 +927,12 @@ def add_gene_score_matrix(
             X = sp.vstack(parts).tocsr()
         elif not sp.issparse(X):
             X = sp.csr_matrix(X)
-        X_tile = X.astype(np.float32).tocsr()
+        X = X.tocsr()
         tiles = _parse_tile_labels(list(adata.var_names))
-        n_cells_x, n_tiles_x = X_tile.shape
+        n_cells_x, n_tiles_x = X.shape
         _console(
             f"source=adata.X  cells={n_cells_x:,}  tiles={n_tiles_x:,}  "
-            f"nnz={X_tile.nnz/1e6:.0f}M",
+            f"nnz={X.nnz/1e6:.0f}M",
             verbose,
         )
         W = _build_tile_gene_weight_matrix(
@@ -912,12 +946,8 @@ def add_gene_score_matrix(
             gene_scale_factor=gene_scale_factor,
             verbose=verbose,
         )
-        if ceiling is not None and ceiling > 0:
-            np.clip(X_tile.data, 0, ceiling, out=X_tile.data)
         _console("computing gene_score = X_tile @ W", verbose)
-        score = (X_tile @ W).astype(np.float32)
-        if sp.issparse(score):
-            score = score.toarray()
+        score = _tile_gene_product(X, W, ceiling, n_jobs=n_jobs)
         source = "adata.X"
 
     from ..pp._fragment_io import release_free_memory
