@@ -19,7 +19,7 @@ import numpy as np
 import scipy.sparse as sp
 
 from ._gpu import (
-    SparseOperand, get_torch, memory_budget, row_blocks, torch_dtype,
+    SparseOperand, capped_budget, get_torch, memory_budget, row_blocks, torch_dtype,
 )
 
 
@@ -86,8 +86,10 @@ def randomized_svd(
     Parameters
     ----------
     M
-        SciPy sparse matrix, NumPy array, or an already-built
-        :class:`~epione.core._gpu.SparseOperand`.
+        SciPy sparse matrix, NumPy array, or an already-built operator: a
+        :class:`~epione.core._gpu.SparseOperand` or any object with
+        ``shape``, a torch ``dtype``, ``matmul(D)`` (``M @ D``) and
+        ``rmatmul(D)`` (``M.T @ D``) on device tensors.
     dev
         torch device.
     dtype
@@ -101,8 +103,11 @@ def randomized_svd(
     from sklearn.utils import check_random_state
 
     torch = get_torch()
+    is_op = isinstance(M, SparseOperand) or (
+        hasattr(M, "matmul") and hasattr(M, "rmatmul") and not sp.issparse(M)
+        and not isinstance(M, np.ndarray))
     if dtype is None:
-        if isinstance(M, SparseOperand):
+        if is_op:
             dtype = np.float32 if M.dtype == torch.float32 else np.float64
         else:
             src = np.dtype(getattr(M, "dtype", np.float64))
@@ -110,7 +115,7 @@ def randomized_svd(
     dtype = np.dtype(dtype)
     tdt = torch_dtype(dtype)
 
-    if isinstance(M, SparseOperand):
+    if is_op:
         op = M
     elif sp.issparse(M):
         op = SparseOperand(M, dev, tdt, budget=budget)
@@ -238,7 +243,9 @@ def knn(
         x_sq = (Xd * Xd).sum(dim=1)
 
     if budget is None:
-        budget = memory_budget(dev)
+        # the distance tile only sets the query batch size: cap it so an
+        # exact search over many cells does not fill a shared GPU
+        budget = capped_budget(dev, 4.0)
     itemsize = torch.tensor([], dtype=tdt).element_size()
     # distance tile + topk scratch per query row
     bytes_per_row = 3 * n_ref * itemsize

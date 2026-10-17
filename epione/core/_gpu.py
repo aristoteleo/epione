@@ -41,6 +41,7 @@ __all__ = [
     "torch_device",
     "get_torch",
     "memory_budget",
+    "capped_budget",
     "row_blocks",
     "csr_row_blocks",
     "to_torch_csr",
@@ -191,6 +192,16 @@ def memory_budget(dev=None, fraction: float = 0.5) -> int:
         free, _total = torch.cuda.mem_get_info(dev)
         return int(free * fraction)
     return 4 * 2**30
+
+
+def capped_budget(dev=None, cap_gb: float = 4.0) -> int:
+    """:func:`memory_budget`, but at most ``cap_gb`` GiB unless
+    ``EPIONE_GPU_MEMORY_GB`` is set. For working buffers that only trade
+    memory for batch size (results do not depend on it), so a call does not
+    take half of a large shared GPU just because it is free."""
+    if os.environ.get(_ENV_BUDGET):
+        return memory_budget(dev)
+    return int(min(memory_budget(dev), cap_gb * 2**30))
 
 
 def row_blocks(n_rows: int, bytes_per_row: float, max_bytes: float,
