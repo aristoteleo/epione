@@ -651,7 +651,7 @@ code(r"""
 if HAVE_MODEL:
     EMB_DIM = 8
     rng = np.random.default_rng(0)
-    # A real embedding would come from epi.tl.iterative_lsi / joint_embedding
+    # A real embedding would come from epi.tl.birmt (default) / iterative_lsi / joint_embedding
     # and be exported with export_embedding(); band identity is enough to
     # exercise the conditioning here.
     emb = np.zeros((reader.n_cells, EMB_DIM), dtype=np.float32)
@@ -775,7 +775,7 @@ deconvolution, by timepoint, or by spatial domain.
 
 Next steps worth taking from here, in the order they pay off:
 
-1. A real cell embedding — `epi.tl.iterative_lsi` on the peak matrix, then
+1. A real cell embedding — `epi.tl.birmt` (default) or `epi.tl.iterative_lsi` on the peak matrix, then
    `export_embedding(..., drop_first=True)` (LSI component 0 tracks
    sequencing depth).
 2. Cell-type deconvolution against a reference atlas, so groups are
