@@ -277,3 +277,21 @@ def test_version1_still_default_clusters():
     a, _ = _peaks_adata(m=300, seed=10)
     epi.tl.birmt(a, version=1, n_seeds=2, resolutions=[0.5, 1.0], n_jobs=1)
     assert "birmt" in a.obs and "rank" in a.uns["X_birmt"]
+
+
+def test_sinkhorn_infeasible_rows_fitted_out_of_sample():
+    """A row with fewer than n/m non-zeros makes the Sinkhorn scaling
+    infeasible; it is placed by the Nystrom extension and the other rows
+    keep the embedding of the fit without it."""
+    from epione.tl._birmt2 import fast_denoise_binary
+    Y = _binary(m=200, n=4000, r=5, seed=11, scale=0.1).tolil()
+    Y[0, :] = 0
+    Y[0, [3, 7]] = 1                     # 2 non-zeros < n/m = 20
+    Y = sp.csr_matrix(Y, dtype=np.float32)
+    lv = fast_denoise_binary(Y, n_jobs=1)
+    assert lv["n_out_of_sample"] == 1
+    Z = lv["U"] * lv["s"] * lv["row_scale"][:, None]
+    assert np.isfinite(Z).all()
+    ref = fast_denoise_binary(Y[1:], n_jobs=1)
+    Zr = ref["U"] * ref["s"] * ref["row_scale"][:, None]
+    np.testing.assert_allclose(np.abs(Z[1:]), np.abs(Zr), rtol=1e-6, atol=1e-9)
