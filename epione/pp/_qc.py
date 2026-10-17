@@ -100,6 +100,10 @@ def scrublet(
     """
     Compute probability of being a doublet using the scrublet algorithm.
 
+    Not Epione's default doublet detector any more: :func:`epione.pp.doublets`
+    defaults to :func:`epione.pp.bayes_doublets`. This function is kept
+    unchanged (``epi.pp.doublets(adata, method="scrublet")`` calls it).
+
     This function identifies doublets by generating simulated doublets using
     randomly pairing chromatin accessibility profiles of individual cells.
     The simulated doublets are then embedded alongside the original cells using

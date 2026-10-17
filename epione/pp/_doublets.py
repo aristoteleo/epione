@@ -531,7 +531,7 @@ def _archr_filter_mask(enrich: np.ndarray, score: np.ndarray, groups: np.ndarray
 
 def filter_doublets(
     adata: AnnData,
-    method: str = "archr",
+    method: str = "bayes",
     *,
     score_key: Optional[str] = None,
     threshold: Optional[float] = None,
@@ -541,6 +541,7 @@ def filter_doublets(
     cut_score: Optional[float] = -np.inf,
     filter_ratio: float = 1.0,
     archr_key: str = "archr_doublet",
+    bayes_key: str = "bayes_doublet",
     inplace: bool = True,
 ) -> Optional[AnnData]:
     """Remove doublets flagged by any Epione doublet method.
@@ -552,6 +553,10 @@ def filter_doublets(
     method
         How to decide which cells to remove:
 
+        - ``"bayes"`` (default): remove cells whose posterior doublet
+          probability from :func:`epione.pp.bayes_doublets` (the default
+          detector, :func:`epione.pp.doublets`) exceeds 0.5, i.e.
+          ``obs[f"{bayes_key}_class"] == "doublet"``.
         - ``"archr"``: ArchR's ``filterDoublets``. Within each sample, rank
           cells by ``{archr_key}_enrichment``, keep those with enrichment
           ``>= cut_enrich`` and score ``>= cut_score``, and remove the top
@@ -576,6 +581,8 @@ def filter_doublets(
     cut_enrich, cut_score, filter_ratio, archr_key
         ArchR ``filterDoublets`` settings and the prefix written by
         :func:`archr_doublets`.
+    bayes_key
+        Prefix written by :func:`epione.pp.bayes_doublets` (``"bayes"``).
     inplace
         Subset ``adata`` in place (default). If False, return a filtered
         copy.
@@ -585,7 +592,13 @@ def filter_doublets(
     ``None`` or the filtered copy.
     """
     obs = adata.obs
-    if method == "archr":
+    if method == "bayes":
+        c_key = f"{bayes_key}_class"
+        if c_key not in obs:
+            raise KeyError(f"obs['{c_key}'] not found; run epi.pp.doublets (epi.pp.bayes_doublets) "
+                           "first, or pass method='archr' / 'threshold' / 'class'")
+        remove = (obs[c_key].astype(str) == "doublet").to_numpy()
+    elif method == "archr":
         e_key, s_key = f"{archr_key}_enrichment", f"{archr_key}_score"
         if e_key not in obs:
             raise KeyError(f"obs['{e_key}'] not found; run epi.pp.archr_doublets first")
@@ -606,7 +619,7 @@ def filter_doublets(
         v = obs[score_key]
         remove = (v.astype(str).str.lower() == "doublet").to_numpy() | (v.astype(str) == "True").to_numpy()
     else:
-        raise ValueError("method must be 'archr', 'threshold' or 'class'")
+        raise ValueError("method must be 'bayes', 'archr', 'threshold' or 'class'")
     remove = np.asarray(remove, dtype=bool)
     console.level1(f"[filter_doublets] removing {remove.sum():,} of {adata.n_obs:,} cells "
                    f"({100 * remove.mean():.1f}%)")
@@ -845,3 +858,50 @@ def combine_doublet_scores(
     stat = -2.0 * np.log(p).sum(axis=1)
     adata.obs[key_added] = chi2.sf(stat, 2 * p.shape[1])
     console.level2(f"Added obs['{key_added}']")
+
+
+_DOUBLET_METHODS = ("bayes", "scrublet", "archr", "scdblfinder", "amulet", "clamulet")
+
+
+def doublets(adata: AnnData, method: str = "bayes", **kwargs):
+    """Detect doublets with Epione's default or a named detector.
+
+    Parameters
+    ----------
+    adata
+        Cells × tiles (or peaks) AnnData; ``"amulet"``/``"clamulet"`` read the
+        fragment file instead.
+    method
+        - ``"bayes"`` (default): :func:`epione.pp.bayes_doublets`, the
+          generative mixture-likelihood detector. Writes
+          ``obs['bayes_doublet_probability' / '_score' / '_class' / '_pair']``.
+          On held-out data with genotype/species doublet truth it had the best
+          mean AUPRC of the detectors below (0.777 vs 0.723 for SnapATAC2's
+          scrublet), but on a genotype-demultiplexed PBMC pool it ranked
+          doublets worse than SnapATAC2 scrublet (AUPRC 0.34 vs 0.42) and its
+          mean AUROC was lower (0.916 vs 0.957). Its library-size and
+          read-overlap evidence terms are off by default (they did not help
+          on the development data).
+        - ``"scrublet"``: :func:`epione.pp.scrublet` (Epione's previous
+          default). It needs ``var['selected']``; run
+          :func:`epione.pp.select_features` first.
+        - ``"archr"``: :func:`epione.pp.archr_doublets`.
+        - ``"scdblfinder"``, ``"amulet"``, ``"clamulet"``: pyscdblfinder wrappers.
+    **kwargs
+        Passed to the chosen function.
+    """
+    if method == "bayes":
+        from ._bayes_doublets import bayes_doublets
+        return bayes_doublets(adata, **kwargs)
+    if method == "scrublet":
+        from ._qc import scrublet
+        return scrublet(adata, **kwargs)
+    if method == "archr":
+        return archr_doublets(adata, **kwargs)
+    if method == "scdblfinder":
+        return scdblfinder(adata, **kwargs)
+    if method == "amulet":
+        return amulet(adata, **kwargs)
+    if method == "clamulet":
+        return clamulet(adata, **kwargs)
+    raise ValueError(f"method must be one of {_DOUBLET_METHODS}, got {method!r}")
