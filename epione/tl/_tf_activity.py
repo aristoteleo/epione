@@ -168,19 +168,50 @@ if _HAS_NUMBA:
             for k in range(xp[c], xp[c + 1]):
                 out[c, group[xi[k]]] += np.float64(xd[k])
 
+    @njit(cache=True, boundscheck=False)
+    def _em_map(lik, pi, prior0, out):
+        """One EM update of the mixture weights; returns the penalised
+        log-likelihood at ``pi`` (Dirichlet(prior0, 1, ..., 1) penalty)."""
+        n, K = lik.shape
+        for k in range(K):
+            out[k] = 0.0
+        ll = 0.0
+        for c in range(n):
+            tot = 0.0
+            for k in range(K):
+                tot += pi[k] * lik[c, k]
+            if tot <= 0.0:
+                continue
+            ll += np.log(tot)
+            for k in range(K):
+                out[k] += pi[k] * lik[c, k] / tot
+        if pi[0] > 0.0:
+            ll += (prior0 - 1.0) * np.log(pi[0])
+        out[0] += prior0 - 1.0
+        s = 0.0
+        for k in range(K):
+            if out[k] < 0.0:
+                out[k] = 0.0
+            s += out[k]
+        for k in range(K):
+            out[k] /= s
+        return ll
+
     @njit(parallel=True, cache=True, boundscheck=False)
     def _nb_ash(ghat, se, grid, prior0, max_iter, tol, pm_out, psd_out,
                 w_out):
-        """Adaptive shrinkage per motif (columns), EM on mixture weights.
+        """Adaptive shrinkage per motif (columns).
 
         Prior ``g = sum_k pi_k N(0, grid_k^2)`` (``grid[0] = 0`` is the
         point mass); likelihood ``ghat ~ N(gamma, se^2)``. ``prior0`` is
         the Dirichlet pseudo-count on the null component (ashr's
-        ``nullweight``; 1 = no penalty)."""
+        ``nullweight``). The weights maximise the (concave) penalised
+        marginal likelihood by EM accelerated with SQUAREM (Varadhan &
+        Roland 2008, scheme S3; monotone fallback to the plain EM step), so
+        the fixed point is the EM one with far fewer passes."""
         n, m = ghat.shape
         K = grid.shape[0]
         for j in prange(m):
-            pi = np.full(K, 1.0 / K)
             lik = np.empty((n, K))
             for c in range(n):
                 s2 = se[c, j] * se[c, j]
@@ -188,30 +219,48 @@ if _HAS_NUMBA:
                 for k in range(K):
                     v = grid[k] * grid[k] + s2
                     lik[c, k] = np.exp(-0.5 * x * x / v) / np.sqrt(v)
+            p0 = np.full(K, 1.0 / K)
+            p1 = np.empty(K); p2 = np.empty(K); pn = np.empty(K)
+            pt = np.empty(K); tmp = np.empty(K)
             prev = -np.inf
             for it in range(max_iter):
-                acc = np.zeros(K)
-                ll = 0.0
-                for c in range(n):
-                    tot = 0.0
-                    for k in range(K):
-                        tot += pi[k] * lik[c, k]
-                    if tot <= 0.0:
-                        continue
-                    ll += np.log(tot)
-                    for k in range(K):
-                        acc[k] += pi[k] * lik[c, k] / tot
-                acc[0] += prior0 - 1.0
-                s = 0.0
+                l0 = _em_map(lik, p0, prior0, p1)
+                _em_map(lik, p1, prior0, p2)
+                rr = 0.0; vv = 0.0
                 for k in range(K):
-                    s += acc[k]
-                for k in range(K):
-                    pi[k] = acc[k] / s
-                if ll - prev < tol * (abs(ll) + 1.0):
+                    r = p1[k] - p0[k]
+                    v = p2[k] - 2.0 * p1[k] + p0[k]
+                    rr += r * r; vv += v * v
+                if vv <= 0.0:
+                    for k in range(K):
+                        p0[k] = p2[k]
                     break
-                prev = ll
+                alpha = -np.sqrt(rr / vv)
+                if alpha > -1.0:
+                    alpha = -1.0
+                ssum = 0.0
+                for k in range(K):
+                    r = p1[k] - p0[k]
+                    v = p2[k] - 2.0 * p1[k] + p0[k]
+                    q = p0[k] - 2.0 * alpha * r + alpha * alpha * v
+                    pt[k] = q if q > 1e-300 else 1e-300
+                    ssum += pt[k]
+                for k in range(K):
+                    pt[k] /= ssum
+                lt = _em_map(lik, pt, prior0, pn)       # stabilising EM step
+                l2 = _em_map(lik, p2, prior0, tmp)
+                if lt < l2:                              # monotone fallback
+                    for k in range(K):
+                        pn[k] = tmp[k]
+                    lt = l2
+                for k in range(K):
+                    p0[k] = pn[k]
+                if lt - prev < tol * (abs(lt) + 1.0):
+                    break
+                prev = lt
             for k in range(K):
-                w_out[j, k] = pi[k]
+                w_out[j, k] = p0[k]
+            pi = p0
             for c in range(n):
                 s2 = se[c, j] * se[c, j]
                 x = ghat[c, j]
@@ -238,30 +287,43 @@ if _HAS_NUMBA:
 if _HAS_NUMBA:
     @njit(parallel=True, cache=True, boundscheck=False)
     def _nb_peak_scores(cp, ci, cd, wp, wi, wd, strata, scale, Ycb, G, invV0,
-                        u_out, l_out):
+                        u_out, l_out, block):
         """Per (peak i, motif m) in nnz(W), over the cells with y_ic > 0:
 
             u_out[q] = sum_c y_ic G[c, m]
             l_out[q] = sum_c (y_ic^2 - 2 y_ic mu_ic) invV0[c, m]
 
         with ``mu_ic = Ycb[c, strata[i]] * scale[i]``; ``cp/ci/cd`` is the
-        CSC (peak-major) count matrix, ``q`` indexes W's CSR data."""
+        CSC (peak-major) count matrix, ``q`` indexes W's CSR data. Cells are
+        processed in blocks (serial) and peaks in parallel within a block,
+        so the rows of ``G`` / ``invV0`` touched stay cache-resident and
+        every ``q`` is written by one thread."""
         n_peaks = cp.shape[0] - 1
-        for i in prange(n_peaks):
-            b = strata[i]
-            s = scale[i]
-            for k in range(cp[i], cp[i + 1]):
-                c = ci[k]
-                y = np.float64(cd[k])
-                mu = Ycb[c, b] * s
-                for q in range(wp[i], wp[i + 1]):
-                    m = wi[q]
-                    u_out[q] += y * G[c, m]
-                    l_out[q] += (y * y - 2.0 * y * mu) * invV0[c, m]
+        n_cells = G.shape[0]
+        for c0 in range(0, n_cells, block):
+            c1 = min(c0 + block, n_cells)
+            for i in prange(n_peaks):
+                a = cp[i]
+                e = cp[i + 1]
+                if a == e or wp[i] == wp[i + 1]:
+                    continue
+                lo = a + np.searchsorted(ci[a:e], c0)
+                hi = a + np.searchsorted(ci[a:e], c1)
+                b = strata[i]
+                s = scale[i]
+                for k in range(lo, hi):
+                    c = ci[k]
+                    y = np.float64(cd[k])
+                    mu = Ycb[c, b] * s
+                    t = y * y - 2.0 * y * mu
+                    for q in range(wp[i], wp[i + 1]):
+                        m = wi[q]
+                        u_out[q] += y * G[c, m]
+                        l_out[q] += t * invV0[c, m]
 
 
 def _peak_sensitivity(X, W, strata, pi, P_b, Ycb, U, V0, groups=None, tau_scale=1.0,
-                      dispersion=1.0):
+                      dispersion=1.0, Xc=None):
     r"""Empirical-Bayes peak sensitivities :math:`\beta_{im}` (rank-1 step).
 
     Extends the model to :math:`\gamma_{cm} \beta_{im} w_{im}`: not every
@@ -299,11 +361,11 @@ def _peak_sensitivity(X, W, strata, pi, P_b, Ycb, U, V0, groups=None, tau_scale=
             sel = groups == lab
             G[sel] = g[sel] - np.median(g[sel], axis=0)
     scale = np.where(P_b[strata] > 0, pi / P_b[strata], 0.0)
-    Xc = X.tocsc()
+    if Xc is None:
+        Xc = X.tocsc()
     u = np.zeros(W.nnz); l = np.zeros(W.nnz)
     _nb_peak_scores(Xc.indptr, Xc.indices, Xc.data, W.indptr, W.indices, W.data,
-                    strata, scale, Ycb, G, invV0, u, l)
-    del Xc
+                    strata, scale, Ycb, G, invV0, u, l, 2048)
     rows = np.repeat(np.arange(n_peaks), np.diff(W.indptr))
     cols = W.indices
     bq = strata[rows]; sq = scale[rows]
@@ -318,18 +380,21 @@ def _peak_sensitivity(X, W, strata, pi, P_b, Ycb, U, V0, groups=None, tau_scale=
     ok = I_i > 0
     bh = np.zeros(W.nnz); se2 = np.full(W.nnz, np.inf)
     bh[ok] = U_i[ok] / I_i[ok]; se2[ok] = dispersion / I_i[ok]
+    # per-motif moments, vectorised over W's non-zeros (bincount by motif)
     n_m = W.shape[1]
-    for m in range(n_m):
-        sel = np.flatnonzero((cols == m) & ok)
-        if len(sel) < 10:
-            continue
-        w = 1.0 / se2[sel]
-        b0 = np.sum(w * bh[sel]) / np.sum(w)
-        tau2 = tau_scale * max(np.var(bh[sel]) - np.mean(se2[sel]), 0.0)
-        if b0 <= 0 or tau2 <= 0:
-            continue
-        post = b0 + tau2 / (tau2 + se2[sel]) * (bh[sel] - b0)
-        beta[sel] = np.maximum(post, 0.0) / b0
+    cm = cols[ok]; bo = bh[ok]; so = se2[ok]; wo = 1.0 / so
+    cnt = np.bincount(cm, minlength=n_m).astype(np.float64)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        b0 = np.bincount(cm, weights=wo * bo, minlength=n_m) / np.bincount(cm, weights=wo, minlength=n_m)
+        mean_b = np.bincount(cm, weights=bo, minlength=n_m) / cnt
+        var_b = np.bincount(cm, weights=(bo - mean_b[cm]) ** 2, minlength=n_m) / cnt
+        mean_s = np.bincount(cm, weights=so, minlength=n_m) / cnt
+    tau2 = tau_scale * np.maximum(var_b - mean_s, 0.0)
+    use = (cnt >= 10) & (b0 > 0) & (tau2 > 0)
+    sel = ok & use[cols]
+    c_s = cols[sel]
+    post = b0[c_s] + tau2[c_s] / (tau2[c_s] + se2[sel]) * (bh[sel] - b0[c_s])
+    beta[sel] = np.maximum(post, 0.0) / b0[c_s]
     return beta
 
 
@@ -366,9 +431,44 @@ def quasi_dispersion(X, strata, pi, P_b, Ycb) -> float:
     return max(x2 / max(dof, 1), 1e-12)
 
 
-def _csr_at_csr_dense(X: sp.csr_matrix, W: sp.csr_matrix) -> np.ndarray:
+if _HAS_NUMBA:
+    @njit(parallel=True, cache=True, boundscheck=False)
+    def _nb_csc_csr_dense_blocked(cp, ci, cd, wp, wi, wd, n_cells, block, out):
+        """``out = X @ W`` from the CSC (peak-major) ``X`` and CSR ``W``.
+
+        Threads own disjoint blocks of cells (rows of ``out``) and walk the
+        peaks in order, so each peak's motif row of ``W`` is read once per
+        block from cache and a block's rows of ``out`` stay cache-resident;
+        the row-major kernel instead streams a ``W`` row from memory for
+        every non-zero of ``X``."""
+        n_peaks = cp.shape[0] - 1
+        n_blocks = (n_cells + block - 1) // block
+        for bk in prange(n_blocks):
+            c0 = bk * block
+            c1 = min(c0 + block, n_cells)
+            for i in range(n_peaks):
+                a = cp[i]
+                e = cp[i + 1]
+                if a == e or wp[i] == wp[i + 1]:
+                    continue
+                lo = a + np.searchsorted(ci[a:e], c0)
+                hi = a + np.searchsorted(ci[a:e], c1)
+                for k in range(lo, hi):
+                    c = ci[k]
+                    y = np.float64(cd[k])
+                    for q in range(wp[i], wp[i + 1]):
+                        out[c, wi[q]] += y * wd[q]
+
+
+def _csr_at_csr_dense(X: sp.csr_matrix, W: sp.csr_matrix, Xc=None,
+                      block: int = 256) -> np.ndarray:
+    """Dense ``X @ W``; uses the cache-blocked CSC kernel when ``Xc``
+    (``X`` in CSC layout) is given."""
     out = np.zeros((X.shape[0], W.shape[1]), dtype=np.float64)
-    if _HAS_NUMBA:
+    if _HAS_NUMBA and Xc is not None:
+        _nb_csc_csr_dense_blocked(Xc.indptr, Xc.indices, Xc.data, W.indptr, W.indices,
+                                  W.data.astype(np.float64), X.shape[0], int(block), out)
+    elif _HAS_NUMBA:
         # no dtype copies of X (it can hold 10^9 non-zeros); numba
         # specialises on whatever integer / float types the CSR carries.
         _nb_csr_csr_dense(X.indptr, X.indices, X.data, W.indptr, W.indices,
@@ -655,9 +755,10 @@ def tf_activity_core(
     sensitivity_groups: Optional[np.ndarray] = None,
     sensitivity_tau_scale: float = 1.0,
     dispersion: Literal["quasi", "poisson"] = "poisson",
-    ash_grid_mult: float = np.sqrt(2.0),
+    ash_grid_mult: float = 2.0,
     ash_nullweight: float = 10.0,
-    ash_max_iter: int = 500,
+    ash_max_iter: int = 200,
+    ash_tol: float = 1e-6,
     verbose: bool = True,
 ) -> dict:
     """Array-level fit behind :func:`tf_activity`.
@@ -696,22 +797,30 @@ def tf_activity_core(
     _console(f"{n_cells:,} cells x {n_peaks:,} peaks x {W.shape[1]:,} motifs; "
              f"{n_str} bias strata", verbose)
     Ycb = _group_sum(X, strata, n_str)
+    # one peak-major copy of X serves the cache-blocked X @ W kernel (both
+    # passes) and the peak-sensitivity kernel
+    Xc = X.tocsc() if _HAS_NUMBA else None
+    if Xc is not None and not Xc.has_sorted_indices:
+        Xc.sort_indices()
 
     def _score(Wk):
         Q1 = (sp.diags(inv) @ (S @ Wk)).toarray()
         Q2 = (sp.diags(inv) @ (S @ Wk.multiply(Wk))).toarray()
         Qv = np.maximum(Q2 - Q1 * Q1, 0.0)
-        T = _csr_at_csr_dense(X, Wk)
+        T = _csr_at_csr_dense(X, Wk, Xc=Xc)
         return T - Ycb @ Q1, Ycb @ Qv
 
+    import time as _time
+    _t0 = _time.time()
     U, V0 = _score(W)
+    _console(f"first-pass scores {_time.time() - _t0:.1f}s", verbose)
     phi = quasi_dispersion(X, strata, pi, P_b, Ycb) if dispersion == "quasi" else 1.0
     if dispersion == "quasi":
         _console(f"quasi-Poisson dispersion {phi:.3f}", verbose)
     beta = None
     if peak_sensitivity == "eb":
         _console("peak sensitivities (rank-1 refinement, EB-shrunk)", verbose)
-        beta = _peak_sensitivity(X, W, strata, pi, P_b, Ycb, U, V0,
+        beta = _peak_sensitivity(X, W, strata, pi, P_b, Ycb, U, V0, Xc=Xc,
                                  groups=sensitivity_groups, tau_scale=sensitivity_tau_scale,
                                  dispersion=phi)
         # fresh index arrays: scipy shares them between converted matrices,
@@ -719,7 +828,9 @@ def tf_activity_core(
         W = sp.csr_matrix((W.data * beta, W.indices.copy(), W.indptr.copy()),
                           shape=W.shape)
         W.eliminate_zeros()
+        _console(f"sensitivities {_time.time() - _t0:.1f}s", verbose)
         U, V0 = _score(W)
+        _console(f"re-scored {_time.time() - _t0:.1f}s", verbose)
     elif peak_sensitivity != "none":
         raise ValueError(f"unknown peak_sensitivity {peak_sensitivity!r}")
     with np.errstate(divide="ignore", invalid="ignore"):
@@ -752,7 +863,8 @@ def tf_activity_core(
         pm = np.empty_like(gamma); psd = np.empty_like(gamma)
         wts = np.empty((gamma.shape[1], len(grid)))
         _nb_ash(np.ascontiguousarray(gamma), np.ascontiguousarray(se_f), grid,
-                float(ash_nullweight), int(ash_max_iter), 1e-8, pm, psd, wts)
+                float(ash_nullweight), int(ash_max_iter), float(ash_tol), pm, psd, wts)
+        _console(f"ash done {_time.time() - _t0:.1f}s", verbose)
         with np.errstate(divide="ignore", invalid="ignore"):
             pz = np.where(psd > 0, pm / psd, 0.0)
         out.update(post_mean=pm.astype(np.float32), post_sd=psd.astype(np.float32),
