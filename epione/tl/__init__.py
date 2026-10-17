@@ -147,6 +147,7 @@ from ._motif_matrix import add_motif_matrix
 from ._motif_database import build_motif_database, query_motif_database
 from ._background_peaks import add_background_peaks
 from ._chromvar import compute_deviations
+from ._tf_activity import tf_activity, add_motif_occupancy
 from ._gene_score import add_gene_score_matrix
 from ._peak_anno_enrichment import (
     peak_anno_enrichment, custom_enrichment,
@@ -230,6 +231,8 @@ __all__ = [
     "query_motif_database",
     "add_background_peaks",
     "compute_deviations",
+    "tf_activity",
+    "add_motif_occupancy",
     "add_impute_weights",
     "impute_matrix",
     "peak_anno_enrichment", "custom_enrichment",
