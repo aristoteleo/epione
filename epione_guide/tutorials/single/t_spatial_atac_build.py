@@ -117,10 +117,11 @@ plt.tight_layout(); plt.show()
 """)
 
 md(r"""
-## Tile matrix, LSI and the spot graph
+## Tile matrix, cell embedding and the spot graph
 
 The usual scATAC steps apply unchanged to spots: a 500 bp tile matrix, the
-50,000 most accessible tiles, and ArchR's iterative LSI. The spot graph is the
+50,000 most accessible tiles, and Epione's default spot embedding, BiRMT-2
+(`epi.tl.birmt`, `obsm['X_birmt']`). The spot graph is the
 4-connected DBiT grid (`coord_type="grid"`); `coord_type="generic"` builds a
 k-nearest-neighbour graph on the coordinates instead, for Visium or
 irregular layouts.
@@ -129,8 +130,7 @@ code(r"""
 epi.pp.add_tile_matrix(atac, bin_size=500)
 epi.pp.select_features(atac, n_features=50000)
 tiles = atac[:, atac.var["selected"].to_numpy(bool)].copy()
-epi.tl.iterative_lsi(tiles, n_components=30, iterations=2, var_features=25000,
-                     resolution=0.5, n_neighbors=20, depth_col="n_fragment", seed=1)
+epi.tl.birmt(tiles)
 epi.tl.spatial_neighbors(tiles, coord_type="grid", n_neighs=4)
 tiles
 """)
@@ -147,25 +147,28 @@ SpatialGlue uses, via the pure-Python pymclustR port), a Leiden resolution
 search, or k-means. Moran's I of the one-hot domain labels measures how
 spatially coherent the domains are (smoothing makes domains more coherent
 partly by construction, so this is a description, not a score of
-correctness). On this section ATAC alone separates few domains: one mixture
-component takes most spots, with or without smoothing. The joint RNA + ATAC
-model further down resolves the hippocampal layers.
+correctness). With about 10,000 fragments per spot, only four components of the
+ATAC embedding rise above the Marchenko-Pastur noise edge. Without smoothing
+the domains are mostly salt-and-pepper apart from one coherent band; one round
+of smoothing makes them more coherent (mean Moran's I 0.20 -> 0.38). The joint
+RNA + ATAC model further down resolves the hippocampal layers.
 """)
 code(r"""
-epi.tl.spatial_smooth(tiles, use_rep="X_iterative_lsi", lam=0.5)
-for rep, key in [("X_iterative_lsi", "domain_lsi"), ("X_iterative_lsi_smooth", "domain_lsi_smooth")]:
-    epi.tl.spatial_domains(tiles, 8, use_rep=rep, method="mclust", key_added=key)
+epi.tl.spatial_smooth(tiles, use_rep="X_birmt", lam=0.5)
+for rep, key in [("X_birmt", "domain_atac"), ("X_birmt_smooth", "domain_atac_smooth")]:
+    # BiRMT-2 keeps only the components above the noise edge (few here), so no PCA step
+    epi.tl.spatial_domains(tiles, 8, use_rep=rep, method="mclust", use_pca=False, key_added=key)
 
 def domain_moran(a, key):
     lab = a.obs[key].astype(str)
     a.obsm["_onehot"] = pd.get_dummies(lab).to_numpy(float)
     return float(epi.tl.spatial_moran(a, use_rep="_onehot").mean())
 
-pd.Series({k: domain_moran(tiles, k) for k in ["domain_lsi", "domain_lsi_smooth"]},
+pd.Series({k: domain_moran(tiles, k) for k in ["domain_atac", "domain_atac_smooth"]},
           name="mean Moran's I of domains").round(3)
 """)
 code(r"""
-epi.pl.spatial(tiles, ["domain_lsi", "domain_lsi_smooth"], show=False)
+epi.pl.spatial(tiles, ["domain_atac", "domain_atac_smooth"], show=False)
 plt.show()
 """)
 
@@ -265,7 +268,7 @@ embedding.
 code(r"""
 rna_sg = rna.copy()
 atac_sg = tiles.copy()
-del atac_sg.obsm["X_iterative_lsi_smooth"]
+del atac_sg.obsm["X_birmt_smooth"]
 rna_sg, atac_sg = epi.tl.spatialglue_preprocess(rna_sg, atac_sg)
 import mudata as md
 sg = md.MuData({"rna": rna_sg, "atac": atac_sg})
@@ -276,7 +279,7 @@ epi.tl.spatial_domains(sg, 8, use_rep="SpatialGlue", method="mclust", key_added=
 sg.obs["alpha_rna"] = sg.obsm["SpatialGlue_alpha"][:, 0]
 tiles_sub = tiles[sg.obs_names].copy()          # spots kept by the RNA filter
 sg.obsp["spatial_connectivities"] = tiles_sub.obsp["spatial_connectivities"]
-pd.Series({"ATAC smoothed LSI": domain_moran(tiles_sub, "domain_lsi_smooth"),
+pd.Series({"ATAC smoothed BiRMT-2": domain_moran(tiles_sub, "domain_atac_smooth"),
            "SpatialGlue (RNA+ATAC)": domain_moran(sg, "domain_spatialglue")},
           name="mean Moran's I of domains").round(3)
 """)
