@@ -26,11 +26,27 @@ def _dense(x) -> np.ndarray:
     return x.toarray() if sparse.issparse(x) else np.asarray(x)
 
 
+def _default_activity_key(adata, key):
+    """Resolve ``key='auto'``: the default per-cell TF activity of
+    :func:`epione.tl.tf_activity` (``obsm['tf_activity']``) when present,
+    else chromVAR deviations from :func:`epione.tl.compute_deviations`
+    (``obsm['motif_deviations']``)."""
+    if key != "auto":
+        return key
+    obsm = getattr(adata, "obsm", {})
+    if "tf_activity" in obsm:
+        return "tf_activity"
+    if "motif_deviations" in obsm:
+        return "motif_deviations"
+    raise KeyError("no TF activity in obsm: run epione.tl.tf_activity (default) or "
+                   "epione.tl.compute_deviations, or pass key=")
+
+
 def _get_feature_matrix(adata, key: Optional[str] = None, layer: Optional[str] = None,
                         names: Optional[Sequence[str]] = None):
     """Return ``(X cells×features, feature names)`` from an AnnData.
 
-    ``key`` selects an ``obsm`` entry (e.g. chromVAR ``'motif_deviations'``,
+    ``key`` selects an ``obsm`` entry (e.g. ``'tf_activity'`` or chromVAR ``'motif_deviations'``,
     names from ``uns[key + '_names']``); otherwise ``layer`` / ``X`` with
     ``var_names``.
     """
@@ -62,14 +78,14 @@ def _combine_variances(means: np.ndarray, variances: np.ndarray, ns: np.ndarray)
 
 def var_deviations(
     adata,
-    key: str = "motif_deviations",
+    key: str = "auto",
     *,
     names: Optional[Sequence[str]] = None,
     sample_key: Optional[str] = "Sample",
     key_added: Optional[str] = None,
     verbose: bool = True,
 ) -> pd.DataFrame:
-    r"""Rank motifs / annotations by the variability of their chromVAR Z-scores.
+    r"""Rank motifs / annotations by the variability of their per-cell activity.
 
     Port of ArchR ``getVarDeviations``. ArchR stores, per Arrow file
     (= sample), the row mean and the unbiased row variance of the deviation
@@ -78,10 +94,14 @@ def var_deviations(
     column equals ArchR's.
 
     Arguments:
-        adata: AnnData with the Z-scores in ``obsm[key]`` (as written by
-            :func:`epione.tl.compute_deviations`) or a cell × motif
+        adata: AnnData with a cell × motif activity matrix in ``obsm[key]``
+            (:func:`epione.tl.tf_activity`, the default, or chromVAR Z-scores
+            from :func:`epione.tl.compute_deviations`) or a cell × motif
             :class:`pandas.DataFrame` in ``obsm``.
-        key: ``obsm`` key of the Z-score matrix.
+        key: ``obsm`` key of the activity matrix. ``'auto'`` (default) uses
+            ``'tf_activity'`` when present, else ``'motif_deviations'``; pass
+            ``'motif_deviations'`` for the ArchR-parity computation on chromVAR
+            Z-scores.
         names: motif names (default ``uns[key + '_names']``).
         sample_key: ``obs`` column defining the per-sample blocks ArchR pools
             over (its Arrow files). ``None`` treats all cells as one block —
@@ -94,6 +114,7 @@ def var_deviations(
         (1 = most variable), sorted by decreasing variability; also stored in
         ``adata.uns[key_added]``.
     """
+    key = _default_activity_key(adata, key)
     Z, names = _get_feature_matrix(adata, key=key, names=names)
     Z = _dense(Z).astype(np.float64, copy=False)
     if sample_key is not None and sample_key in adata.obs:
@@ -397,7 +418,7 @@ def positive_tf_regulators(
     motif_adata=None,
     *,
     groupby: str = "Clusters",
-    motif_key: Optional[str] = "motif_deviations",
+    motif_key: Optional[str] = "auto",
     motif_names: Optional[Sequence[str]] = None,
     gene_layer: Optional[str] = None,
     cor_threshold: float = 0.5,
@@ -425,7 +446,9 @@ def positive_tf_regulators(
             and the embedding used for kNN groups.
         motif_adata: AnnData holding the Z-scores (default ``gene_adata``).
         groupby: ``obs`` column defining the clusters for ``maxDelta``.
-        motif_key: ``obsm`` key of the Z-scores; ``None`` uses ``X``.
+        motif_key: ``obsm`` key of the motif activities; ``'auto'`` (default)
+            uses ``'tf_activity'`` (:func:`epione.tl.tf_activity`) when present,
+            else chromVAR ``'motif_deviations'``; ``None`` uses ``X``.
         motif_names: names of the motifs (default ``uns[motif_key + '_names']``).
         gene_layer: optional layer of ``gene_adata``.
         cor_threshold, padj_threshold, delta_quantile: calling thresholds
@@ -441,6 +464,8 @@ def positive_tf_regulators(
         ``TFRegulator`` (``'YES'``/``'NO'``), ordered by decreasing |cor|.
     """
     motif_adata = gene_adata if motif_adata is None else motif_adata
+    if motif_key is not None:
+        motif_key = _default_activity_key(motif_adata, motif_key)
     gm = group_means(motif_adata, groupby, key=motif_key, names=motif_names)
     z = gm.to_numpy()
     max_delta = pd.Series(np.max(z, axis=1) - np.min(z, axis=1), index=gm.index)

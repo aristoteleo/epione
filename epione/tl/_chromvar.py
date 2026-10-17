@@ -1,5 +1,9 @@
 """chromVAR-style per-cell motif deviation Z-scores.
 
+Epione's default per-cell TF activity is :func:`epione.tl.tf_activity`
+(conditional count model, no background peaks); this module is the
+chromVAR / ArchR-compatible port, kept for Z-scores that match those tools.
+
 Two methods are provided:
 
 - ``method="analytical"`` (default, fast): exploits the chromVAR sampling

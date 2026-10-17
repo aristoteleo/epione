@@ -17,12 +17,14 @@ ARCHR_COMET = LinearSegmentedColormap.from_list(
 def _table(data, key: str) -> pd.DataFrame:
     if isinstance(data, pd.DataFrame):
         return data
+    if key == "auto":   # var_deviations on the default tf_activity, else chromVAR
+        key = "tf_activity_var" if "tf_activity_var" in data.uns else "motif_deviations_var"
     return data.uns[key]
 
 
 def var_dev(
     data,
-    key: str = "motif_deviations_var",
+    key: str = "auto",
     *,
     n: int = 25,
     ax: Optional[plt.Axes] = None,
@@ -35,7 +37,8 @@ def var_dev(
     Arguments:
         data: the DataFrame returned by :func:`epione.tl.var_deviations` or an
             AnnData holding it in ``uns[key]``.
-        key: ``uns`` key when ``data`` is an AnnData.
+        key: ``uns`` key when ``data`` is an AnnData; ``'auto'`` (default)
+            takes ``'tf_activity_var'`` if present, else ``'motif_deviations_var'``.
         n: number of top-ranked motifs to label.
         ax: optional matplotlib axes.
         figsize: figure size when ``ax`` is None.
