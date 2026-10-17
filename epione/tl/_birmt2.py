@@ -498,7 +498,7 @@ def denoise_level(
                 singular_values=s, n_features=int(n))
 
 
-def fast_denoise_binary(
+def _fast_denoise_fit(
     Y: sp.csr_matrix, *, k_max: int = 128, shrinkage: str = "score", block: int = 16,
     n_subsample: int = 2000, tol: float = 1e-6, seed: int = 0, n_jobs: Optional[int] = None,
 ) -> dict:
@@ -540,7 +540,11 @@ def fast_denoise_binary(
     sc_p, sc_i = K["pat_transpose"](Sr.indptr, Sr.indices, Sr.shape[1])
     G = K["pat_gram"](Sr.indptr, Sr.indices, sc_p, sc_i, w_row, w_col, Sr.shape[0])
     tt.append(time.time())
-    ev = np.linalg.eigvalsh((G + G.T) / (2 * bdim))
+    from threadpoolctl import threadpool_limits
+    with threadpool_limits(limits=1, user_api="blas"):
+        # a 2,000 x 2,000 symmetric eigenproblem: single-threaded LAPACK is
+        # fast and avoids multi-threaded dsyevd stalls on oversubscribed nodes
+        ev = np.linalg.eigvalsh((G + G.T) / (2 * bdim))
     tt.append(time.time())
     g = len(idx) / bdim
     alpha = float(np.median(ev) / B1.mp_median(g))
@@ -569,10 +573,59 @@ def fast_denoise_binary(
         keep[0] = True
         s_sh[0] = sv[0]
     depth = np.diff(Y.indptr).astype(np.float64)
-    return dict(U=U[:, :r][:, keep], s=s_sh[keep], row_scale=1.0 / (op.sx * depth), rank=r,
+    return dict(U=U[:, :r][:, keep], s=s_sh[keep], s_raw=sv[:r][keep], row_scale=1.0 / (op.sx * depth), rank=r,
                 capped=bool(capped), alpha=alpha, beta=0.0, ks=float(ks_to_mp(ev / alpha, g)),
                 rank_pre=r0, krylov_dim=int(U.shape[1]), sinkhorn_iter=int(it),
                 singular_values=sv, n_features=int(n), op=op)
+
+
+def fast_denoise_binary(
+    Y: sp.csr_matrix, *, k_max: int = 128, shrinkage: str = "score", block: int = 16,
+    n_subsample: int = 2000, tol: float = 1e-6, seed: int = 0, n_jobs: Optional[int] = None,
+) -> dict:
+    """Level-0 BiRMT on a binary matrix (see :func:`_fast_denoise_fit`).
+
+    Sinkhorn scaling of a binary ``m x n`` matrix to row sums ``n`` and
+    column sums ``m`` requires every row to have at least ``n/m`` non-zeros
+    (a row with ``d`` entries, each at most its column total ``m``, sums to at
+    most ``d m``). Rows below that bound (in practice near-empty barcodes or
+    spots, e.g. a few open tiles out of 50,000) make the scaling diverge. They
+    are left out of the fit and placed by the out-of-sample (Nyström)
+    extension of the fitted factorisation: ``x_i = n / Σ_j Y_ij y_j`` from the
+    row constraint, ``u_i = √x_i (Y_i ∘ √y) V / s``. With no such row this is
+    exactly :func:`_fast_denoise_fit`.
+    """
+    m, n = Y.shape
+    depth = np.diff(Y.indptr)
+    low = depth < (n / m)
+    if not low.any():
+        return _fast_denoise_fit(Y, k_max=k_max, shrinkage=shrinkage, block=block,
+                                 n_subsample=n_subsample, tol=tol, seed=seed, n_jobs=n_jobs)
+    fit_rows = np.flatnonzero(~low)
+    console.warn(f"[birmt2] {int(low.sum()):,} rows have fewer than n/m = {n / m:.1f} non-zeros "
+                 "(Sinkhorn-infeasible); fitted out of sample")
+    Yf = Y[fit_rows].tocsr()
+    ok = np.diff(Yf.tocsc().indptr) > 0
+    cols = np.flatnonzero(ok)
+    Yf = Yf[:, cols].tocsr()
+    lv = _fast_denoise_fit(Yf, k_max=k_max, shrinkage=shrinkage, block=block,
+                           n_subsample=n_subsample, tol=tol, seed=seed, n_jobs=n_jobs)
+    op = lv["op"]
+    V = op.rmatmat(lv["U"]) / lv["s_raw"][None, :]            # right singular vectors (cols)
+    Yl = Y[np.flatnonzero(low)][:, cols].tocsr()
+    sy = op.sy
+    rs = np.asarray(Yl @ (sy ** 2)).ravel()                    # Σ_j Y_ij y_j
+    xl = len(cols) / np.maximum(rs, 1e-300)                    # row target = number of columns
+    Ul = (np.sqrt(xl)[:, None] * np.asarray(Yl @ (sy[:, None] * V))) / lv["s_raw"][None, :]
+    U = np.empty((m, lv["U"].shape[1]))
+    U[fit_rows] = lv["U"]
+    U[low] = Ul
+    rsc = np.empty(m)
+    rsc[fit_rows] = lv["row_scale"]
+    dl = np.maximum(np.diff(Yl.indptr).astype(np.float64), 1.0)
+    rsc[low] = 1.0 / (np.sqrt(xl) * dl)
+    lv.update(U=U, row_scale=rsc, n_out_of_sample=int(low.sum()))
+    return lv
 
 
 # ---------------------------------------------------------------------------
@@ -790,6 +843,11 @@ def birmt2(
     t0 = time.time()
     nt = B1._set_threads(n_jobs)
     X = adata.layers[layer] if layer is not None else adata.X
+    if type(X).__name__ in ("BackedArray", "_SubsetBackedArray", "TransformedBackedArray",
+                            "ScaledBackedArray"):
+        # anndataoom backed matrix: materialise chunk by chunk (as iterative_lsi does)
+        parts = [chunk for _, _, chunk in X.chunked()]
+        X = sp.vstack([sp.csr_matrix(c) for c in parts]).tocsr()
     X = sp.csr_matrix(X)
     if X.data.size and X.data.min() <= 0:
         X = X.copy(); X.data[X.data <= 0] = 0; X.eliminate_zeros()
