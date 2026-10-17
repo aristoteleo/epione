@@ -139,3 +139,18 @@ def test_biwhitened_embedding_rank_and_api():
     assert a.obsm["X_ot_batch"].shape[0] == n
     assert np.isfinite(a.obsm["X_ot_batch"]).all()
     assert "params" in a.uns["X_ot_batch"]
+
+
+def test_biwhiten_keeps_cell_with_only_rare_features():
+    # one cell whose only open features are rare within its batch must not crash
+    rng = np.random.default_rng(6)
+    n, m = 400, 300
+    X = (rng.random((n, m)) < 0.2).astype(np.float32)
+    X[0] = 0
+    X[0, -3:] = 1                      # features open in only this cell ...
+    X[1:, -3:] = 0
+    X[1:3, -3:] = 1                    # ... and two others (below the floor)
+    bat = np.repeat(["a", "b"], n // 2)
+    Z, info = ob.biwhitened_embedding(sp.csr_matrix(X), bat, min_cells=1)
+    assert np.isfinite(Z).all()
+    assert info["batches"][0]["feature_floor"] <= 3
