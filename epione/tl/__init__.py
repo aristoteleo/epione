@@ -131,6 +131,7 @@ from ._plotting import (
 from ._reducedimension import lsi
 
 from ._iterative_lsi import iterative_lsi
+from ._birmt import birmt
 
 from ._integrate import integrate
 from ._transfer_labels import transfer_labels
@@ -217,6 +218,7 @@ __all__ = [
     "plot_hint_differential", "plot_hint_profile",
     "lsi",
     "iterative_lsi",
+    "birmt",
     "integrate",
     "transfer_labels",
     "joint_embedding",
