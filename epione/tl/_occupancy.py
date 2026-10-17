@@ -51,6 +51,11 @@ computed per motif (sites of the same factor only). It equals the log
 posterior odds of occupancy of the neighbourhood up to the per-factor
 constant ``−μ``, which does not change the ranking of a factor's sites.
 
+This is Epione's **default** per-site TF binding score: it is what
+:func:`epione.tl.tf_binding` runs unless ``method='print'`` is asked for.
+It is a thermodynamically weighted motif-accessibility score, not a
+footprint.
+
 There is no per-site fit: the score needs no labels, no training and no
 bias model, and runs in one pass over the fragments. The four constants
 (``β``, ``window``, ``short_weight``, ``radius``) were chosen on K562
