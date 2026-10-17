@@ -358,11 +358,22 @@ class TorchTfidfStream:
     """Device operator over the row blocks of a :class:`TfidfStream`.
 
     Row blocks (int32 CSR + their device-side transposes) stay resident while
-    they fit ``budget`` bytes; the remaining blocks are rebuilt on the host
-    (bounded buffers) and uploaded for every product. Exposes ``shape``,
-    ``dtype`` (torch), ``matmul(D)`` (``A @ D``) and ``rmatmul(D)``
+    they fit ``budget`` bytes; the remaining blocks are streamed for every
+    product: the host only renumbers their column indices (int32, bounded
+    buffers, prepared one block ahead in a background thread) and the
+    TF-logIDF values are computed on the device from the per-row / per-column
+    vectors, with the same float32 operations as on the host. Exposes
+    ``shape``, ``dtype`` (torch), ``matmul(D)`` (``A @ D``) and ``rmatmul(D)``
     (``A.T @ D``) for :func:`epione.core._gpu_ops.randomized_svd`.
     """
+
+    # device bytes per nnz: resident block = values + int32 indices, and its
+    # transpose (16 B); building a transpose (torch's CSR -> CSC goes through
+    # int64 COO indices and a sort) or the values (int64 row ids) needs up to
+    # ~100 B/nnz of transient scratch (measured: 16 GiB peak for a 12 GiB
+    # budget with 48)
+    _RES = 16
+    _SCRATCH = 96
 
     def __init__(self, stream: TfidfStream, dev, budget: Optional[int] = None):
         from ..core._gpu import get_torch
@@ -373,25 +384,25 @@ class TorchTfidfStream:
         self.dtype = torch.float32
         self.shape = stream.shape
         self.budget = int(gpu_budget(dev) if budget is None else budget)
-        # A device block costs 8 B/nnz (float32 values + int32 indices) and
-        # as much again for its transpose; building the transpose (torch's
-        # CSR -> CSC goes through int64 COO indices and a sort) needs up to
-        # ~48 B/nnz of scratch. Blocks are sized so that this transient stays
-        # a fraction of the budget.
-        scratch = 48
-        max_blk = int(min(2**31 - 1, max(self.budget // (4 * scratch), 1 << 16)))
+        max_blk = int(min(2**31 - 1, max(self.budget // (4 * self._SCRATCH), 1 << 16)))
         self.blocks = stream._super_blocks(max_blk)
+        nz = [int(stream.sub_ptr[b] - stream.sub_ptr[a]) for a, b in self.blocks]
+        self._inv_row = torch.from_numpy(stream.inv_row).to(dev)
+        self._idf = torch.from_numpy(stream.idf).to(dev)
+        fixed = (self.shape[0] + self.shape[1]) * 4
+        self._pool = ThreadPoolExecutor(max_workers=stream.nt)
+        self._ahead = ThreadPoolExecutor(max_workers=1)
+        # resident blocks while they fit, keeping room for the transient
+        # scratch of the largest block (built or streamed)
+        room = self.budget - fixed - self._SCRATCH * (max(nz) if nz else 0)
         self._res = {}
         used = 0
-        self._pool = ThreadPoolExecutor(max_workers=stream.nt)
-        for a, b in self.blocks:
-            nz = int(stream.sub_ptr[b] - stream.sub_ptr[a])
-            need = nz * 16 + (b - a + self.shape[1] + 2) * 8
-            if used + need + nz * scratch > self.budget:
+        for (a, b), n in zip(self.blocks, nz):
+            need = self._RES * n + (b - a + self.shape[1] + 2) * 8
+            if used + need > room:
                 break
-            Xd = self._upload(a, b)
-            XTd = _transpose(Xd)
-            self._res[(a, b)] = (Xd, XTd)
+            Xd = self._device_block(a, b, self._host_indices(a, b))
+            self._res[(a, b)] = (Xd, _transpose(Xd))
             used += need
         self.resident = len(self._res) == len(self.blocks)
         from ..utils import console
@@ -400,24 +411,60 @@ class TorchTfidfStream:
             f"block(s), {len(self._res)} resident ({used / 2**30:.2f} GiB of "
             f"{self.budget / 2**30:.2f} GiB budget), rest streamed per product")
 
-    def _upload(self, a, b):
+    def _host_indices(self, a, b):
+        """Local indptr (int32) and renumbered column indices of rows a:b."""
+        s = self.s
+        s0, s1 = int(s.sub_ptr[a]), int(s.sub_ptr[b])
+        ind = np.empty(s1 - s0, dtype=np.int32)
+        k = _kernels()
+        sub = s._sub_blocks(a, b)
+        fn = lambda xy: k["sub_fill"](xy[0], xy[1], s.rows, s.X.indptr, s.X.indices,
+                                      s.colmap, ind, int(s.sub_ptr[xy[0]]) - s0)
+        if len(sub) <= 1:
+            for xy in sub:
+                fn(xy)
+        else:
+            list(self._pool.map(fn, sub))
+        return (s.sub_ptr[a:b + 1] - s0).astype(np.int32), ind
+
+    def _device_block(self, a, b, host):
         from ..core._gpu import _csr_tensor
         torch = self.torch
-        ptr, ind, dat = self.s.build_range(a, b, self._pool, idx_dtype=np.int32)
-        crow = torch.from_numpy(ptr.astype(np.int32, copy=False)).to(self.dev)
+        ptr, ind = host
+        crow = torch.from_numpy(ptr).to(self.dev, non_blocking=False)
         col = torch.from_numpy(ind).to(self.dev)
-        val = torch.from_numpy(dat).to(self.dev)
-        del ptr, ind, dat
-        return _csr_tensor(crow, col, val, (b - a, self.shape[1]), self.dev)
+        counts = (crow[1:] - crow[:-1]).to(torch.int64)
+        rows = torch.repeat_interleave(
+            torch.arange(a, b, device=self.dev, dtype=torch.int64), counts)
+        # == host: log1p((inv_row[i] * idf[j]) * scale_to) in float32
+        v = self._inv_row[rows]
+        del rows, counts
+        v.mul_(self._idf[col.to(torch.int64)])
+        v.mul_(float(self.s.scale_to))
+        v.log1p_()
+        return _csr_tensor(crow, col, v, (b - a, self.shape[1]), self.dev)
 
     def _iter(self, transposed: bool):
+        todo = [ab for ab in self.blocks if ab not in self._res]
+        fut = self._ahead.submit(self._host_indices, *todo[0]) if todo else None
+        t = 0
         for a, b in self.blocks:
             r = self._res.get((a, b))
             if r is not None:
                 yield a, b, (r[1] if transposed else r[0])
+                continue
+            host = fut.result()
+            t += 1
+            fut = self._ahead.submit(self._host_indices, *todo[t]) if t < len(todo) else None
+            Xd = self._device_block(a, b, host)
+            del host
+            if transposed:
+                XTd = _transpose(Xd)
+                del Xd
+                yield a, b, XTd
+                del XTd
             else:
-                Xd = self._upload(a, b)
-                yield a, b, (_transpose(Xd) if transposed else Xd)
+                yield a, b, Xd
                 del Xd
 
     def matmul(self, D):
@@ -435,6 +482,7 @@ class TorchTfidfStream:
     def close(self):
         self._res.clear()
         self._pool.shutdown(wait=False)
+        self._ahead.shutdown(wait=False)
 
 
 def _transpose(T):
