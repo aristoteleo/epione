@@ -140,6 +140,9 @@ from ._joint_embedding import joint_embedding
 from ._peak_to_gene import peak_to_gene
 
 from ._coaccessibility import coaccessibility
+from ._contact import (
+    contact_links, contact_gene_score, fit_contact_gamma, powerlaw_contact,
+)
 
 from ._marker_features import find_marker_features
 
@@ -226,6 +229,10 @@ __all__ = [
     "joint_embedding",
     "peak_to_gene",
     "coaccessibility",
+    "contact_links",
+    "contact_gene_score",
+    "fit_contact_gamma",
+    "powerlaw_contact",
     "find_marker_features",
     "add_motif_matrix",
     "build_motif_database",
