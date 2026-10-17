@@ -154,3 +154,18 @@ def test_biwhiten_keeps_cell_with_only_rare_features():
     Z, info = ob.biwhitened_embedding(sp.csr_matrix(X), bat, min_cells=1)
     assert np.isfinite(Z).all()
     assert info["batches"][0]["feature_floor"] <= 3
+
+
+def test_biwhiten_handles_infeasible_low_degree_cell():
+    # a cell with 2 open features among many cannot meet the Sinkhorn row target;
+    # it is scaled out of sample instead of making the iteration diverge
+    rng = np.random.default_rng(7)
+    n, m = 300, 2000
+    X = (rng.random((n, m)) < 0.15).astype(np.float32)
+    X[0] = 0
+    X[0, :2] = 1
+    bat = np.repeat(["a", "b"], n // 2)
+    Z, info = ob.biwhitened_embedding(sp.csr_matrix(X), bat, min_cells=1)
+    assert np.isfinite(Z).all()
+    assert info["batches"][0]["n_out_of_sample"] == 1
+    assert info["batches"][1]["n_out_of_sample"] == 0
