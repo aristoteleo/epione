@@ -582,7 +582,7 @@ def birmt(
     min_cells: Union[int, Literal["auto"]] = "auto",
     noise_scale: Union[Literal["mp_median"], float] = "mp_median",
     k_max: int = 128,
-    shrinkage: Literal["frobenius", "operator", "hard", "none"] = "frobenius",
+    shrinkage: Optional[Literal["frobenius", "operator", "hard", "none", "score"]] = None,
     row_norm: Literal["depth", "l2", "none"] = "depth",
     embedding: Literal["shrunk", "diffusion"] = "shrunk",
     diffusion: bool = True,
@@ -598,9 +598,16 @@ def birmt(
     cluster_key: str = "birmt",
     seed: int = 0,
     n_jobs: Optional[int] = None,
+    version: Literal[1, 2] = 1,
+    **v2_options,
 ) -> AnnData:
     """BiRMT embedding and clustering of a cells x features accessibility
     matrix (binarised). See the module docstring for the method and refs.
+
+    ``version=2`` runs BiRMT-2 (:func:`epione.tl._birmt2.birmt2`: multiscale
+    tile pyramid and DNA-sequence graph prior); ``v2_options`` are passed to
+    it (e.g. ``tile_sizes``, ``genome``, ``seq_lambda``). The default
+    ``version=1`` is unchanged.
 
     Parameters
     ----------
@@ -617,7 +624,8 @@ def birmt(
     k_max
         Largest rank considered (randomized SVD size cap).
     shrinkage
-        Gavish-Donoho shrinker for the retained singular values.
+        Gavish-Donoho shrinker for the retained singular values (``None`` =
+        ``'frobenius'`` for v1 and the BiRMT-2 default for ``version=2``).
     row_norm
         ``'depth'``: undo the row scaling and divide by the cell's total
         count (denoised profile); ``'l2'``: unit-norm rows; ``'none'``.
@@ -651,6 +659,19 @@ def birmt(
     diagnostics (rank, noise scale, singular values, ε, eigenvalues, t,
     Markov-stability table) and the parameters.
     """
+    if version == 2:
+        from ._birmt2 import birmt2
+        if shrinkage is not None:
+            v2_options["shrinkage"] = shrinkage
+        return birmt2(adata, layer=layer, min_cells=min_cells, k_max=k_max, n_neighbors=n_neighbors,
+                      cluster=cluster, resolutions=resolutions, n_seeds=n_seeds, key_added=key_added,
+                      cluster_key=cluster_key, seed=seed, n_jobs=n_jobs, **v2_options)
+    if version != 1:
+        raise ValueError(f"unknown BiRMT version {version!r}")
+    if v2_options:
+        raise TypeError(f"unexpected arguments for version=1: {sorted(v2_options)}")
+    if shrinkage is None:
+        shrinkage = "frobenius"
     import time
     t0 = time.time()
     nt = _set_threads(n_jobs)
