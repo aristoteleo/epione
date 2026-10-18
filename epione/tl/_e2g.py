@@ -383,16 +383,19 @@ def e2g_features(
     tick("counts")
     N = tot[tmask].sum()
     L_e = (el["end"] - el["start"]).to_numpy(np.float64)
-    n_e = np.asarray(Ce[tmask].sum(axis=0)).ravel()
+    from ._contact import _colsum_rows
+    trows = np.flatnonzero(tmask)
+    colsum = lambda Mx: _colsum_rows(Mx, trows, n_jobs)        # target-cell pseudobulk (threaded)
+    n_e = colsum(Ce)
     mu_e = N * L_e / G
     A_hat = (n_e + kappa * mu_e) / ((1 + kappa) * mu_e)
     # peaks (ABC denominator)
-    n_p = np.asarray(X[tmask].sum(axis=0)).ravel()
+    n_p = n_e if Ce is X else colsum(X)
     mu_p = N * (peaks["end"] - peaks["start"]).to_numpy(np.float64) / G
     A_p = np.maximum((n_p + kappa * mu_p) / ((1 + kappa) * mu_p) - 1.0, 0.0)
     # promoter activity
     if Cp is not None:
-        n_t = np.asarray(Cp[tmask].sum(axis=0)).ravel()
+        n_t = colsum(Cp)
         mu_t = N * 1000.0 / G
         prom = (n_t + kappa * mu_t) / ((1 + kappa) * mu_t)
     else:
@@ -438,24 +441,21 @@ def e2g_features(
         R = rna.X.tocsr() if sp.issparse(rna.X) else sp.csr_matrix(rna.X)
         gcol = pd.Index(rna.var_names.astype(str)).get_indexer(gdf["gene_name"])
         n_mc = M.shape[0]
-        # element accessibility: log CPM of metacell insertions with genome-wide totals
-        Se = (M @ Ce).toarray() if sp.issparse(Ce) else M @ Ce
-        mtot = M @ tot
-        Ze = np.log1p(Se * (1e6 / np.maximum(mtot, 1.0))[:, None])
-        Ze = (Ze - Ze.mean(0)) / np.where(Ze.std(0, ddof=1) > 0, Ze.std(0, ddof=1), np.inf)
+        # one matrix, variables x metacells: [genes | elements], standardised rows; elements = log CPM of
+        # metacell insertions relative to the metacells' genome-wide insertions (threaded numba)
+        ZT = np.zeros((len(gdf) + len(el), n_mc), dtype=np.float64)
         Zg_all = _metacell_log_std(R, M, 1e4, n_jobs=n_jobs)          # genes x mc
-        Zg = np.zeros((len(gdf), n_mc)); ok = gcol >= 0
-        Zg[ok] = Zg_all[gcol[ok]]
-        ZT = np.vstack([Zg, Ze.T])
+        ok = gcol >= 0
+        ZT[np.flatnonzero(ok)] = Zg_all[gcol[ok]]
+        _metacell_log_std(Ce, M, 1e6, out=ZT[len(gdf):], n_jobs=n_jobs, totals=M @ tot)
         if n_confounders > 0:
             E = np.asarray((M @ emb) / np.asarray(M.sum(axis=1)))
             E = E - E.mean(0)
             U, sv, _ = np.linalg.svd(E, full_matrices=False)
             Q, _ = np.linalg.qr(np.column_stack([np.ones(n_mc), U[:, :n_confounders]]))
-            ZT = ZT - (ZT @ Q) @ Q.T
-            sd = ZT.std(axis=1, ddof=1, keepdims=True)
-            ZT = (ZT - ZT.mean(axis=1, keepdims=True)) / np.where(sd > 0, sd, np.inf)
-        ZT = np.ascontiguousarray(np.nan_to_num(ZT))
+            ZT -= (ZT @ Q) @ Q.T                    # residuals are centred (Q spans the constant)
+            sd = np.sqrt((ZT * ZT).sum(axis=1, keepdims=True) / (n_mc - 1))
+            np.divide(ZT, np.where(sd > 0, sd, np.inf), out=ZT)
         win = np.flatnonzero(s <= corr_window)
         pv = np.zeros(len(win))
         _threaded(k["pair_dot"], len(win), n_jobs, gi[win].astype(np.int64),
@@ -464,10 +464,16 @@ def e2g_features(
         rho[win] = pv
         tick("covariation")
     names = (el["chrom"] + ":" + el["start"].astype(str) + "-" + el["end"].astype(str)).to_numpy()
+    # categorical labels (codes + one copy of each string): no per-pair Python string objects
+    ch_codes, ch_uni = pd.factorize(el["chrom"])
     out = pd.DataFrame({
-        "element": names[ei], "chrom": el["chrom"].to_numpy()[ei],
+        "element": pd.Categorical.from_codes(ei, categories=pd.Index(names)) if pd.Index(names).is_unique
+        else names[ei],
+        "chrom": pd.Categorical.from_codes(ch_codes[ei], categories=ch_uni),
         "start": el["start"].to_numpy()[ei], "end": el["end"].to_numpy()[ei],
-        "gene": gdf["gene_name"].to_numpy()[gi], "tss": gdf["tss"].to_numpy()[gi],
+        "gene": pd.Categorical.from_codes(gi, categories=pd.Index(gdf["gene_name"].to_numpy()))
+        if gdf["gene_name"].is_unique else gdf["gene_name"].to_numpy()[gi],
+        "tss": gdf["tss"].to_numpy()[gi],
         "distance": dist, "rank": rank,
         "log10_dist": np.log10(np.maximum(s, 1000.0)),
         "nearest": (rank == 1).astype(np.float64), "log_rank": np.log(rank),

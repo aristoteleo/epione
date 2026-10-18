@@ -554,6 +554,14 @@ def _glasso_kernels():
             out[q] = acc / (n - 1)
 
     @jit
+    def colsum_rows(b0, b1, rows, indptr, indices, data, out2d, blk):
+        acc = out2d[blk]
+        for t in range(b0, b1):
+            r = rows[t]
+            for q in range(indptr[r], indptr[r + 1]):
+                acc[indices[q]] += data[q]
+
+    @jit
     def abc_den(c, a, tss, window, gamma, s0, out):
         n = len(c)
         for i in range(len(tss)):
@@ -570,7 +578,8 @@ def _glasso_kernels():
 
 
     _GL_KERNELS.update(glasso=glasso, pcor_block=pcor_block, abc_den=abc_den, mc_sums=mc_sums,
-                       log_std_cols=log_std_cols, pair_dot=pair_dot)
+                       log_std_cols=log_std_cols, pair_dot=pair_dot,
+                       colsum_rows=colsum_rows)
     return _GL_KERNELS
 
 
@@ -589,7 +598,26 @@ def _threaded(fn, n, n_jobs, *args):
             fn(b[0], b[1], *args)
 
 
-def _metacell_log_std(X, M, scale, out=None, n_jobs=None):
+def _colsum_rows(X, rows, n_jobs=None):
+    """Column sums of the CSR rows ``rows`` (threaded numba, private per-block accumulators)."""
+    from concurrent.futures import ThreadPoolExecutor
+    from ..pp._fragment_io import resolve_n_jobs
+    k = _glasso_kernels()
+    X = X.tocsr()
+    rows = np.asarray(rows, dtype=np.int64)
+    nj = resolve_n_jobs(n_jobs)
+    edges = np.linspace(0, len(rows), nj + 1).astype(np.int64)
+    acc = np.zeros((nj, X.shape[1]), dtype=np.float64)
+    ip = X.indptr.astype(np.int64)
+
+    def run(b):
+        k["colsum_rows"](edges[b], edges[b + 1], rows, ip, X.indices, X.data, acc, b)
+    with ThreadPoolExecutor(max_workers=nj) as ex:
+        list(ex.map(run, range(nj)))
+    return acc.sum(axis=0)
+
+
+def _metacell_log_std(X, M, scale, out=None, n_jobs=None, totals=None):
     """Standardised ``log1p(scale * S / rowsum(S))`` of the metacell sums ``S = M @ X``
     (``M`` the 0/1 membership CSR), returned TRANSPOSED (features × n_mc, float64), threaded numba;
     written into ``out`` when given."""
@@ -599,7 +627,7 @@ def _metacell_log_std(X, M, scale, out=None, n_jobs=None):
     S = np.zeros((M.shape[0], X.shape[1]), dtype=np.float64)
     _threaded(k["mc_sums"], M.shape[0], n_jobs, M.indptr.astype(np.int64), M.indices.astype(np.int64),
               X.indptr.astype(np.int64), X.indices, X.data, S)
-    tot = S.sum(axis=1)
+    tot = S.sum(axis=1) if totals is None else np.asarray(totals, dtype=np.float64)
     rowscale = np.where(tot > 0, scale / np.where(tot > 0, tot, 1.0), 0.0)
     if out is None:
         out = np.empty((S.shape[1], S.shape[0]), dtype=np.float64)
