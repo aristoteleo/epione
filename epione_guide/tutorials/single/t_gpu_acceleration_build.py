@@ -41,6 +41,10 @@ This notebook runs one pipeline twice on the ArchR hematopoiesis data
 compares results and wall time. Installation, the memory budget and the
 optional rapids-singlecell backend for UMAP / Leiden are described on the
 [GPU acceleration](../../gpu.md) page.
+
+The chromVAR step below is `compute_deviations`, the chromVAR port. Epione's
+default per-cell TF activity, `epi.tl.tf_activity` ([TF motif
+activity](t_tf_activity)), runs on the CPU and needs no background peers.
 """)
 
 md("## Setup")

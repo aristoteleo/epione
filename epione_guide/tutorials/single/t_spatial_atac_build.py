@@ -216,26 +216,26 @@ pd.DataFrame(rows, columns=["gene", "Spearman vs RNA (raw score)", "Spearman vs 
 """)
 
 md(r"""
-## Motif deviations on the section
+## TF motif activity on the section
 
-chromVAR deviations of JASPAR motifs over the 50,000 tiles (MOODS scan,
-GC-matched background tiles from the genome), drawn on the tissue: SOX10 for
-oligodendrocyte lineage, NEUROD2 for neurons, and CTCF as a ubiquitous
-control. Per-spot deviations are noisy at this depth. Moran's I measures
-spatial structure; note that smoothing raises it for every motif by
-construction (the CTCF control included), so a smoothed motif map should be
-compared with the control rather than with the raw value. Here the raw
-values are all low: at 50 um and ~10,000 fragments per spot, single-motif
-deviations carry little spatial signal on this section.
+Per-spot TF activity of JASPAR motifs over the 50,000 tiles with Epione's
+default `epi.tl.tf_activity` (MOODS scan, then a conditional count model on
+GC x accessibility bias strata; no background tiles needed; the value is the
+shrunken log fold change of the motif's tiles), drawn on the tissue: SOX10
+for oligodendrocyte lineage, NEUROD2 for neurons, and CTCF as a ubiquitous
+control. Moran's I measures spatial structure; smoothing raises it for every
+motif by construction (the CTCF control included), so a smoothed motif map
+should be compared with the control rather than with the raw value.
+(chromVAR-compatible Z-scores: `epi.tl.add_background_peaks` +
+`epi.tl.compute_deviations`.)
 """)
 code(r"""
 epi.tl.add_motif_matrix(tiles, genome_fasta=str(genome.fasta), verbose=False)
-epi.tl.add_background_peaks(tiles, n_iterations=25, genome_fasta=str(genome.fasta), seed=1)
-epi.tl.compute_deviations(tiles, verbose=False)
-# spots x motifs deviation z-scores, as an AnnData that keeps the spot positions
-dev = ad.AnnData(np.asarray(tiles.obsm["motif_deviations"], dtype=np.float32),
+epi.tl.tf_activity(tiles, verbose=False)                   # -> tiles.obsm["tf_activity"]
+# spots x motifs activities, as an AnnData that keeps the spot positions
+dev = ad.AnnData(np.asarray(tiles.obsm["tf_activity"], dtype=np.float32),
                  obs=tiles.obs[["array_row", "array_col"]].copy(),
-                 var=pd.DataFrame(index=pd.Index(tiles.uns["motif_deviations_names"]).astype(str)))
+                 var=pd.DataFrame(index=pd.Index(tiles.uns["tf_activity_names"]).astype(str)))
 dev.var_names_make_unique()
 dev.obsm["spatial"], dev.uns["spatial"] = tiles.obsm["spatial"], tiles.uns["spatial"]
 dev.obsp["spatial_connectivities"] = tiles.obsp["spatial_connectivities"]

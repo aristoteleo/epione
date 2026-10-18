@@ -7,6 +7,7 @@ Peak-to-gene links, TF motif activity, TF regulators and trajectories.
 :titlesonly: true
 
 t_peak_to_gene
+t_tf_activity
 t_chromvar
 t_tf_regulators
 t_trajectory
