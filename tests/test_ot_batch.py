@@ -169,3 +169,24 @@ def test_biwhiten_handles_infeasible_low_degree_cell():
     assert np.isfinite(Z).all()
     assert info["batches"][0]["n_out_of_sample"] == 1
     assert info["batches"][1]["n_out_of_sample"] == 0
+
+
+def test_batch_correct_default_is_ot_batch_and_harmony_explicit():
+    import anndata as ad
+    rng = np.random.default_rng(8)
+    n, m, r = 400, 600, 3
+    lab = rng.integers(0, r, n)
+    R = (rng.random((r, m)) < 0.15).astype(float)
+    bat = np.repeat(["a", "b"], n // 2)
+    P = 0.03 + 0.5 * R[lab]
+    P[bat == "b"] *= 0.6
+    X = sp.csr_matrix((rng.random((n, m)) < P).astype(np.float32))
+    a = ad.AnnData(X=X, obs=pd.DataFrame({"batch": bat}, index=[str(i) for i in range(n)]))
+    import epione as epi
+    epi.tl.batch_correct(a, "batch", min_cells=1, n_landmarks=16, verbose=False)
+    assert "X_ot_batch" in a.obsm and a.uns["X_ot_batch"]["params"]["rho"] == 0.01
+    a.obsm["X_birmt"] = a.obsm["X_ot_batch_uncorrected"].copy()
+    epi.tl.batch_correct(a, "batch", method="harmony", verbose=False)
+    assert a.obsm["X_harmony"].shape[0] == n
+    with pytest.raises(ValueError):
+        epi.tl.batch_correct(a, "batch", method="nope")

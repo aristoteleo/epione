@@ -131,6 +131,7 @@ linked above.
 |---|---|
 | Cross-batch integration | {func}`epione.tl.integrate`, {func}`epione.tl.joint_embedding` |
 | CCA-based label transfer | {func}`epione.tl.transfer_labels` |
+| Batch correction (default: per-batch biwhitening + unbalanced OT barycenter) | {func}`epione.tl.batch_correct`, {func}`epione.tl.ot_batch` |
 | Harmony batch correction (ArchR `addHarmony`) | {func}`epione.tl.harmony`, {func}`epione.tl.run_harmony` |
 
 ### Paired multiome (RNA + ATAC in the same cells)
