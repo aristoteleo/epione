@@ -16,6 +16,56 @@ _InitPos = Literal["paga", "spectral", "random"]
 _LegacyRandom = int | np.random.RandomState | None
 
 
+class _layout_on:
+    """Context: route umap-learn's ``optimize_layout_euclidean`` (called by
+    ``simplicial_set_embedding`` after its initialisation / graph pruning /
+    epoch schedule) to :func:`epione.tl._umap_torch.optimize_layout_torch`
+    on a torch device; no-op on the CPU."""
+
+    def __init__(self, device: str):
+        self.device = device
+
+    def __enter__(self):
+        if self.device == "cpu":
+            return self
+        import umap.umap_ as uu
+        from ..core._gpu import torch_device
+        from ._umap_torch import optimize_layout_torch
+        dev = torch_device(self.device)
+        self._orig = uu.optimize_layout_euclidean
+
+        def _opt(head_embedding, tail_embedding, head, tail, n_epochs, n_vertices,
+                 epochs_per_sample, a, b, rng_state, gamma=1.0, initial_alpha=1.0,
+                 negative_sample_rate=5.0, **kw):
+            seed = int(np.asarray(rng_state, dtype=np.int64).sum() % (2**31 - 1))
+            out = optimize_layout_torch(head_embedding, head, tail, epochs_per_sample,
+                                        int(n_epochs), a, b, dev=dev, gamma=gamma,
+                                        initial_alpha=initial_alpha,
+                                        negative_sample_rate=negative_sample_rate, seed=seed)
+            head_embedding[:] = out
+            return head_embedding
+
+        self._orig_spec = uu.spectral_layout
+
+        def _spec(data, graph, dim, random_state, **kw):
+            from ._umap_torch import spectral_layout_torch
+            out = spectral_layout_torch(graph, dim, random_state, dev=dev)
+            if out is None:       # disconnected graph / no convergence: umap-learn
+                return self._orig_spec(data, graph, dim, random_state, **kw)
+            return out
+
+        uu.optimize_layout_euclidean = _opt
+        uu.spectral_layout = _spec
+        return self
+
+    def __exit__(self, *exc):
+        if self.device != "cpu":
+            import umap.umap_ as uu
+            uu.optimize_layout_euclidean = self._orig
+            uu.spectral_layout = self._orig_spec
+        return False
+
+
 class NeighborsView:
     """Simple neighbors view to access neighbor data."""
     
@@ -140,6 +190,7 @@ def umap(
     neighbors_key: str = "neighbors",
     copy: bool = False,
     backend: Literal["epione", "rapids"] = "epione",
+    device: str = "cpu",
 ) -> AnnData | None:
     """
     Embed the neighborhood graph using UMAP (Uniform Manifold Approximation and Projection).
@@ -211,6 +262,13 @@ def umap(
         representation). Needs ``rapids_singlecell`` installed; see the GPU
         acceleration page.
     
+    device
+        ``"cpu"`` (default): umap-learn's layout optimisation. ``"cuda"``
+        (``"cuda:N"``, ``"auto"``): the same initialisation, graph pruning
+        and epoch schedule, with the SGD epochs run on the GPU in parallel
+        (cuML-style, :mod:`epione.tl._umap_torch`); a different realisation
+        of the same optimisation, so coordinates differ from the CPU run.
+
     Returns
     -------
     Returns None if copy=False, else returns an AnnData object.
@@ -322,26 +380,29 @@ def umap(
         if not isinstance(connectivities, coo_matrix):
             connectivities = connectivities.tocoo()
         
-        # Run UMAP embedding
-        X_umap, _ = simplicial_set_embedding(
-            data=X,
-            graph=connectivities,
-            n_components=n_components,
-            initial_alpha=alpha,
-            a=a,
-            b=b,
-            gamma=gamma,
-            negative_sample_rate=negative_sample_rate,
-            n_epochs=n_epochs,
-            init=init_coords,
-            random_state=random_state,
-            metric=neigh_params.get("metric", "euclidean"),
-            metric_kwds=neigh_params.get("metric_kwds", {}),
-            densmap=False,
-            densmap_kwds={},
-            output_dens=False,
-            verbose=False,
-        )
+        from ..core._gpu import resolve_device
+        device = resolve_device(device)
+        # Run UMAP embedding (the SGD on the GPU for a torch device)
+        with _layout_on(device):
+            X_umap, _ = simplicial_set_embedding(
+                data=X,
+                graph=connectivities,
+                n_components=n_components,
+                initial_alpha=alpha,
+                a=a,
+                b=b,
+                gamma=gamma,
+                negative_sample_rate=negative_sample_rate,
+                n_epochs=n_epochs,
+                init=init_coords,
+                random_state=random_state,
+                metric=neigh_params.get("metric", "euclidean"),
+                metric_kwds=neigh_params.get("metric_kwds", {}),
+                densmap=False,
+                densmap_kwds={},
+                output_dens=False,
+                verbose=False,
+            )
         
     elif method == "rapids":
         # GPU-accelerated UMAP

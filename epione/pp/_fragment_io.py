@@ -66,6 +66,53 @@ def release_free_memory() -> None:
     except Exception:
         pass
 
+def memory_limit_bytes() -> int:
+    """Memory this process may use: the smallest of the machine's RAM and
+    every enclosing cgroup limit (v1 ``memory.limit_in_bytes`` up the
+    hierarchy, v2 ``memory.max``), e.g. a Slurm ``--mem`` step limit."""
+    lim = None
+    try:
+        with open("/proc/meminfo") as fh:
+            for line in fh:
+                if line.startswith("MemTotal:"):
+                    lim = int(line.split()[1]) * 1024
+                    break
+    except OSError:
+        pass
+    try:
+        with open("/proc/self/cgroup") as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        lines = []
+    cands = []
+    for line in lines:
+        parts = line.split(":", 2)
+        if len(parts) != 3:
+            continue
+        ctrl, path = parts[1], parts[2]
+        if "memory" in ctrl.split(","):
+            root, fname = "/sys/fs/cgroup/memory", "memory.limit_in_bytes"
+        elif ctrl == "":
+            root, fname = "/sys/fs/cgroup", "memory.max"
+        else:
+            continue
+        while True:
+            cands.append(os.path.join(root + path, fname))
+            if path in ("/", ""):
+                break
+            path = os.path.dirname(path)
+    for f in cands:
+        try:
+            v = open(f).read().strip()
+        except OSError:
+            continue
+        if v and v != "max":
+            v = int(v)
+            if v < (1 << 62):
+                lim = v if lim is None else min(lim, v)
+    return int(lim) if lim else 1 << 62
+
+
 _BGZF_MAGIC = b"\x1f\x8b\x08\x04"
 _GZIP_MAGIC = b"\x1f\x8b"
 # Compressed bytes per BGZF task (~4x as much text, ~1.5M fragments).

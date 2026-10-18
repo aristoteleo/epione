@@ -58,6 +58,32 @@ def allocate_columns(n: int, dtypes: dict, spill: bool):
     return {c: np.empty(n, dtype=dtypes[c]) for c in _COLUMNS}, None
 
 
+def spill_columns(cols: dict):
+    """Write in-memory store columns sequentially to files in a fresh
+    directory under ``$TMPDIR`` and return read-only memmaps of them (plus
+    the directory), freeing the anonymous memory. Returns ``(cols, None)``
+    unchanged when the files cannot be written."""
+    import shutil
+    import tempfile
+    d = None
+    try:
+        d = tempfile.mkdtemp(prefix="epione_fragstore_")
+        out = {}
+        for c in _COLUMNS:
+            a = cols[c]
+            fn = os.path.join(d, c + ".bin")
+            with open(fn, "wb") as fh:
+                step = 1 << 26
+                for i in range(0, a.shape[0], step):
+                    fh.write(memoryview(np.ascontiguousarray(a[i:i + step])).cast("B"))
+            out[c] = np.memmap(fn, dtype=a.dtype, mode="r", shape=a.shape)
+        return out, d
+    except OSError:
+        if d is not None:
+            shutil.rmtree(d, ignore_errors=True)
+        return cols, None
+
+
 class FragmentStore:
     """Fragments of a set of cells, grouped by cell (see module docs)."""
 
@@ -741,14 +767,15 @@ def build_gene_weights(store: FragmentStore, genes_sorted, chroms_with_genes, *,
 
 
 def gene_score(store: FragmentStore, row_map, n_genes: int, weights, *, tile_size,
-               ceiling, n_jobs=None) -> np.ndarray:
+               ceiling, n_jobs=None, out=None) -> np.ndarray:
     """Raw (cells x genes) float32 gene scores from the store: for every cell
     the ceiling-clipped insertion counts of each 500 bp tile times the
     tile -> gene weights, summed over tiles in increasing order -- the same
     float32 operations, in the same order, as ``W @ matGS`` per chromosome."""
     k = _kernels()
     base, n_tiles, Wp, Wg, Wv = weights
-    out = np.zeros((len(row_map), n_genes), dtype=np.float32)
+    if out is None:
+        out = np.zeros((len(row_map), n_genes), dtype=np.float32)
     if n_tiles == 0:
         return out
     _run_blocks(k["gene_score"], len(row_map), n_jobs, store.indptr, store.chrom,
