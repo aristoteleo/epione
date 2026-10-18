@@ -158,6 +158,7 @@ def _gene_score_from_fragments(
     ceiling: Optional[int],
     verbose: bool,
     n_jobs: Optional[int] = None,
+    out_of_core="auto",
 ) -> np.ndarray:
     """ArchR-faithful gene score computation — **chromosome-by-chromosome**,
     never materialising the full genome-wide tile matrix.
@@ -197,11 +198,6 @@ def _gene_score_from_fragments(
         ["chrom", "start", "end"], kind="stable"
     ).reset_index(drop=True)
 
-    # Every gene lives on exactly one chromosome, so each output column is
-    # written once (float32 directly; identical to accumulating in float64
-    # from zeros and casting back).
-    gene_score = np.zeros((n_cells, n_genes), dtype=np.float32)
-
     tbx = pysam.TabixFile(str(fragment_file))
     try:
         chroms_in_file = set(tbx.contigs)
@@ -228,7 +224,14 @@ def _gene_score_from_fragments(
         if weights is not None:
             _console("fragments: in-memory store (single sparse pass)", verbose)
             return _store_gene_score(store, row_map, n_genes, weights,
-                                     tile_size=tile_size, ceiling=ceiling, n_jobs=n_jobs)
+                                     tile_size=tile_size, ceiling=ceiling, n_jobs=n_jobs,
+                                     out=_alloc_scores(len(row_map), n_genes, out_of_core))
+
+    # Streaming path. Every gene lives on exactly one chromosome, so each
+    # output column is written once (float32 directly; identical to
+    # accumulating in float64 from zeros and casting back). Allocated only
+    # here: the store path above returns its own output.
+    gene_score = _alloc_scores(n_cells, n_genes, out_of_core)
 
     # ------- 1. per-chunk scan: sorted (tile * n_cells + cell) counts -------
     def per_chunk(ch):
@@ -742,8 +745,32 @@ def _build_tile_gene_weight_matrix(
 # Public API
 # ---------------------------------------------------------------------------
 
+#: gene-score outputs above this fraction of the process memory limit are
+#: written to a memory-mapped file under ``$TMPDIR`` (``out_of_core="auto"``)
+_OUT_AUTO_FRACTION = 0.25
+
+
+def _alloc_scores(n_cells: int, n_genes: int, out_of_core="auto"):
+    """Zeroed float32 ``(n_cells, n_genes)`` output: an in-memory array, or a
+    ``numpy.memmap`` on a file under ``$TMPDIR`` (removed when the array is
+    released) when ``out_of_core`` is True, or "auto" and the array would
+    exceed a quarter of the memory the process may use. Same values."""
+    nbytes = int(n_cells) * int(n_genes) * 4
+    if out_of_core == "auto":
+        from ..pp._fragment_io import memory_limit_bytes
+        out_of_core = nbytes > _OUT_AUTO_FRACTION * memory_limit_bytes()
+    if not out_of_core or nbytes == 0:
+        return np.zeros((n_cells, n_genes), dtype=np.float32)
+    import tempfile
+    fd, fn = tempfile.mkstemp(prefix="epione_gene_score_", suffix=".f32")
+    os.close(fd)
+    arr = np.memmap(fn, dtype=np.float32, mode="w+", shape=(n_cells, n_genes))
+    os.unlink(fn)          # the mapping keeps the (sparse, zero-filled) file alive
+    return arr
+
+
 def _tile_gene_product(X: sp.csr_matrix, W, ceiling, n_jobs=None,
-                       block_nnz: int = 1 << 24) -> np.ndarray:
+                       block_nnz: int = 1 << 24, out=None) -> np.ndarray:
     """Dense float32 ``clip(X.astype(float32), 0, ceiling) @ W`` computed on
     row blocks of ``X`` (no float32 copy of the whole tile matrix). Every
     output row is the same SciPy sparse product as on the whole matrix, so
@@ -753,7 +780,8 @@ def _tile_gene_product(X: sp.csr_matrix, W, ceiling, n_jobs=None,
     from ..pp._fragment_io import resolve_n_jobs
     n = X.shape[0]
     W = W.tocsr() if sp.issparse(W) else W
-    out = np.empty((n, W.shape[1]), dtype=np.float32)
+    if out is None:
+        out = np.empty((n, W.shape[1]), dtype=np.float32)
 
     def run(blk):
         a, b = int(X.indptr[blk.start]), int(X.indptr[blk.stop])
@@ -800,6 +828,7 @@ def add_gene_score_matrix(
     key_added: str = "gene_score",
     verbose: bool = True,
     n_jobs: Optional[int] = None,
+    out_of_core: Union[bool, Literal["auto"]] = "auto",
 ) -> AnnData:
     """ArchR-equivalent per-cell gene score matrix.
 
@@ -839,6 +868,13 @@ def add_gene_score_matrix(
         Threads used to decompress / parse the fragment file on the
         fragment path. ``None`` (default) uses every CPU available to the
         process.
+    out_of_core
+        ``"auto"`` (default): the dense ``(n_cells, n_genes)`` float32
+        result is an in-memory array unless it would exceed a quarter of the
+        memory available to the process (RAM or the cgroup / Slurm
+        ``--mem`` limit); then it is a ``numpy.memmap`` on an unlinked file
+        under ``$TMPDIR`` (resident only while touched, reclaimable page
+        cache). ``True`` / ``False`` force either. Same values either way.
 
     All other keyword arguments mirror ArchR's ``addGeneScoreMatrix``
     defaults. See module docstring.
@@ -905,6 +941,7 @@ def add_gene_score_matrix(
             ceiling=ceiling,
             verbose=verbose,
             n_jobs=n_jobs,
+            out_of_core=out_of_core,
         )
         source = "fragments (chrom-by-chrom)"
         _restore_files()
@@ -947,7 +984,8 @@ def add_gene_score_matrix(
             verbose=verbose,
         )
         _console("computing gene_score = X_tile @ W", verbose)
-        score = _tile_gene_product(X, W, ceiling, n_jobs=n_jobs)
+        score = _tile_gene_product(X, W, ceiling, n_jobs=n_jobs,
+                                   out=_alloc_scores(n_cells_x, W.shape[1], out_of_core))
         source = "adata.X"
 
     from ..pp._fragment_io import release_free_memory

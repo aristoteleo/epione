@@ -99,8 +99,14 @@ def frag_files(tmp_path_factory):
             "messy_bgzf": str(messy_bgzf), "messy_gzip": str(messy_gz)}
 
 
-@pytest.fixture(params=[True, "disk", False], ids=["store-mem", "store-disk", "stream"])
-def store(request):
+@pytest.fixture(params=[True, "disk", "auto-spill", "auto", False],
+                ids=["store-mem", "store-disk", "store-auto-spill", "store-auto", "stream"])
+def store(request, monkeypatch):
+    if request.param == "auto-spill":
+        # store_fragments="auto" over its memory threshold -> memory-mapped
+        import epione.pp._data as d
+        monkeypatch.setattr(d, "_STORE_AUTO_FRACTION", 0.0)
+        return "auto"
     return request.param
 
 
@@ -414,14 +420,16 @@ def test_tss_pileup_stream_exact(frag_files):
     np.testing.assert_array_equal(mx, ref)
 
 
-def test_gene_score_matches_legacy(frag_files, store):
+@pytest.mark.parametrize("out_of_core", [False, True])
+def test_gene_score_matches_legacy(frag_files, store, out_of_core):
     import epione as epi
     ad = epi.pp.import_fragments(frag_files["bgzf"], chrom_sizes=CHROM_SIZES,
                                  min_num_fragments=1, store_fragments=store)
     ad = ad[np.random.default_rng(1).permutation(ad.n_obs)[:30]].copy()
     genes = _genes()
     epi.tl.add_gene_score_matrix(ad, gene_anno=genes, use_x="auto", n_jobs=3,
-                                 verbose=False)
+                                 verbose=False, out_of_core=out_of_core)
+    assert isinstance(ad.obsm["gene_score"], np.memmap) == out_of_core
     from epione.tl._gene_score import _normalise_genes
     g = _normalise_genes(genes, exclude_chr=("chrY", "chrM"))
     raw = _legacy_gene_score(frag_files["bgzf"], ad.obs_names, g)
@@ -578,3 +586,18 @@ def test_tile_matrix_chrom_order_differs(frag_files):
     np.testing.assert_array_equal(ad.X.indptr, ref.indptr)
     np.testing.assert_array_equal(ad.X.indices, ref.indices)
     np.testing.assert_array_equal(ad.X.data, ref.data)
+
+
+def test_store_auto_spills_over_threshold(frag_files, monkeypatch):
+    import epione as epi
+    import epione.pp._data as d
+    from epione.pp._fragment_store import get_fragment_store
+    ad = epi.pp.import_fragments(frag_files["bgzf"], chrom_sizes=CHROM_SIZES, min_num_fragments=1)
+    assert get_fragment_store(ad).spill_dir is None          # tiny store: in memory
+    monkeypatch.setattr(d, "_STORE_AUTO_FRACTION", 0.0)
+    ad2 = epi.pp.import_fragments(frag_files["bgzf"], chrom_sizes=CHROM_SIZES, min_num_fragments=1)
+    st = get_fragment_store(ad2)
+    assert st.spill_dir is not None
+    epi.pp.add_tile_matrix(ad, bin_size=500)
+    epi.pp.add_tile_matrix(ad2, bin_size=500)
+    assert (ad.X != ad2.X).nnz == 0

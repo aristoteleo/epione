@@ -263,9 +263,21 @@ def _scan_cell_qc(fragment_file, *, valid_chroms, chrM, whitelist, n_jobs,
     chrom_dt = _small_int(len(chrom_index) - 1, signed=True)
     count_dt = np.result_type(np.uint8, *[c[6].dtype for c in chunks])
     from ._fragment_store import allocate_columns
-    cols_out, spill_dir = allocate_columns(
-        n_frag, {"chrom": chrom_dt, "start": np.int32, "len": np.uint16, "count": count_dt},
-        spill=(store == "disk"))
+    dts = {"chrom": chrom_dt, "start": np.int32, "len": np.uint16, "count": count_dt}
+    spill = store == "disk"
+    if store == "auto":
+        # memory-map the store when it would take more than a quarter of the
+        # memory this process may use (RAM / cgroup limit, e.g. Slurm --mem):
+        # it is then only resident while a step reads it, and the page cache
+        # is reclaimed under pressure. Same values either way.
+        from ._fragment_io import memory_limit_bytes
+        need = n_frag * sum(np.dtype(d).itemsize for d in dts.values())
+        auto_spill = need > _STORE_AUTO_FRACTION * memory_limit_bytes()
+    else:
+        auto_spill = False
+    # ("auto" builds in memory -- scattering into a file-backed map is slow --
+    # and writes the finished columns out sequentially below)
+    cols_out, spill_dir = allocate_columns(n_frag, dts, spill=spill)
     o_chrom, o_start, o_len, o_count = (cols_out[c] for c in ("chrom", "start", "len", "count"))
     cur = indptr[:-1].copy()
     jobs = []
@@ -294,6 +306,12 @@ def _scan_cell_qc(fragment_file, *, valid_chroms, chrM, whitelist, n_jobs,
             pass
     del jobs
     del o_chrom, o_start, o_len, o_count
+    if auto_spill:
+        from ._fragment_store import spill_columns
+        cols_out, spill_dir = spill_columns(cols_out)
+        if spill_dir is not None:
+            console.level2(f"fragment store ({need / 2**30:.1f} GiB) memory-mapped under "
+                           "$TMPDIR (store_fragments='auto')")
     order_l = np.argsort(o_long_pos, kind="stable")
     st = FragmentStore(fragment_file, [b for b, k in zip(barcodes, keep) if k],
                        list(chrom_index), indptr, cols_out,
@@ -308,6 +326,11 @@ def _scan_cell_qc(fragment_file, *, valid_chroms, chrM, whitelist, n_jobs,
 # Public API — fragment import
 # ---------------------------------------------------------------------------
 
+#: ``store_fragments="auto"``: memory-map the store above this fraction of
+#: the process memory limit
+_STORE_AUTO_FRACTION = float(os.environ.get("EPIONE_STORE_AUTO_FRACTION", 0.25))
+
+
 def import_fragments(
     fragment_file: Union[str, Path, list],
     chrom_sizes: Union[Genome, dict],
@@ -317,7 +340,7 @@ def import_fragments(
     whitelist: Optional[Union[Path, list]] = None,
     chrM: list = ("chrM", "M", "chrMT", "MT"),
     n_jobs: Optional[int] = None,
-    store_fragments: Union[bool, str] = True,
+    store_fragments: Union[bool, str] = "auto",
     **kwargs,
 ) -> AnnData:
     """Scan a bgzipped fragments.tsv.gz and build a per-cell QC AnnData.
@@ -357,7 +380,10 @@ def import_fragments(
         Keep the imported cells' fragments (CSR by cell, ~10 bytes per
         fragment) so ``tsse`` / ``add_tile_matrix`` /
         ``add_gene_score_matrix`` reuse them instead of re-reading the file.
-        ``True`` (default) keeps them in memory; ``"disk"`` in
+        ``"auto"`` (default) keeps them in memory unless they would take more
+        than a quarter of the memory available to the process (RAM or the
+        cgroup / Slurm ``--mem`` limit), in which case they are stored as
+        with ``"disk"``. ``True`` keeps them in memory; ``"disk"`` in
         memory-mapped files under ``$TMPDIR`` (lower resident memory between
         steps, at the cost of writing them out); ``False`` disables the
         store. Its token is recorded in

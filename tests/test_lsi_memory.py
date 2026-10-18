@@ -144,6 +144,11 @@ def test_tile_gene_product_matches_full():
     for nj in (1, 3):
         got = _tile_gene_product(X, W, 2, n_jobs=nj, block_nnz=5000)
         assert np.array_equal(ref, got)
+    from epione.tl._gene_score import _alloc_scores
+    mm = _alloc_scores(X.shape[0], W.shape[1], out_of_core=True)
+    assert isinstance(mm, np.memmap)
+    got = _tile_gene_product(X, W, 2, n_jobs=3, block_nnz=5000, out=mm)
+    assert np.array_equal(ref, got)
 
 
 def _peak_extra_bytes(fn):
@@ -191,3 +196,39 @@ def test_iterative_lsi_memory_regression(monkeypatch):
     assert extra_new < budget, (
         f"iterative_lsi allocated {extra_new / 2**20:.0f} MiB at peak, budget "
         f"{budget / 2**20:.0f} MiB (input CSR {csr_bytes / 2**20:.0f} MiB)")
+
+
+def test_umap_torch_layout_quality():
+    """``epi.tl.umap(device=...)``: umap-learn's initialisation / schedule with
+    the SGD epochs on the torch device; a different realisation of the same
+    optimisation, so compared by quality, not coordinates."""
+    pytest.importorskip("torch")
+    import epione as epi
+    from sklearn.manifold import trustworthiness
+    from sklearn.metrics import adjusted_rand_score
+    rng = np.random.default_rng(0)
+    centers = rng.normal(scale=6.0, size=(5, 10))
+    lab = np.repeat(np.arange(5), 300)
+    X = (centers[lab] + rng.normal(size=(lab.size, 10))).astype(np.float32)
+    ad = AnnData(obs={"g": lab.astype(str)})
+    ad.obsm["X_rep"] = X
+    epi.pp.neighbors(ad, use_rep="X_rep", n_neighbors=15)
+    a, b = ad.copy(), ad.copy()
+    epi.tl.umap(a)
+    epi.tl.umap(b, device="torch-cpu")
+    ta = trustworthiness(X, a.obsm["X_umap"], n_neighbors=10)
+    tb = trustworthiness(X, b.obsm["X_umap"], n_neighbors=10)
+    assert tb > 0.95 * ta
+    from sklearn.cluster import KMeans
+    km = KMeans(5, n_init=5, random_state=0).fit_predict(b.obsm["X_umap"])
+    assert adjusted_rand_score(lab, km) > 0.95
+    # the CPU path is unchanged by the context switch
+    c = ad.copy()
+    epi.tl.umap(c)
+    assert np.array_equal(a.obsm["X_umap"], c.obsm["X_umap"])
+
+
+def test_memory_limit_and_auto_store(monkeypatch, tmp_path):
+    from epione.pp._fragment_io import memory_limit_bytes
+    lim = memory_limit_bytes()
+    assert 0 < lim <= (1 << 62)
