@@ -11,6 +11,11 @@ The format roughly follows Keep a Changelog.
 - `epi.tl.e2g_links`, `epi.tl.e2g_features`, `epi.tl.count_insertions` (Tn5 insertions in arbitrary
   intervals from fragment files), `epi.tl.contact_links`, `epi.tl.contact_gene_score`,
   `epi.tl.fit_contact_gamma`, `epi.tl.powerlaw_contact`.
+- `epi.tl.umap(device="cuda")`: the spectral initialisation (torch LOBPCG) and the SGD epochs
+  (cuML-style parallel updates) run on the GPU, with umap-learn's own graph pruning and schedule
+  (1M cells: 36 s vs 21 min on the CPU).
+- `epi.tl.add_gene_score_matrix(out_of_core="auto")`: an output larger than a quarter of the
+  process memory limit is a memory-mapped array under `$TMPDIR` (same values).
 - `epi.single.scan_peaks` (CellScan): a scATAC-native peak caller. Each window is scored by the number of
   distinct cells with a Tn5 insertion, against a depth-aware null and a Tn5-bias-corrected local background.
 - `epi.single.call_peaks(adata, groupby, method=...)`: one entry point that returns a non-overlapping,
@@ -33,6 +38,14 @@ The format roughly follows Keep a Changelog.
     with ABC on GM12878 CRISPRi (16 positives). Report a distance baseline alongside links.
   - Speed: faster than `peak_to_gene` on the same data and threads (50k cells 16–18 s vs 18–31 s;
     100k cells 15 s vs 19 s).
+- **`epi.tl.clusters` uses igraph's C Leiden by default** (`backend='igraph'`): the same objective
+  as before (modularity ≡ RBConfiguration at the same resolution, weighted, iterated to convergence).
+  On 50k / 100k-cell graphs the igraph partitions agree with leidenalg's as closely as leidenalg's
+  own seeds do (ARI ≈ 0.6), with equal or higher modularity, and run 8-10x faster; leidenalg needs
+  hours at 1M cells. The previous default is `backend='leidenalg'` (alias `'epione'`).
+- `epi.pp.import_fragments(store_fragments="auto")` (new default): the in-memory fragment store is
+  memory-mapped under `$TMPDIR` when it exceeds a quarter of the process memory limit (RAM or the
+  cgroup / Slurm `--mem` limit). Results are identical; `True` keeps the previous behaviour.
 - **Default peak caller is now CellScan** (`call_peaks(method='cellscan')`). The previous behaviour is
   `call_peaks(method='macs3')`, i.e. `epi.single.macs3` + `merge_peaks`, unchanged.
   - Held-out accuracy: on ENCODE HepG2 / MCF-7 / A549 scATAC with bulk ATAC + DNase truth, F1 of the top 50k
@@ -63,3 +76,12 @@ The format roughly follows Keep a Changelog.
   - Speed: faster than BiRMT-2 + Harmony on every evaluated set (140k cells: 139 s vs 253 s,
     8 threads); peak memory up to ~20 % higher than Harmony's pipeline on some sets.
 
+
+### Performance
+- `epi.tl.iterative_lsi` is matrix-free (TF-logIDF applied per row block inside the SVD products,
+  bit-identical on the CPU; device blocks streamed within a budget on the GPU): +2 GiB instead of
+  +22 GiB host memory at 100k cells, 1M cells within ~8 GiB of the input.
+- `epi.tl.birmt` (BiRMT-2) works on the int32 sparsity pattern without value arrays or int64 index
+  copies: bit-identical output with ~8 instead of ~36 bytes of extra memory per non-zero.
+- `epi.tl.add_gene_score_matrix` no longer allocates a second dense output on the fragment-store
+  path, and computes the `adata.X` path in row blocks.

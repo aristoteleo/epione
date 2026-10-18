@@ -295,3 +295,34 @@ def test_sinkhorn_infeasible_rows_fitted_out_of_sample():
     ref = fast_denoise_binary(Y[1:], n_jobs=1)
     Zr = ref["U"] * ref["s"] * ref["row_scale"][:, None]
     np.testing.assert_allclose(np.abs(Z[1:]), np.abs(Zr), rtol=1e-6, atol=1e-9)
+
+
+def test_pattern_kernels_match_scipy():
+    """Pattern-only BiRMT-2 plumbing: the parallel transpose, row / column
+    selection and column counts give the very arrays of the sequential
+    kernels / SciPy indexing (so every downstream float operation is
+    unchanged)."""
+    import numba
+    from epione.tl._birmt2 import _fast_kernels, as_pattern
+    Y = _binary(m=300, n=900, seed=11)
+    K = _fast_kernels()
+    P = as_pattern(Y)
+    assert P.indices.dtype == np.int32
+    tp, ti = K["pat_transpose"](Y.indptr, Y.indices, Y.shape[1])
+    for ch in (1, 3, 16):
+        tp2, ti2 = K["pat_transpose_par"](P.indptr, P.indices, Y.shape[1], ch)
+        np.testing.assert_array_equal(tp, tp2)
+        np.testing.assert_array_equal(ti, ti2)
+    np.testing.assert_array_equal(P.col_counts(), np.bincount(Y.indices, minlength=Y.shape[1]))
+    rows = np.array([5, 2, 299, 0, 2])
+    cols = np.flatnonzero(np.asarray(Y.sum(0)).ravel() > 2)
+    for r, c in ((rows, None), (None, cols), (rows, cols)):
+        ref = Y if r is None else Y[r]
+        ref = ref if c is None else ref[:, c]
+        got = P.take(r, c)
+        np.testing.assert_array_equal(np.diff(got.indptr), np.diff(ref.indptr))
+        np.testing.assert_array_equal(got.indices, ref.indices)
+    v = np.random.default_rng(0).random(Y.shape[1])
+    V = np.random.default_rng(1).random((Y.shape[1], 4))
+    np.testing.assert_array_equal(P.matvec(v), Y @ v)
+    np.testing.assert_array_equal(P.matmat(V), Y @ V)

@@ -20,8 +20,9 @@ epi.tl.compute_deviations(adata, device="cuda")
 | Function | GPU part | Agreement with `device="cpu"` |
 |---|---|---|
 | {func}`epione.tl.lsi` | TF-IDF, L1, `log1p`, randomized SVD | same arithmetic and precision; the SVD is a port of sklearn's `randomized_svd` that draws the same random test matrix, so for a fixed `random_state` the embedding matches to rounding |
-| {func}`epione.tl.iterative_lsi` | each round's randomized SVD; the kNN search of the intermediate clustering (exact) | one round: matches to rounding. With two or more rounds the CPU uses scanpy's approximate pynndescent search for the intermediate clustering, so later rounds can differ about as much as two CPU seeds do |
-| {func}`epione.pp.neighbors` | exact brute-force kNN (float64 distances) | same neighbour sets as the exact CPU search |
+| {func}`epione.tl.iterative_lsi` | each round's randomized SVD on a matrix-free TF-logIDF operator (row blocks resident up to `EPIONE_GPU_MEMORY_GB`, default min(12 GiB, half the free memory), the rest streamed per product); the kNN search of the intermediate clustering (exact) | one round: matches to rounding. With two or more rounds the CPU uses scanpy's approximate pynndescent search for the intermediate clustering, so later rounds can differ about as much as two CPU seeds do |
+| {func}`epione.pp.neighbors` | exact brute-force kNN (float64 distances, query tiles capped at 4 GiB) | same neighbour sets as the exact CPU search |
+| {func}`epione.tl.umap` | spectral initialisation (LOBPCG) and the SGD epochs (parallel per-epoch updates, as cuML) after umap-learn's own graph pruning and schedule | a different realisation of the same optimisation: coordinates differ, layout quality matches (98k cells: trustworthiness 0.849 vs 0.855) |
 | {func}`epione.tl.compute_deviations` | observed counts, background-peer statistics and the null, in cell batches | same float32 arithmetic; Z-scores agree to float32 rounding |
 | {func}`epione.tl.add_motif_matrix` | the PWM scan: a float32 convolution of the MOODS log-odds matrices over the one-hot sequence, then exact float64 rescoring, in MOODS's order, of the few windows within rounding distance of the threshold | identical hit matrix (MOODS's edge rules are reproduced too) |
 | {func}`epione.tl.peak_to_gene` | metacell aggregation, per-pair correlation | correlations agree to float32 rounding |
