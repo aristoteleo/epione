@@ -146,6 +146,34 @@ def _kernels():
         return out
 
     @nb.njit(parallel=True, cache=False)
+    def col_sum_bin(indptr, indices, v, m, nchunk):
+        # col_sum for a 0/1 matrix (data == 1 exactly): same chunking and
+        # summation order as col_sum, without reading the data array
+        n = indptr.shape[0] - 1
+        step = (n + nchunk - 1) // nchunk
+        acc = np.zeros((nchunk, m))
+        for c in nb.prange(nchunk):
+            for i in range(c * step, min(n, (c + 1) * step)):
+                vi = v[i]
+                for p in range(indptr[i], indptr[i + 1]):
+                    acc[c, indices[p]] += vi
+        out = np.zeros(m)
+        for c in range(nchunk):
+            out += acc[c]
+        return out
+
+    @nb.njit(parallel=True, cache=False)
+    def seg_sum_bin(indptr, indices, v):
+        n = indptr.shape[0] - 1
+        out = np.empty(n, dtype=np.float64)
+        for i in nb.prange(n):
+            s = 0.0
+            for p in range(indptr[i], indptr[i + 1]):
+                s += v[indices[p]]
+            out[i] = s
+        return out
+
+    @nb.njit(parallel=True, cache=False)
     def scaled_data(indptr, indices, data, sx, sy, out):
         n = indptr.shape[0] - 1
         for i in nb.prange(n):
@@ -259,7 +287,7 @@ def _kernels():
                         out_idx[q] = j
                         q += 1
 
-    _K.update(select_count=select_count, select_fill=select_fill,
+    _K.update(col_sum_bin=col_sum_bin, seg_sum_bin=seg_sum_bin, select_count=select_count, select_fill=select_fill,
               gram=gram, col_sum=col_sum, seg_sum=seg_sum, scaled_data=scaled_data, row_lse=row_lse,
               col_lse=col_lse, plan_stats=plan_stats)
     return _K
@@ -394,31 +422,35 @@ def biwhiten_by_batch(
         # (Sinkhorn diverges). They are excluded from the Sinkhorn iteration and
         # row-scaled afterwards with the batch's converged feature scaling
         # (out-of-sample cells); a no-op whenever every cell is feasible.
-        deg = k["seg_sum"](ip, ix, iv, present.astype(np.float64))
+        deg = k["seg_sum_bin"](ip, ix, present.astype(np.float64))
         ins = deg * nb_ >= mp_
         n_in = int(ins.sum())
         if n_in == 0:
             raise ValueError("no cell of the batch satisfies the biwhitening feasibility condition")
         # masked Sinkhorn (features absent from the block get y = 0): row sums
         # = #present features, column sums of present features = #in-sample cells
+        # (Y is 0/1: the *_bin kernels skip the data array; the column sums of
+        # D(x)Y computed for the convergence check are reused by the next
+        # iteration -- both exact, results unchanged)
         x = ins.astype(np.float64)
         y = np.zeros(m)
         it = 0
+        raw = k["col_sum_bin"](ip, ix, x, m, nchunk)
         for it in range(1, max_iter + 1):
-            cs = k["col_sum"](ip, ix, iv, x, m, nchunk)
-            y = np.where(present, n_in / np.maximum(cs, 1e-300), 0.0)
-            rs = k["seg_sum"](ip, ix, iv, y)
+            y = np.where(present, n_in / np.maximum(raw, 1e-300), 0.0)
+            rs = k["seg_sum_bin"](ip, ix, y)
             if np.any(rs[ins] <= 0):
                 raise ValueError(f"{int((rs[ins] <= 0).sum())} cells have no feature open in "
                                  f">= {mcb} cells of their batch")
             x = np.where(ins, mp_ / np.maximum(rs, 1e-300), 0.0)
-            cs = y * k["col_sum"](ip, ix, iv, x, m, nchunk)
+            raw = k["col_sum_bin"](ip, ix, x, m, nchunk)
+            cs = y * raw
             if np.max(np.abs(cs[present] / n_in - 1.0)) < tol:
                 break
         else:
             console.warn(f"[ot_batch] biwhitening Sinkhorn did not reach tol={tol} in {max_iter} iterations")
         if n_in < nb_:
-            rs = k["seg_sum"](ip, ix, iv, y)
+            rs = k["seg_sum_bin"](ip, ix, y)
             x = np.where(ins, x, mp_ / np.maximum(rs, 1e-300))
         d = np.empty(Yb.nnz)
         k["scaled_data"](ip, ix, iv, np.sqrt(x), np.sqrt(y), d)
