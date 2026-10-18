@@ -287,7 +287,20 @@ def _kernels():
                         out_idx[q] = j
                         q += 1
 
-    _K.update(col_sum_bin=col_sum_bin, seg_sum_bin=seg_sum_bin, select_count=select_count, select_fill=select_fill,
+    @nb.njit(parallel=True, cache=False)
+    def pos_col_count(indptr, indices, data, m, nchunk):
+        # number of rows with data > 0 per column (integer, exact)
+        n = indptr.shape[0] - 1
+        step = (n + nchunk - 1) // nchunk
+        acc = np.zeros((nchunk, m), dtype=np.int64)
+        for c in nb.prange(nchunk):
+            for i in range(c * step, min(n, (c + 1) * step)):
+                for p in range(indptr[i], indptr[i + 1]):
+                    if data[p] > 0:
+                        acc[c, indices[p]] += 1
+        return acc.sum(axis=0)
+
+    _K.update(pos_col_count=pos_col_count, col_sum_bin=col_sum_bin, seg_sum_bin=seg_sum_bin, select_count=select_count, select_fill=select_fill,
               gram=gram, col_sum=col_sum, seg_sum=seg_sum, scaled_data=scaled_data, row_lse=row_lse,
               col_lse=col_lse, plan_stats=plan_stats)
     return _K
@@ -405,9 +418,16 @@ def biwhiten_by_batch(
         nchunk = 8
     for rows in groups:
         contiguous = rows[-1] - rows[0] + 1 == len(rows)
-        Yb = Y[rows[0]:rows[-1] + 1] if contiguous else Y[rows]
+        if contiguous:
+            # zero-copy view of the block (cells are sorted by batch)
+            a0, a1 = int(Y.indptr[rows[0]]), int(Y.indptr[rows[-1] + 1])
+            ip = (Y.indptr[rows[0]:rows[-1] + 2] - a0).astype(Y.indptr.dtype)
+            ix, iv = Y.indices[a0:a1], Y.data[a0:a1]
+            Yb = sp.csr_matrix((iv, ix, ip), shape=(len(rows), m), copy=False)
+        else:
+            Yb = Y[rows]
+            ip, ix, iv = Yb.indptr, Yb.indices, Yb.data
         nb_, mcb = len(rows), int(max(5, np.ceil(2 * np.log(len(rows)))))
-        ip, ix, iv = Yb.indptr, Yb.indices, Yb.data
         cnt_b = np.bincount(ix, minlength=m)
         # every cell must keep >= 1 feature: if a cell's features are all below
         # the floor, the floor of this batch is lowered to the largest value
@@ -513,7 +533,12 @@ def biwhitened_embedding(
     n, m0 = X.shape
     kk = _kernels()
     mc = int(max(5, np.ceil(2 * np.log(n)))) if min_cells == "auto" else int(min_cells)
-    colnnz = np.bincount(X.indices[X.data > 0], minlength=m0)
+    try:
+        import numba
+        _nch = 2 * numba.get_num_threads()
+    except Exception:  # pragma: no cover
+        _nch = 8
+    colnnz = kk["pos_col_count"](X.indptr, X.indices, X.data, m0, _nch)
     feats = np.flatnonzero(colnnz >= mc)
     if n_features is not None and len(feats) > n_features:
         order = np.argsort(-colnnz[feats], kind="stable")[:int(n_features)]
