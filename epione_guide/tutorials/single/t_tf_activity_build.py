@@ -78,7 +78,8 @@ peaks. Three further steps follow:
 
 All of this reduces to sparse products over the count matrix. On 100k cells it
 ran slightly faster than background-peak selection plus `compute_deviations`
-(527 vs 574 s) and used about a ninth of the memory (32 vs 284 GB).
+(527 vs 574 s) and used about a ninth of the memory (32 vs 284 GB). On small
+panels the two take about the same time.
 """)
 
 code(r"""
@@ -136,9 +137,8 @@ print(f'{adata.n_obs:,} cells x {adata.n_vars:,} tiles')
 
 code(r"""
 %%time
-epi.tl.iterative_lsi(adata, n_components=30, iterations=2, var_features=10_000, resolution=0.5,
-                     n_neighbors=30, sample_cells_pre=5000, depth_col='n_fragment', seed=1)
-sc.pp.neighbors(adata, use_rep='X_iterative_lsi', n_neighbors=30)
+epi.tl.birmt(adata)                                   # default cell embedding -> obsm['X_birmt']
+sc.pp.neighbors(adata, use_rep='X_birmt', n_neighbors=30)
 sc.tl.leiden(adata, resolution=0.5, flavor='igraph', directed=False, n_iterations=2,
              random_state=0, key_added='leiden')
 sc.tl.umap(adata, random_state=0)
@@ -293,10 +293,11 @@ plt.tight_layout(); display(fig); plt.close(fig)
 
 md(r"""
 The two scores agree closely: the per-motif Spearman correlation across cells
-has a median of 0.97. On this small panel (5k cells, 50k tiles) the two
-runtimes are about equal, and adaptive shrinkage takes about half of
-`tf_activity`'s time. The gap grows with cell number, and `tf_activity`
-needs much less memory because it never densifies the count matrix.
+has a median of 0.97. On this small panel (5k cells, 50k tiles, 4 threads)
+`tf_activity` is slightly slower than chromVAR (see the printed times), and
+adaptive shrinkage takes about half of its time. On 25k and 100k cells it was
+faster (139 vs 343 s and 527 vs 574 s at 8 threads). It also needs much less
+memory, because it never densifies the count matrix.
 """)
 
 md(r"""
