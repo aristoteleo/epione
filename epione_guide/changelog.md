@@ -8,6 +8,9 @@ The format roughly follows Keep a Changelog.
 ## Unreleased
 
 ### Added
+- `epi.tl.e2g_links`, `epi.tl.e2g_features`, `epi.tl.count_insertions` (Tn5 insertions in arbitrary
+  intervals from fragment files), `epi.tl.contact_links`, `epi.tl.contact_gene_score`,
+  `epi.tl.fit_contact_gamma`, `epi.tl.powerlaw_contact`.
 - `epi.single.scan_peaks` (CellScan): a scATAC-native peak caller. Each window is scored by the number of
   distinct cells with a Tn5 insertion, against a depth-aware null and a Tn5-bias-corrected local background.
 - `epi.single.call_peaks(adata, groupby, method=...)`: one entry point that returns a non-overlapping,
@@ -17,6 +20,19 @@ The format roughly follows Keep a Changelog.
   method=...)` as the single entry point.
 
 ### Changed (breaking)
+- **Default enhancer–gene / peak-to-gene links are now `epi.tl.link_peaks_to_genes`** (method `"e2g"`,
+  `epi.tl.e2g_links`): a DEV-trained Bayesian evidence combination of a polymer-contact distance prior,
+  peak-free accessibility (any interval, counted from fragments), ABC and — with RNA — metacell partial
+  correlation. Output keeps the `peak_to_gene` columns plus `score` (posterior); `fdr` = 1 − `score`.
+  The ArchR port `epi.tl.peak_to_gene` is unchanged (`method="peak_to_gene"`), as are
+  `coaccessibility` and `contact_links`.
+  - Held-out (fine-mapped eQTLs, OneK1K on 10x PBMC 10k multiome): AUPRC 0.291 vs ArchR 0.174,
+    SnapATAC2 0.182, Epione `peak_to_gene` 0.156, Signac 0.152, Cicero 0.102, ABC 0.099.
+  - **Not better than distance to TSS** (0.407 there; 0.506 vs 0.300 on GEUVADIS LCL eQTLs with
+    GM12878 scATAC), because 73–75% of positive eQTL elements lie outside accessible chromatin; tie
+    with ABC on GM12878 CRISPRi (16 positives). Report a distance baseline alongside links.
+  - Speed: faster than `peak_to_gene` on the same data and threads (50k cells 16–18 s vs 18–31 s;
+    100k cells 15 s vs 19 s).
 - **Default peak caller is now CellScan** (`call_peaks(method='cellscan')`). The previous behaviour is
   `call_peaks(method='macs3')`, i.e. `epi.single.macs3` + `merge_peaks`, unchanged.
   - Held-out accuracy: on ENCODE HepG2 / MCF-7 / A549 scATAC with bulk ATAC + DNase truth, F1 of the top 50k

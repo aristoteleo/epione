@@ -525,3 +525,129 @@ def e2g_links(adata: AnnData, *, gene_annotation, model: Union[str, dict] = "ful
     feat = e2g_features(adata, gene_annotation=gene_annotation, **kw)
     feat["score"] = e2g_score(feat, m)
     return feat
+
+
+_LINK_METHODS = ("e2g", "peak_to_gene", "contact")
+
+
+def link_peaks_to_genes(
+    adata: AnnData,
+    *,
+    rna: Optional[AnnData] = None,
+    gene_annotation=None,
+    method: str = "e2g",
+    groupby: Optional[str] = None,
+    target=None,
+    max_distance: int = 250_000,
+    use_rep: Optional[str] = None,
+    n_metacells: int = 500,
+    k_neighbors: int = 100,
+    seed: int = 1,
+    total_insertions: Optional[Union[str, np.ndarray]] = None,
+    elements: Optional[pd.DataFrame] = None,
+    fragments=None,
+    key_added: str = "peak_to_gene",
+    inplace: bool = True,
+    n_jobs: Optional[int] = None,
+    verbose: bool = True,
+    **kwargs,
+) -> pd.DataFrame:
+    """Enhancer–gene / peak-to-gene links (Epione's default linker).
+
+    ``method="e2g"`` (default) runs :func:`e2g_links` — the DEV-trained Bayesian
+    evidence combination of a polymer-contact distance prior, peak-free accessibility,
+    ABC and (with ``rna``) metacell partial correlation — with the ``"full"`` model when
+    ``rna`` is given and the ``"atac"`` model otherwise. ``"peak_to_gene"`` is the ArchR
+    ``addPeak2GeneLinks`` port (:func:`epione.tl.peak_to_gene`, use it for ArchR parity)
+    and ``"contact"`` the round-1 :func:`epione.tl.contact_links`.
+
+    The e2g output keeps the column schema of :func:`epione.tl.peak_to_gene` so the
+    plotting helpers work unchanged: ``peak, gene, chrom, peak_start, peak_end, tss,
+    distance`` plus ``score`` (posterior probability of a regulatory link),
+    ``correlation`` (metacell partial correlation; NaN without RNA) and ``fdr`` =
+    1 − ``score`` (the Bayesian local false-discovery rate, so ``fdr <= 0.05`` means a
+    posterior of at least 0.95). Report a distance-to-TSS baseline alongside links: on
+    fine-mapped eQTL benchmarks distance alone remained stronger than every linker.
+
+    Parameters
+    ----------
+    adata
+        Cells × peaks counts (``chr:start-end`` var names) with an embedding in ``obsm``.
+    rna
+        Paired cells × genes counts (same ``obs_names``); enables the covariation term.
+    gene_annotation
+        DataFrame ``gene_name, chrom, start, end, strand`` or a GTF path.
+    groupby, target
+        Cell group whose accessibility defines the activity (default: all cells).
+    max_distance
+        Peak centre – TSS window (bp).
+    use_rep
+        Embedding for metacells (default: ``X_birmt``, else ``X_iterative_lsi``, ``X_lsi``).
+    total_insertions
+        Per-cell genome-wide Tn5 insertions (obs key or array) for the accessibility
+        background; default ``2 × obs['n_fragment']`` (or ``nFrags``) when present, else
+        the in-peak insertions (``adata.X`` row sums; under-estimates the background).
+    elements, fragments
+        Score arbitrary intervals instead of the peaks, counted from fragment files
+        (see :func:`e2g_features`).
+    key_added, inplace
+        Store the table in ``adata.uns[key_added]`` (and ``key_added + '_params'``).
+    kwargs
+        Passed to the selected method.
+    """
+    if method not in _LINK_METHODS:
+        raise ValueError(f"method must be one of {_LINK_METHODS}")
+    if use_rep is None:
+        use_rep = next((k for k in ("X_birmt", "X_iterative_lsi", "X_lsi") if k in adata.obsm), "X_birmt")
+    if method == "peak_to_gene":
+        from ._peak_to_gene import peak_to_gene
+        return peak_to_gene(adata, rna=rna, gene_annotation=gene_annotation, use_rep=use_rep,
+                            n_metacells=n_metacells, k_neighbors=k_neighbors, max_distance=max_distance,
+                            seed=seed, key_added=key_added, inplace=inplace, verbose=verbose, **kwargs)
+    if method == "contact":
+        from ._contact import contact_links
+        return contact_links(adata, rna=rna, gene_annotation=gene_annotation, groupby=groupby, target=target,
+                             max_distance=max_distance, use_rep=use_rep, n_metacells=n_metacells,
+                             k_neighbors=k_neighbors, seed=seed, key_added=key_added, inplace=inplace,
+                             verbose=verbose, **kwargs)
+    model = "full" if rna is not None else "atac"
+    adata0 = adata
+    if elements is None and total_insertions is None:
+        for k in ("n_fragment", "nFrags"):
+            if k in adata.obs:
+                total_insertions = 2.0 * adata.obs[k].to_numpy(np.float64)
+                break
+        else:
+            X = adata.X
+            total_insertions = np.asarray(X.sum(axis=1)).ravel().astype(np.float64)
+            if verbose:
+                console.warn("[link_peaks_to_genes] no per-cell fragment counts in obs; using in-peak "
+                             "insertions as the accessibility background")
+    if rna is not None and list(rna.obs_names) != list(adata.obs_names):
+        common = adata.obs_names.intersection(rna.obs_names)
+        if isinstance(total_insertions, np.ndarray):
+            total_insertions = pd.Series(total_insertions, index=adata.obs_names)[common].to_numpy()
+        adata = adata[common]; rna = rna[common]
+    m = E2G_MODELS[model]
+    out = e2g_links(adata, gene_annotation=gene_annotation, model=model, rna=rna, groupby=groupby,
+                    target=target, max_distance=max_distance, use_rep=use_rep, n_metacells=n_metacells,
+                    k_neighbors=k_neighbors, seed=seed, n_confounders=m["n_confounders"],
+                    total_insertions=total_insertions, elements=elements, fragments=fragments,
+                    n_jobs=n_jobs, verbose=verbose, **kwargs)
+    out = out.rename(columns={"element": "peak", "start": "peak_start", "end": "peak_end"})
+    out["peak"] = out["peak"].astype(str); out["gene"] = out["gene"].astype(str)
+    out["chrom"] = out["chrom"].astype(str)
+    out["correlation"] = out["rho"].astype(np.float32)
+    out["fdr"] = (1.0 - out["score"]).astype(np.float32)
+    gb = _genes_table(gene_annotation).drop_duplicates("gene_name").set_index("gene_name")
+    out["gene_start"] = gb["start"].reindex(out["gene"]).to_numpy()
+    out["gene_end"] = gb["end"].reindex(out["gene"]).to_numpy()
+    out = out[["peak", "gene", "chrom", "peak_start", "peak_end", "gene_start", "gene_end", "tss", "distance", "score",
+               "correlation", "fdr", "log10_dist", "nearest", "log_rank", "log_activity", "log_abc",
+               "log_promoter"]].reset_index(drop=True)
+    if inplace:
+        adata0.uns[key_added] = out
+        adata0.uns[key_added + "_params"] = dict(method="e2g", model=model, use_rep=use_rep,
+                                                n_metacells=int(n_metacells), k_neighbors=int(k_neighbors),
+                                                seed=int(seed), max_distance=int(max_distance))
+    return out

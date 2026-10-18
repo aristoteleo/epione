@@ -243,7 +243,9 @@ epiAneufinder (Ramakrishnan et al., *Nat. Commun.* 2023), ported from the R pack
 |---|---|
 | Differential peaks (DESeq2 / edgeR) | {func}`epione.tl.differential_peaks` |
 | Volcano / MA / cumulative-distance plots | {func}`epione.pl.volcano`, {func}`epione.pl.ma_plot`, {func}`epione.pl.cumulative_distance` |
+| Enhancer–gene links (default) | {func}`epione.tl.link_peaks_to_genes`, {func}`epione.tl.e2g_links`, {func}`epione.tl.e2g_features`, {func}`epione.tl.count_insertions` |
 | ArchR-style peak-to-gene linkage | {func}`epione.tl.peak_to_gene`, {func}`epione.pl.plot_peak2gene` |
+| Polymer-contact links / gene activity | {func}`epione.tl.contact_links`, {func}`epione.tl.contact_gene_score`, {func}`epione.tl.fit_contact_gamma`, {func}`epione.tl.powerlaw_contact` |
 | ArchR marker / peak-to-gene heatmaps | {func}`epione.pl.marker_heatmap`, {func}`epione.pl.marker_heatmap_matrix`, {func}`epione.pl.peak2gene_heatmap`, {func}`epione.pl.prepare_peak2gene_heatmap` |
 | Peak co-accessibility | {func}`epione.tl.coaccessibility` |
 | Gene-activity score matrix | {func}`epione.tl.add_gene_score_matrix` |
