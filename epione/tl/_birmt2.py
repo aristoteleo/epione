@@ -1277,6 +1277,8 @@ def birmt2(
         console.info(f"[birmt2] clusters={len(np.unique(labels))} ({time.time() - t1:.1f}s)")
     info["time_total_s"] = float(time.time() - t0)
     adata.uns[key_added] = info
+    from ..pp._fragment_io import release_free_memory
+    release_free_memory()          # hand freed kernel buffers back to the OS
     return adata
 
 
