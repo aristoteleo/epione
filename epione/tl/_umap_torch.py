@@ -133,3 +133,73 @@ def spectral_layout_torch(graph, dim: int, random_state, *, dev, tol: float = 1e
         return None
     order = torch.argsort(ev, descending=True)[1:k]
     return V[:, order].cpu().numpy()
+
+
+def multi_component_layout_fast(data, graph, n_components, component_labels, dim, random_state,
+                                metric="euclidean", metric_kwds={}, init="random", tol=0.0,
+                                maxiter=0):
+    """umap-learn's ``multi_component_layout`` with the per-component work
+    done on precomputed row index lists instead of a boolean mask over all
+    cells and a fresh ``graph.tocsr()`` per component (O(n_components x nnz),
+    hours for tens of thousands of components). Same sub-matrices in the
+    same order and the same random draws, hence the same layout."""
+    from sklearn.metrics import pairwise_distances
+    from umap import spectral as us
+    labels = np.asarray(component_labels)
+    order = np.argsort(labels, kind="stable")
+    bounds = np.searchsorted(labels[order], np.arange(n_components + 1))
+    groups = [order[bounds[c]:bounds[c + 1]] for c in range(n_components)]
+    result = np.empty((graph.shape[0], dim), dtype=np.float32)
+    if n_components > 2 * dim:
+        meta_embedding = _component_layout_fast(data, n_components, groups, dim, random_state,
+                                                metric=metric, metric_kwds=metric_kwds,
+                                                labels=labels)
+    else:
+        k = int(np.ceil(n_components / 2.0))
+        base = np.hstack([np.eye(k), np.zeros((k, dim - k))])
+        meta_embedding = np.vstack([base, -base])[:n_components]
+    G = graph.tocsr()
+    for label in range(n_components):
+        idx = groups[label]
+        component_graph = G[idx, :].tocsc()
+        component_graph = component_graph[:, idx].tocoo()
+        distances = pairwise_distances([meta_embedding[label]], meta_embedding)
+        data_range = distances[distances > 0.0].min() / 2.0
+        if component_graph.shape[0] < 2 * dim or component_graph.shape[0] <= dim + 1:
+            result[idx] = (random_state.uniform(low=-data_range, high=data_range,
+                                                size=(component_graph.shape[0], dim))
+                           + meta_embedding[label])
+        else:
+            component_embedding = us._spectral_layout(
+                data=None, graph=component_graph, dim=dim, random_state=random_state,
+                metric=metric, metric_kwds=metric_kwds, init=init, tol=tol, maxiter=maxiter)
+            expansion = data_range / np.max(np.abs(component_embedding))
+            component_embedding *= expansion
+            result[idx] = component_embedding + meta_embedding[label]
+    return result
+
+
+def _component_layout_fast(data, n_components, groups, dim, random_state, metric="euclidean",
+                           metric_kwds={}, labels=None):
+    """umap-learn's ``component_layout`` with the centroids taken over
+    precomputed row index lists (same rows, same order, same means)."""
+    from umap import spectral as us
+    if data is None or metric == "precomputed" or callable(metric) or metric not in (
+            "euclidean", "l2", "cosine", "correlation", "manhattan", "l1", "cityblock"):
+        return us.component_layout(data, n_components, labels, dim, random_state,
+                                   metric=metric, metric_kwds=metric_kwds)
+    import scipy.sparse
+    from sklearn.metrics import pairwise_distances
+    from sklearn.manifold import SpectralEmbedding
+    component_centroids = np.empty((n_components, data.shape[1]), dtype=np.float64)
+    for label in range(n_components):
+        component_centroids[label] = data[groups[label]].mean(axis=0)
+    if scipy.sparse.isspmatrix(component_centroids):
+        component_centroids = component_centroids.toarray()
+    distance_matrix = pairwise_distances(component_centroids, metric=metric, **metric_kwds)
+    affinity_matrix = np.exp(-(distance_matrix ** 2))
+    component_embedding = SpectralEmbedding(
+        n_components=dim, affinity="precomputed", random_state=random_state
+    ).fit_transform(affinity_matrix)
+    component_embedding /= component_embedding.max()
+    return component_embedding

@@ -232,3 +232,26 @@ def test_memory_limit_and_auto_store(monkeypatch, tmp_path):
     from epione.pp._fragment_io import memory_limit_bytes
     lim = memory_limit_bytes()
     assert 0 < lim <= (1 << 62)
+
+
+def test_multi_component_layout_fast_identical():
+    """The fast multi-component initialisation equals umap-learn's."""
+    import scipy.sparse as sp
+    from umap.spectral import multi_component_layout
+    from epione.tl._umap_torch import multi_component_layout_fast
+    rng = np.random.default_rng(0)
+    blocks, sizes = [], [40, 3, 25, 1, 12, 2, 30, 5, 2, 9]
+    for n in sizes:
+        A = sp.random(n, n, density=min(1.0, 6.0 / n), random_state=int(rng.integers(1e6)))
+        A = A + A.T + sp.diags(np.zeros(n))
+        blocks.append(A)
+    G = sp.block_diag(blocks).tocsr()
+    G.data[:] = np.abs(G.data) + 0.1
+    labels = np.repeat(np.arange(len(sizes)), sizes)
+    perm = rng.permutation(G.shape[0])            # interleave components
+    G = G[perm][:, perm].tocoo()
+    labels = labels[perm]
+    data = rng.normal(size=(G.shape[0], 5))
+    a = multi_component_layout(data, G, len(sizes), labels, 2, np.random.RandomState(0))
+    b = multi_component_layout_fast(data, G, len(sizes), labels, 2, np.random.RandomState(0))
+    np.testing.assert_array_equal(a, b)

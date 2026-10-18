@@ -17,20 +17,32 @@ _LegacyRandom = int | np.random.RandomState | None
 
 
 class _layout_on:
-    """Context: route umap-learn's ``optimize_layout_euclidean`` (called by
-    ``simplicial_set_embedding`` after its initialisation / graph pruning /
-    epoch schedule) to :func:`epione.tl._umap_torch.optimize_layout_torch`
-    on a torch device; no-op on the CPU."""
+    """Context for ``simplicial_set_embedding``.
 
-    def __init__(self, device: str):
+    Always: umap-learn's ``multi_component_layout`` (initialisation of a
+    graph that is disconnected after umap's edge pruning) is replaced by
+    :func:`epione.tl._umap_torch.multi_component_layout_fast` -- the same
+    sub-graphs, random draws and layout, without the per-component pass over
+    the whole graph (hours with tens of thousands of components).
+
+    On a torch device, additionally: the spectral initialisation (torch
+    LOBPCG; for a graph disconnected by pruning, on the unpruned connected
+    graph ``full_graph``) and the SGD epochs run on the device."""
+
+    def __init__(self, device: str, full_graph=None):
         self.device = device
+        self.full_graph = full_graph
 
     def __enter__(self):
+        import umap.umap_ as uu
+        import umap.spectral as us
+        from ._umap_torch import multi_component_layout_fast
+        self._orig_mcl = us.multi_component_layout
+        us.multi_component_layout = multi_component_layout_fast
         if self.device == "cpu":
             return self
-        import umap.umap_ as uu
         from ..core._gpu import torch_device
-        from ._umap_torch import optimize_layout_torch
+        from ._umap_torch import optimize_layout_torch, spectral_layout_torch
         dev = torch_device(self.device)
         self._orig = uu.optimize_layout_euclidean
 
@@ -46,11 +58,14 @@ class _layout_on:
             return head_embedding
 
         self._orig_spec = uu.spectral_layout
+        full = self.full_graph
 
         def _spec(data, graph, dim, random_state, **kw):
-            from ._umap_torch import spectral_layout_torch
             out = spectral_layout_torch(graph, dim, random_state, dev=dev)
-            if out is None:       # disconnected graph / no convergence: umap-learn
+            if out is None and full is not None:
+                # disconnected after pruning: spectral init of the unpruned graph
+                out = spectral_layout_torch(full, dim, random_state, dev=dev)
+            if out is None:       # disconnected / no convergence: umap-learn
                 return self._orig_spec(data, graph, dim, random_state, **kw)
             return out
 
@@ -59,6 +74,8 @@ class _layout_on:
         return self
 
     def __exit__(self, *exc):
+        import umap.spectral as us
+        us.multi_component_layout = self._orig_mcl
         if self.device != "cpu":
             import umap.umap_ as uu
             uu.optimize_layout_euclidean = self._orig
@@ -383,7 +400,8 @@ def umap(
         from ..core._gpu import resolve_device
         device = resolve_device(device)
         # Run UMAP embedding (the SGD on the GPU for a torch device)
-        with _layout_on(device):
+        full = neighbors["connectivities"].copy() if device != "cpu" else None
+        with _layout_on(device, full_graph=full):
             X_umap, _ = simplicial_set_embedding(
                 data=X,
                 graph=connectivities,
