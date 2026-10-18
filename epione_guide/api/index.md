@@ -156,14 +156,15 @@ linked above.
 | ATAC + RNA integration, SpatialGlue (Long *et al.* 2024; AGPL-3.0 port, `pip install epione[spatial]`) | {func}`epione.tl.spatialglue`, {func}`epione.tl.spatialglue_preprocess` |
 | Example data | {func}`epione.datasets.zhang2023_hippocampus_atac_rna`, {func}`epione.datasets.spatialglue_mouse_brain` |
 
-### chromVAR & motif analysis
+### TF activity, chromVAR & motif analysis
 
 | Task | Functions |
 |---|---|
 | Build / query motif database | {func}`epione.tl.build_motif_database`, {func}`epione.tl.query_motif_database` |
-| Annotate peaks × motif matches | {func}`epione.tl.add_motif_matrix` |
-| GC-matched background peaks | {func}`epione.tl.add_background_peaks` |
-| chromVAR deviations / z-scores | {func}`epione.tl.compute_deviations` |
+| Annotate peaks × motif matches | {func}`epione.tl.add_motif_matrix`, {func}`epione.tl.add_motif_occupancy` (+ occupancy weights) |
+| **Per-cell TF activity (default)** | {func}`epione.tl.tf_activity` |
+| GC-matched background peaks (chromVAR) | {func}`epione.tl.add_background_peaks` |
+| chromVAR deviations / z-scores (chromVAR / ArchR-compatible) | {func}`epione.tl.compute_deviations` |
 | Motif variability ranking (ArchR `getVarDeviations`) | {func}`epione.tl.var_deviations`, {func}`epione.pl.var_dev` |
 | Correlate two matrices over kNN groups (ArchR `correlateMatrices`) | {func}`epione.tl.correlate_matrices`, {func}`epione.tl.group_means` |
 | Positive TF regulators (ArchR book recipe) | {func}`epione.tl.positive_tf_regulators`, {func}`epione.pl.tf_regulators` |

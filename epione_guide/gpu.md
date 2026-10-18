@@ -26,6 +26,11 @@ epi.tl.compute_deviations(adata, device="cuda")
 | {func}`epione.tl.add_motif_matrix` | the PWM scan: a float32 convolution of the MOODS log-odds matrices over the one-hot sequence, then exact float64 rescoring, in MOODS's order, of the few windows within rounding distance of the threshold | identical hit matrix (MOODS's edge rules are reproduced too) |
 | {func}`epione.tl.peak_to_gene` | metacell aggregation, per-pair correlation | correlations agree to float32 rounding |
 
+The default per-cell TF activity, {func}`epione.tl.tf_activity`, has no GPU
+path: it runs on the CPU with numba sparse kernels and no background peaks
+(about 2.5x faster than background peaks + `compute_deviations` on 25k cells,
+8 threads). The GPU path above is for chromVAR deviations.
+
 Gene scores ({func}`epione.tl.add_gene_score_matrix`) and footprints stay on the
 CPU: their cost is reading the fragment file, not arithmetic.
 
