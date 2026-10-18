@@ -605,6 +605,7 @@ def birmt(
     seed: int = 0,
     n_jobs: Optional[int] = None,
     version: Literal[1, 2] = 2,
+    device: str = "cpu",
     **v2_options,
 ) -> AnnData:
     """BiRMT embedding and clustering of a cells x features accessibility
@@ -661,6 +662,13 @@ def birmt(
         Step 4 (Markov-stability resolution selection); grid defaults to
         :func:`default_resolutions`. ``cluster=None``: ``True`` for
         ``version=1``, ``False`` for ``version=2``.
+    device
+        ``version=2`` only: ``'cpu'`` (default), ``'cuda'`` / ``'cuda:N'``
+        or ``'auto'`` -- GPU sparse products for the biwhitening and the
+        Krylov SVD (float64; same rank, equal to the CPU result up to
+        round-off)
+        (:func:`epione.tl._birmt2.birmt2`; ``gpu_memory_gb`` sets the device
+        budget). Falls back to the CPU when CUDA is unavailable.
 
     Returns
     -------
@@ -679,11 +687,13 @@ def birmt(
             v2_options["shrinkage"] = shrinkage
         return birmt2(adata, layer=layer, min_cells=min_cells, k_max=k_max, n_neighbors=n_neighbors,
                       cluster=cluster, resolutions=resolutions, n_seeds=n_seeds, key_added=key_added,
-                      cluster_key=cluster_key, seed=seed, n_jobs=n_jobs, **v2_options)
+                      cluster_key=cluster_key, seed=seed, n_jobs=n_jobs, device=device, **v2_options)
     if version != 1:
         raise ValueError(f"unknown BiRMT version {version!r}")
     if v2_options:
         raise TypeError(f"unexpected arguments for version=1: {sorted(v2_options)}")
+    if device is not None and str(device).lower() != "cpu":
+        raise ValueError("device= is only supported by version=2 (BiRMT-2)")
     if shrinkage is None:
         shrinkage = "frobenius"
     if cluster is None:

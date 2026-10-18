@@ -560,8 +560,9 @@ def block_krylov_svd(op, n_vectors: int, *, block: int, seed: int = 0):
     Om = rng.standard_normal((n, block))
     Z, _ = np.linalg.qr(op.matmat(Om))
     blocks = [Z]
+    normal = getattr(op, "normal_matmat", None)      # GPU operator: fused, same operations
     for _ in range(q):
-        Z = op.matmat(op.rmatmat(Z))
+        Z = normal(Z) if normal is not None else op.matmat(op.rmatmat(Z))
         # orthogonalise against the previous blocks (block Gram-Schmidt x2)
         for _ in range(2):
             for Bk in blocks:
@@ -791,6 +792,7 @@ def denoise_level(
 def _fast_denoise_fit(
     Y: sp.csr_matrix, *, k_max: int = 128, shrinkage: str = "score", block: int = 16,
     n_subsample: int = 2000, tol: float = 1e-6, seed: int = 0, n_jobs: Optional[int] = None,
+    device=None, gpu_budget: Optional[int] = None,
 ) -> dict:
     """Level-0 BiRMT on a binary matrix with the matrix-free kernels.
 
@@ -802,6 +804,11 @@ def _fast_denoise_fit(
     edge, which is a lower bound in expectation for the full matrix) and is
     doubled while the MP rank comes within one block of the Krylov
     dimension.
+
+    ``device``: a CUDA :class:`torch.device` runs the sparse products of the
+    Sinkhorn scaling and of the Krylov iteration on the GPU
+    (:class:`epione.tl._birmt2_gpu.CudaBinaryBiwhitened`, float64,
+    deterministic); ``None`` = CPU.
     """
     import time
     tt = [time.time()]
@@ -811,9 +818,22 @@ def _fast_denoise_fit(
     Y = as_pattern(Y)
     Yt = Y.transpose()
     tt.append(time.time())
-    x, y, it = sinkhorn_binary(Y, Yt, tol=tol)
+    gop = None
+    if device is not None:
+        from ._birmt2_gpu import CudaBinaryBiwhitened
+        try:
+            gop = CudaBinaryBiwhitened(Y, Yt, device, budget=gpu_budget, block=block, k_max=k_max)
+        except MemoryError as e:
+            console.warn(f"[birmt2] {e}; running on the CPU")
+    if gop is not None:
+        x, y, it = gop.sinkhorn(tol=tol)
+        gop.set_scaling(x, y)
+        op = gop
+    else:
+        x, y, it = sinkhorn_binary(Y, Yt, tol=tol)
     tt.append(time.time())
-    op = BinaryBiwhitened(Y, x, y, Yt)
+    if gop is None:
+        op = BinaryBiwhitened(Y, x, y, Yt)
     # alpha (Eq. 24) and the rank pre-estimate on a cell subsample
     rng = np.random.default_rng(seed)
     K = _fast_kernels()
@@ -848,7 +868,8 @@ def _fast_denoise_fit(
             break
         nv = int(min(2 * nv, 2 * k_max))
     tt.append(time.time())
-    console.info("[birmt2] level-0 timings (s) transpose/sinkhorn/subsample/gram/eig/-/krylov: " + " ".join(f"{b - a:.1f}" for a, b in zip(tt[:-1], tt[1:])))
+    console.info("[birmt2] level-0 timings (s) transpose/sinkhorn/subsample/gram/eig/-/krylov: " + " ".join(f"{b - a:.1f}" for a, b in zip(tt[:-1], tt[1:]))
+                 + ("" if gop is None else f" (GPU, peak {gop.peak_bytes() / 2**30:.2f} GiB)"))
     capped = r > k_max
     r = min(r, k_max)
     if r < 1:
@@ -865,12 +886,15 @@ def _fast_denoise_fit(
     return dict(U=U[:, :r][:, keep], s=s_sh[keep], s_raw=sv[:r][keep], row_scale=1.0 / (op.sx * depth), rank=r,
                 capped=bool(capped), alpha=alpha, beta=0.0, ks=float(ks_to_mp(ev / alpha, g)),
                 rank_pre=r0, krylov_dim=int(U.shape[1]), sinkhorn_iter=int(it),
-                singular_values=sv, n_features=int(n), op=op)
+                singular_values=sv, n_features=int(n), op=op,
+                timings=np.diff(tt), device="cpu" if gop is None else str(device),
+                gpu_peak_bytes=None if gop is None else gop.peak_bytes())
 
 
 def fast_denoise_binary(
     Y: sp.csr_matrix, *, k_max: int = 128, shrinkage: str = "score", block: int = 16,
     n_subsample: int = 2000, tol: float = 1e-6, seed: int = 0, n_jobs: Optional[int] = None,
+    device=None, gpu_budget: Optional[int] = None,
 ) -> dict:
     """Level-0 BiRMT on a binary matrix (see :func:`_fast_denoise_fit`).
 
@@ -889,7 +913,8 @@ def fast_denoise_binary(
     low = depth < (n / m)
     if not low.any():
         return _fast_denoise_fit(Y, k_max=k_max, shrinkage=shrinkage, block=block,
-                                 n_subsample=n_subsample, tol=tol, seed=seed, n_jobs=n_jobs)
+                                 n_subsample=n_subsample, tol=tol, seed=seed, n_jobs=n_jobs,
+                                 device=device, gpu_budget=gpu_budget)
     fit_rows = np.flatnonzero(~low)
     console.warn(f"[birmt2] {int(low.sum()):,} rows have fewer than n/m = {n / m:.1f} non-zeros "
                  "(Sinkhorn-infeasible); fitted out of sample")
@@ -898,7 +923,8 @@ def fast_denoise_binary(
     cols = np.flatnonzero(Yf.col_counts() > 0)
     Yf = Yf.take(None, cols)
     lv = _fast_denoise_fit(Yf, k_max=k_max, shrinkage=shrinkage, block=block,
-                           n_subsample=n_subsample, tol=tol, seed=seed, n_jobs=n_jobs)
+                           n_subsample=n_subsample, tol=tol, seed=seed, n_jobs=n_jobs,
+                           device=device, gpu_budget=gpu_budget)
     del Yf
     op = lv["op"]
     V = op.rmatmat(lv["U"]) / lv["s_raw"][None, :]            # right singular vectors (cols)
@@ -1135,6 +1161,8 @@ def birmt2(
     cluster_key: str = "birmt",
     seed: int = 0,
     n_jobs: Optional[int] = None,
+    device: str = "cpu",
+    gpu_memory_gb: Optional[float] = None,
 ) -> AnnData:
     """BiRMT-2 embedding and clustering (see module docstring). Called by
     ``epi.tl.birmt(version=2)``.
@@ -1158,10 +1186,24 @@ def birmt2(
         ``'markov1'``: one Leiden run on ``W`` at resolution ``resolution``
         (Markov time ``1/resolution``; :func:`leiden_markov`);
         ``'markov_stability'``: the v1 scan over ``resolutions`` x ``n_seeds``.
+    device
+        ``'cpu'`` (default), ``'cuda'`` / ``'cuda:N'`` or ``'auto'``: run the
+        sparse products of the Sinkhorn scaling and the block Krylov SVD
+        (``svd='krylov'``) on the GPU (:mod:`epione.tl._birmt2_gpu`), in
+        float64 with the CPU kernels' summation order within segments of
+        1,024 entries: deterministic, same rank, and equal to
+        ``device='cpu'`` up to float64 round-off. Falls back to the CPU with
+        a warning when CUDA (or NVRTC) is unavailable.
+    gpu_memory_gb
+        Device memory budget of the GPU path (GiB). Default:
+        ``EPIONE_GPU_MEMORY_GB`` if set, else ``min(12, half the free
+        memory)``. Index blocks beyond it are streamed from the host.
     """
     import time
     t0 = time.time()
     nt = B1._set_threads(n_jobs)
+    dev = _resolve_device(device) if svd == "krylov" else None
+    gbudget = None if gpu_memory_gb is None else int(float(gpu_memory_gb) * 2**30)
     X = adata.layers[layer] if layer is not None else adata.X
     if type(X).__name__ in ("BackedArray", "_SubsetBackedArray", "TransformedBackedArray",
                             "ScaledBackedArray"):
@@ -1186,7 +1228,7 @@ def birmt2(
                  f"shrinkage={shrinkage} tiles={list(tile_sizes)} seq_lambda={seq_lambda}")
     if svd == "krylov":
         lv0 = fast_denoise_binary(Y0, k_max=k_max, shrinkage=shrinkage, block=krylov_block,
-                                  seed=seed, n_jobs=nt)
+                                  seed=seed, n_jobs=nt, device=dev, gpu_budget=gbudget)
     else:
         lv0 = denoise_level(Y0.tocsr(), k_max=k_max, shrinkage=shrinkage, seed=seed, n_jobs=nt)
     M = None
@@ -1207,7 +1249,7 @@ def birmt2(
         M, _ = tikhonov_transform(Vt, L, float(seq_lambda))
         seq_info = dict(n_no_sequence=sinfo["n_no_sequence"], mean_degree=sinfo["mean_degree"],
                         M_diag=np.diag(M).copy())
-    lv0.pop("op", None)
+    _drop_op(lv0)
     levels = []
     Z0 = lv0["U"] * lv0["s"][None, :]
     if M is not None:
@@ -1223,8 +1265,8 @@ def birmt2(
             Yt = sp.csr_matrix((np.ones(Yt.nnz, np.float32), Yt.indices, Yt.indptr), shape=Yt.shape)
             try:
                 lv = fast_denoise_binary(Yt, k_max=k_max, shrinkage=shrinkage, block=krylov_block,
-                                         seed=seed, n_jobs=nt)
-                lv.pop("op", None)
+                                         seed=seed, n_jobs=nt, device=dev, gpu_budget=gbudget)
+                _drop_op(lv)
             except ValueError:
                 lv = {}
         else:
@@ -1248,7 +1290,14 @@ def birmt2(
             f"{k}={v:.4g}" if isinstance(v, float) else f"{k}={v}" for k, v in lv["info"].items())
             + f" ({t1 - t0:.1f}s)")
     adata.obsm[key_added] = np.asarray(Z, dtype=np.float32)
-    info = dict(version=2, levels=[dict(name=lv["name"], **lv["info"], energy=lv["energy"]) for lv in levels],
+    lvt = lv0.get("timings")
+    extra = dict(device=lv0.get("device", "cpu"), gpu_peak_bytes=lv0.get("gpu_peak_bytes"),
+                 sinkhorn_iter=lv0.get("sinkhorn_iter"),
+                 timings_level0=None if lvt is None else dict(zip(
+                     ("transpose", "sinkhorn", "subsample", "gram", "eig", "setup", "krylov"),
+                     map(float, lvt))))
+    info = dict(version=2, **{k: v for k, v in extra.items() if v is not None},
+                levels=[dict(name=lv["name"], **lv["info"], energy=lv["energy"]) for lv in levels],
                 n_dims=int(Z.shape[1]), min_cells=mc, seq=seq_info, time_embedding_s=float(t1 - t0),
                 rank_pre=lv0.get("rank_pre"), krylov_dim=lv0.get("krylov_dim"),
                 params=dict(shrinkage=shrinkage, tile_sizes=list(map(int, tile_sizes)), tile_binarize=tile_binarize,
@@ -1280,6 +1329,39 @@ def birmt2(
     from ..pp._fragment_io import release_free_memory
     release_free_memory()          # hand freed kernel buffers back to the OS
     return adata
+
+
+def _resolve_device(device):
+    """torch CUDA device for the GPU path, or ``None`` for the CPU (with a
+    warning when a GPU was requested but cannot be used)."""
+    if device is None or str(device).strip().lower() == "cpu":
+        return None
+    from ..core._gpu import resolve_device, torch_device
+    try:
+        r = resolve_device(device)
+    except (ImportError, RuntimeError) as e:
+        console.warn(f"[birmt2] device={device!r} unavailable ({e}); running on the CPU")
+        return None
+    if r == "cpu":
+        return None
+    if r == "torch-cpu":
+        console.warn("[birmt2] the GPU path needs CUDA; running on the CPU")
+        return None
+    dev = torch_device(r)
+    from ._birmt2_gpu import gpu_unavailable_reason
+    why = gpu_unavailable_reason(dev)
+    if why is not None:
+        console.warn(f"[birmt2] device={device!r}: {why}; running on the CPU")
+        return None
+    return dev
+
+
+def _drop_op(lv: dict) -> None:
+    """Remove the level's operator and free its GPU memory / page locks."""
+    op = lv.pop("op", None)
+    close = getattr(op, "close", None)
+    if close is not None:
+        close()
 
 
 def ds_kernel_fast(Z: np.ndarray, *, n_neighbors: int = 30, tol: float = 1e-6,
