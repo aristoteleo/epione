@@ -14,7 +14,7 @@ def clusters(
     hierarchical_kwargs=None,
     use_rep:str='X_pca',
     key_added:str='clusters',
-    backend:str='epione',
+    backend:str='igraph',
     **kwargs
 ):
     r"""
@@ -40,19 +40,22 @@ def clusters(
         Use the representation of the data.
     key_added : str
         Key to store the cluster labels.
-    backend : {'epione', 'rapids', 'igraph'}
-        ``'epione'`` (default) runs the implementations below.
-        ``'igraph'`` (``method='leiden'``) runs igraph's C Leiden
-        (``flavor='igraph'``, ``n_iterations=2``, undirected; scanpy's
-        announced default) -- the RAPIDS-free fast path for large graphs:
-        ~85x faster than the default leidenalg at 100k cells, where
-        leidenalg takes over an hour at 1M cells. A different optimiser,
-        so the partition differs from leidenalg's (as cuGraph's does).
-        ``'rapids'`` (``method='leiden'`` only) runs cuGraph Leiden through
+    backend : {'igraph', 'leidenalg', 'rapids'}
+        Leiden implementation (``method='leiden'``; ignored otherwise).
+        ``'igraph'`` (default): igraph's C Leiden with the objective of the
+        previous default -- modularity (≡ leidenalg's RBConfiguration) at
+        ``resolution`` (default 1), edge weights, iterated to convergence
+        (``n_iterations=-1``), undirected graph. On 50k / 100k-cell graphs
+        its partitions agree with leidenalg's as closely as leidenalg's own
+        seeds agree with each other (ARI ~0.6) at equal or higher modularity,
+        8-10x faster (~25 s vs ~4 min at 100k cells; leidenalg needs hours at
+        1M). ``'leidenalg'`` (alias ``'epione'``): the previous default,
+        :func:`epione.tl.leiden` with leidenalg (``leiden_kwargs`` passed
+        through). ``'rapids'``: cuGraph Leiden through
         :func:`rapids_singlecell.tl.leiden` on the same neighbour graph;
-        needs ``rapids_singlecell`` installed (see the GPU acceleration
-        page). ``leiden_kwargs`` are passed through except ``flavor`` /
-        ``directed`` / ``partition_type``, which have no cuGraph equivalent.
+        needs ``rapids_singlecell`` (see the GPU acceleration page);
+        ``leiden_kwargs`` are passed through except ``flavor`` /
+        ``directed`` / ``partition_type``.
     **kwargs
         Additional arguments for clustering algorithm.
         
@@ -143,8 +146,9 @@ def clusters(
         random_state: int
             Random seed for reproducibility.
     """
-    if backend not in ('epione', 'rapids', 'igraph'):
-        raise ValueError(f"backend must be 'epione', 'rapids' or 'igraph', got {backend!r}")
+    if backend not in ('igraph', 'leidenalg', 'epione', 'rapids'):
+        raise ValueError(
+            f"backend must be 'igraph', 'leidenalg' or 'rapids', got {backend!r}")
     if backend == 'rapids' and method != 'leiden':
         raise ValueError("backend='rapids' is available for method='leiden' only")
     if method == 'leiden':
@@ -155,12 +159,17 @@ def clusters(
         else:
             leiden_kwargs['key_added'] = key_added
         if backend == 'igraph':
-            # igraph's C Leiden (scanpy's flavor='igraph', 2 iterations): the
-            # RAPIDS-free stand-in for cuGraph Leiden on large graphs
+            # igraph's C Leiden on the objective of the leidenalg call below:
+            # modularity == RBConfiguration at the same resolution, weighted,
+            # iterated to convergence, undirected
             kw = dict(leiden_kwargs)
-            kw.setdefault('flavor', 'igraph')
-            kw.setdefault('n_iterations', 2)
+            if kw.get('flavor', 'igraph') != 'igraph':
+                raise ValueError("backend='igraph' runs flavor='igraph'; use "
+                                 "backend='leidenalg' for leidenalg")
+            kw['flavor'] = 'igraph'
+            kw.setdefault('n_iterations', -1)
             kw.setdefault('directed', False)
+            kw.pop('partition_type', None)
             return leiden(adata, **kw)
         if backend == 'rapids':
             from ..core._rapids import rapids_leiden

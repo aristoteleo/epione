@@ -186,9 +186,174 @@ def _fast_kernels():
                     q += 1
         return newp, newi
 
+    @nb.njit(parallel=True, cache=True)
+    def pat_transpose_par(indptr, indices, n_cols, n_chunks):
+        # pat_transpose on n_chunks contiguous row ranges: per-chunk column
+        # counts give every (chunk, column) its write offset, so each column
+        # lists its rows in increasing order -- the same arrays as the
+        # sequential counting sort.
+        n_rows = indptr.shape[0] - 1
+        bounds = np.empty(n_chunks + 1, dtype=np.int64)
+        tot = indptr[n_rows]
+        r = 0
+        for c in range(n_chunks + 1):
+            target = (tot * c) // n_chunks
+            while r < n_rows and indptr[r] < target:
+                r += 1
+            bounds[c] = r
+        bounds[n_chunks] = n_rows
+        cnt = np.zeros((n_chunks, n_cols), dtype=np.int64)
+        for c in nb.prange(n_chunks):
+            for i in range(bounds[c], bounds[c + 1]):
+                for p in range(indptr[i], indptr[i + 1]):
+                    cnt[c, indices[p]] += 1
+        tp = np.zeros(n_cols + 1, dtype=np.int64)
+        for j in range(n_cols):
+            tp[j + 1] = tp[j]
+            for c in range(n_chunks):
+                tp[j + 1] += cnt[c, j]
+        # cnt[c, j] <- write position of chunk c in column j
+        for j in nb.prange(n_cols):
+            pos = tp[j]
+            for c in range(n_chunks):
+                k = cnt[c, j]
+                cnt[c, j] = pos
+                pos += k
+        ti = np.empty(indices.shape[0], dtype=np.int32)
+        for c in nb.prange(n_chunks):
+            for i in range(bounds[c], bounds[c + 1]):
+                for p in range(indptr[i], indptr[i + 1]):
+                    j = indices[p]
+                    ti[cnt[c, j]] = i
+                    cnt[c, j] += 1
+        return tp, ti
+
+    @nb.njit(parallel=True, cache=True)
+    def pat_select(indptr, indices, rows, remap, use_remap):
+        # rows `rows` (in that order) with columns relabelled by remap (>= 0
+        # kept), entry order preserved -- SciPy's Y[rows][:, cols] pattern
+        n = rows.shape[0]
+        cnt = np.zeros(n + 1, dtype=np.int64)
+        for o in nb.prange(n):
+            i = rows[o]
+            if use_remap:
+                c = 0
+                for p in range(indptr[i], indptr[i + 1]):
+                    if remap[indices[p]] >= 0:
+                        c += 1
+                cnt[o + 1] = c
+            else:
+                cnt[o + 1] = indptr[i + 1] - indptr[i]
+        newp = np.cumsum(cnt)
+        newi = np.empty(newp[-1], dtype=np.int32)
+        for o in nb.prange(n):
+            i = rows[o]
+            q = newp[o]
+            for p in range(indptr[i], indptr[i + 1]):
+                j = remap[indices[p]] if use_remap else indices[p]
+                if j >= 0:
+                    newi[q] = j
+                    q += 1
+        return newp, newi
+
+    @nb.njit(parallel=True, cache=True)
+    def col_count_par(indices, n_cols, n_chunks):
+        n = indices.shape[0]
+        part = np.zeros((n_chunks, n_cols), dtype=np.int64)
+        for c in nb.prange(n_chunks):
+            a = (n * c) // n_chunks
+            b = (n * (c + 1)) // n_chunks
+            for p in range(a, b):
+                part[c, indices[p]] += 1
+        out = np.zeros(n_cols, dtype=np.int64)
+        for j in nb.prange(n_cols):
+            s = 0
+            for c in range(n_chunks):
+                s += part[c, j]
+            out[j] = s
+        return out
+
     _FK.update(pat_sum=pat_sum, pat_mm=pat_mm, pat_transpose=pat_transpose, pat_gram=pat_gram,
-               pat_filter=pat_filter)
+               pat_filter=pat_filter, pat_transpose_par=pat_transpose_par, pat_select=pat_select,
+               col_count_par=col_count_par)
     return _FK
+
+
+def _n_chunks() -> int:
+    import numba as nb
+    return max(1, min(16, nb.get_num_threads()))
+
+
+class Pattern:
+    """Sparsity pattern of a binary matrix: CSR ``indptr`` (int64 when needed)
+    and ``int32`` column ``indices``, no value array. Every BiRMT-2 kernel
+    reads only these arrays, so the pattern replaces the float32 0/1
+    ``csr_matrix`` (whose all-ones ``data`` and, above 2**31 non-zeros,
+    int64-upcast ``indices`` cost 8-12 bytes per non-zero)."""
+
+    def __init__(self, indptr, indices, shape):
+        self.indptr = indptr
+        self.indices = indices
+        self.shape = tuple(int(v) for v in shape)
+
+    @property
+    def nnz(self) -> int:
+        return int(self.indptr[-1])
+
+    def transpose(self) -> "Pattern":
+        tp, ti = _fast_kernels()["pat_transpose_par"](self.indptr, self.indices, self.shape[1],
+                                                      _n_chunks())
+        return Pattern(tp, ti, self.shape[::-1])
+
+    def take(self, rows=None, cols=None) -> "Pattern":
+        """Pattern of ``Y[rows][:, cols]`` (``cols`` sorted; ``None`` = all)."""
+        rows = (np.arange(self.shape[0], dtype=np.int64) if rows is None
+                else np.asarray(rows, dtype=np.int64))
+        if cols is None:
+            remap, use = np.zeros(1, np.int64), False
+            ncol = self.shape[1]
+        else:
+            cols = np.asarray(cols)
+            remap = np.full(self.shape[1], -1, np.int64)
+            remap[cols] = np.arange(len(cols))
+            use, ncol = True, len(cols)
+        newp, newi = _fast_kernels()["pat_select"](self.indptr, self.indices, rows, remap, use)
+        return Pattern(newp, newi, (len(rows), ncol))
+
+    def col_counts(self) -> np.ndarray:
+        return _fast_kernels()["col_count_par"](self.indices, self.shape[1], _n_chunks())
+
+    def matvec(self, v: np.ndarray) -> np.ndarray:
+        """``Y @ v`` (float64; = SciPy's float32-ones CSR times ``v``)."""
+        return _fast_kernels()["pat_sum"](self.indptr, self.indices,
+                                         np.ascontiguousarray(v, dtype=np.float64))
+
+    def matmat(self, V: np.ndarray) -> np.ndarray:
+        V = np.ascontiguousarray(V, dtype=np.float64)
+        out = np.empty((self.shape[0], V.shape[1]))
+        _fast_kernels()["pat_mm"](self.indptr, self.indices, V, out)
+        return out
+
+    def tocsr(self) -> sp.csr_matrix:
+        """float32 0/1 ``csr_matrix`` (only for the optional tile / sequence /
+        ``svd='v1'`` paths)."""
+        return sp.csr_matrix((np.ones(self.nnz, dtype=np.float32), self.indices, self.indptr),
+                             shape=self.shape)
+
+    def toarray(self):
+        return self.tocsr().toarray()
+
+    def __matmul__(self, other):
+        return self.tocsr() @ other
+
+
+def as_pattern(Y) -> Pattern:
+    """Pattern of a binary ``csr_matrix`` (or a :class:`Pattern`)."""
+    if isinstance(Y, Pattern):
+        return Y
+    Y = sp.csr_matrix(Y)
+    ind = Y.indices if Y.indices.dtype == np.int32 else Y.indices.astype(np.int32)
+    return Pattern(Y.indptr, ind, Y.shape)
 
 
 class BinaryBiwhitened:
@@ -200,7 +365,7 @@ class BinaryBiwhitened:
         self.shape = Y.shape
         self.rp, self.ri = Y.indptr, Y.indices
         if Yt is None:
-            Yt = Y.T.tocsr()
+            Yt = Y.transpose() if isinstance(Y, Pattern) else Y.T.tocsr()
         self.cp, self.ci = Yt.indptr, Yt.indices
         self.sx = np.sqrt(np.asarray(x, np.float64))
         self.sy = np.sqrt(np.asarray(y, np.float64))
@@ -517,9 +682,9 @@ def _fast_denoise_fit(
     tt = [time.time()]
     nt = B1._set_threads(n_jobs)
     m, n = Y.shape
-    Y = sp.csr_matrix((np.ones(Y.nnz, np.float32), Y.indices, Y.indptr), shape=Y.shape)
-    tp, ti = _fast_kernels()["pat_transpose"](Y.indptr, Y.indices, n)
-    Yt = sp.csr_matrix((np.ones(len(ti), np.float32), ti, tp), shape=(n, m))
+    # pattern only: int32 indices of Y and of its transpose, no value arrays
+    Y = as_pattern(Y)
+    Yt = Y.transpose()
     tt.append(time.time())
     x, y, it = sinkhorn_binary(Y, Yt, tol=tol)
     tt.append(time.time())
@@ -529,13 +694,12 @@ def _fast_denoise_fit(
     K = _fast_kernels()
     if m <= n:
         idx = np.sort(rng.choice(m, size=min(m, int(n_subsample)), replace=False))
-        Sr = Y[idx]
+        Sr = Y.take(idx)
         w_row, w_col, bdim = op.sx[idx], op.sy, n
     else:
         idx = np.sort(rng.choice(n, size=min(n, int(n_subsample)), replace=False))
-        Sr = Yt[idx]
+        Sr = Yt.take(idx)
         w_row, w_col, bdim = op.sy[idx], op.sx, m
-    Sr = sp.csr_matrix(Sr)
     tt.append(time.time())
     sc_p, sc_i = K["pat_transpose"](Sr.indptr, Sr.indices, Sr.shape[1])
     G = K["pat_gram"](Sr.indptr, Sr.indices, sc_p, sc_i, w_row, w_col, Sr.shape[0])
@@ -604,19 +768,20 @@ def fast_denoise_binary(
     fit_rows = np.flatnonzero(~low)
     console.warn(f"[birmt2] {int(low.sum()):,} rows have fewer than n/m = {n / m:.1f} non-zeros "
                  "(Sinkhorn-infeasible); fitted out of sample")
-    Yf = Y[fit_rows].tocsr()
-    ok = np.diff(Yf.tocsc().indptr) > 0
-    cols = np.flatnonzero(ok)
-    Yf = Yf[:, cols].tocsr()
+    Y = as_pattern(Y)
+    Yf = Y.take(fit_rows)
+    cols = np.flatnonzero(Yf.col_counts() > 0)
+    Yf = Yf.take(None, cols)
     lv = _fast_denoise_fit(Yf, k_max=k_max, shrinkage=shrinkage, block=block,
                            n_subsample=n_subsample, tol=tol, seed=seed, n_jobs=n_jobs)
+    del Yf
     op = lv["op"]
     V = op.rmatmat(lv["U"]) / lv["s_raw"][None, :]            # right singular vectors (cols)
-    Yl = Y[np.flatnonzero(low)][:, cols].tocsr()
+    Yl = Y.take(np.flatnonzero(low), cols)
     sy = op.sy
-    rs = np.asarray(Yl @ (sy ** 2)).ravel()                    # Σ_j Y_ij y_j
+    rs = Yl.matvec(sy ** 2)                                    # Σ_j Y_ij y_j
     xl = len(cols) / np.maximum(rs, 1e-300)                    # row target = number of columns
-    Ul = (np.sqrt(xl)[:, None] * np.asarray(Yl @ (sy[:, None] * V))) / lv["s_raw"][None, :]
+    Ul = (np.sqrt(xl)[:, None] * Yl.matmat(sy[:, None] * V)) / lv["s_raw"][None, :]
     U = np.empty((m, lv["U"].shape[1]))
     U[fit_rows] = lv["U"]
     U[low] = Ul
@@ -753,15 +918,15 @@ def tikhonov_transform(Vt: np.ndarray, L: sp.csr_matrix, lam: float, tol: float 
 # public entry
 # ---------------------------------------------------------------------------
 
-def _filter_columns(Y: sp.csr_matrix, min_cells: int):
-    """Binary pattern restricted to columns open in >= min_cells rows."""
-    cn = np.bincount(Y.indices, minlength=Y.shape[1])
+def _filter_columns(Y, min_cells: int):
+    """Binary pattern (:class:`Pattern`) restricted to columns open in
+    >= min_cells rows; ``Y`` is any CSR structure (values ignored)."""
+    cn = _fast_kernels()["col_count_par"](Y.indices, Y.shape[1], _n_chunks())
     feats = np.flatnonzero(cn >= min_cells)
     remap = np.full(Y.shape[1], -1, np.int64)
     remap[feats] = np.arange(len(feats))
     newp, newi = _fast_kernels()["pat_filter"](Y.indptr, Y.indices, remap)
-    Z = sp.csr_matrix((np.ones(len(newi), np.float32), newi, newp), shape=(Y.shape[0], len(feats)))
-    return Z, feats
+    return Pattern(newp, newi, (Y.shape[0], len(feats))), feats
 
 
 def leiden_markov(W: sp.csr_matrix, resolution: float = 1.0, seed: int = 0) -> np.ndarray:
@@ -851,10 +1016,10 @@ def birmt2(
     X = sp.csr_matrix(X)
     if X.data.size and X.data.min() <= 0:
         X = X.copy(); X.data[X.data <= 0] = 0; X.eliminate_zeros()
-    Y = sp.csr_matrix((np.ones(X.nnz, dtype=np.float32), X.indices, X.indptr), shape=X.shape)
-    n_cells = Y.shape[0]
+    # the binary matrix is X's sparsity pattern: no value array is built
+    n_cells = X.shape[0]
     mc = int(max(5, np.ceil(2 * np.log(n_cells)))) if min_cells == "auto" else int(min_cells)
-    Y0, feats = _filter_columns(Y, mc)
+    Y0, feats = _filter_columns(X, mc)
     if np.any(np.diff(Y0.indptr) == 0):
         raise ValueError("some cells have no retained feature")
     need_coords = len(tile_sizes) > 0 or seq_lambda > 0
@@ -868,7 +1033,7 @@ def birmt2(
         lv0 = fast_denoise_binary(Y0, k_max=k_max, shrinkage=shrinkage, block=krylov_block,
                                   seed=seed, n_jobs=nt)
     else:
-        lv0 = denoise_level(Y0, k_max=k_max, shrinkage=shrinkage, seed=seed, n_jobs=nt)
+        lv0 = denoise_level(Y0.tocsr(), k_max=k_max, shrinkage=shrinkage, seed=seed, n_jobs=nt)
     M = None
     seq_info = {}
     if seq_lambda > 0:
@@ -896,7 +1061,7 @@ def birmt2(
                        info={k: lv0[k] for k in ("rank", "alpha", "beta", "ks", "n_features")}))
     for T in tile_sizes:
         A = tile_map(chrom, mid, int(T))
-        Yt = (Y0 @ A).tocsr()
+        Yt = (Y0.tocsr() @ A).tocsr()
         cn = np.bincount(Yt.indices, minlength=Yt.shape[1])
         Yt = Yt[:, np.flatnonzero(cn >= mc)].tocsr()
         if tile_binarize:
