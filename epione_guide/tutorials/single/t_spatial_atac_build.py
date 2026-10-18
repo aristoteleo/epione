@@ -225,7 +225,9 @@ shrunken log fold change of the motif's tiles), drawn on the tissue: SOX10
 for oligodendrocyte lineage, NEUROD2 for neurons, and CTCF as a ubiquitous
 control. Moran's I measures spatial structure; smoothing raises it for every
 motif by construction (the CTCF control included), so a smoothed motif map
-should be compared with the control rather than with the raw value.
+should be compared with the control rather than with the raw value. Here the
+raw values are low and close to the control's: at 50 um and ~10,000 fragments
+per spot, single-motif activity carries little spatial signal on this section.
 (chromVAR-compatible Z-scores: `epi.tl.add_background_peaks` +
 `epi.tl.compute_deviations`.)
 """)
