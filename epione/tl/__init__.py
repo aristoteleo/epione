@@ -176,7 +176,7 @@ from ._differential import (
 )
 
 from ._harmony import harmony, run_harmony
-from ._ot_batch import ot_batch
+from ._ot_batch import ot_batch, batch_correct
 from ._module_score import add_module_score, confusion_matrix
 from ._bulk_projection import LSIModel, project_bulk_atac, deconvolve_bulk
 from ._multimodal import combined_dims, wnn, multivi
@@ -246,6 +246,7 @@ __all__ = [
     "harmony",
     "run_harmony",
     "ot_batch",
+    "batch_correct",
     "add_trajectory",
     "get_trajectory",
     "trajectory_heatmap_matrix",

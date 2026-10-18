@@ -361,9 +361,18 @@ def mp_median(gamma: float) -> float:
     lo, hi = (1 - np.sqrt(g)) ** 2, (1 + np.sqrt(g)) ** 2
 
     def dens(t):
+        if t <= 0.0:          # gamma = 1: the lower edge is 0 (density -> 0/0)
+            return 0.0
         return np.sqrt(max((hi - t) * (t - lo), 0.0)) / (2 * np.pi * g * t)
 
-    return brentq(lambda t: quad(dens, lo, t, limit=200)[0] - 0.5, lo, hi, xtol=1e-12)
+    def cdf(t):
+        # F(lo) = 0 exactly; never hand quad an empty interval (some SciPy
+        # versions evaluate the integrand at the endpoint, NaN at t = 0)
+        if t <= lo:
+            return 0.0
+        return quad(dens, lo, t, limit=200)[0]
+
+    return brentq(lambda t: cdf(t) - 0.5, lo, hi, xtol=1e-12)
 
 
 def shrink_frobenius(s: np.ndarray, m: int, n: int, sigma: float = 1.0) -> np.ndarray:
@@ -816,6 +825,10 @@ def ot_batch(
     batch = adata.obs[batch_key].astype(str).to_numpy()
     if use_rep is None:
         X = adata.layers[layer] if layer is not None else adata.X
+        if type(X).__name__ in ("BackedArray", "_SubsetBackedArray", "TransformedBackedArray",
+                                "ScaledBackedArray"):
+            # anndataoom backed matrix: materialise chunk by chunk
+            X = sp.vstack([sp.csr_matrix(c) for _, _, c in X.chunked()]).tocsr()
         Z, ainfo = biwhitened_embedding(X, batch, per_batch=per_batch_biwhitening,
                                         min_cells=min_cells, k_max=k_max, row_norm=row_norm,
                                         shrink=shrink, n_features=n_features,
@@ -848,3 +861,33 @@ def ot_batch(
         time_embedding_s=float(t1 - t0), time_alignment_s=float(time.time() - t1),
     )
     return adata
+
+
+def batch_correct(
+    adata: AnnData,
+    batch_key: str,
+    *,
+    method: Literal["ot_batch", "harmony"] = "ot_batch",
+    **kwargs,
+) -> AnnData:
+    """Batch correction with Epione's default method.
+
+    ``method='ot_batch'`` (default) runs :func:`ot_batch` (per-batch
+    biwhitening of the counts + unbalanced entropic OT barycenter alignment)
+    and writes ``obsm['X_ot_batch']``. ``method='harmony'`` runs
+    :func:`epione.tl.harmony` on an existing embedding (default
+    ``use_rep='X_birmt'``) and writes ``obsm['X_harmony']``. Extra keyword
+    arguments go to the chosen function.
+
+    ``ot_batch`` builds its own per-batch biwhitened embedding from the count
+    matrix: this is the configuration that was benchmarked (aligning a
+    pre-computed embedding, ``use_rep=...``, is available but was not the
+    evaluated default).
+    """
+    if method == "ot_batch":
+        return ot_batch(adata, batch_key, **kwargs)
+    if method == "harmony":
+        from ._harmony import harmony
+        harmony(adata, batch_key=batch_key, **kwargs)
+        return adata
+    raise ValueError(f"unknown batch-correction method {method!r} (use 'ot_batch' or 'harmony')")
