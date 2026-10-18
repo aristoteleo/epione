@@ -273,9 +273,90 @@ def _fast_kernels():
             out[j] = s
         return out
 
+    @nb.njit(parallel=True, cache=True)
+    def pat_sum_r(indptr, indices, remap, v):
+        # pat_sum over the entries whose column maps to >= 0 (relabelled)
+        n = indptr.shape[0] - 1
+        out = np.empty(n, dtype=np.float64)
+        for i in nb.prange(n):
+            s = 0.0
+            for p in range(indptr[i], indptr[i + 1]):
+                j = remap[indices[p]]
+                if j >= 0:
+                    s += v[j]
+            out[i] = s
+        return out
+
+    @nb.njit(parallel=True, cache=True)
+    def pat_mm_r(indptr, indices, remap, Xin, out):
+        n = indptr.shape[0] - 1
+        b = Xin.shape[1]
+        for i in nb.prange(n):
+            for c in range(b):
+                out[i, c] = 0.0
+            for p in range(indptr[i], indptr[i + 1]):
+                j = remap[indices[p]]
+                if j >= 0:
+                    for c in range(b):
+                        out[i, c] += Xin[j, c]
+
+    @nb.njit(parallel=True, cache=True)
+    def row_nnz_r(indptr, indices, remap):
+        n = indptr.shape[0] - 1
+        out = np.empty(n, dtype=np.int64)
+        for i in nb.prange(n):
+            c = 0
+            for p in range(indptr[i], indptr[i + 1]):
+                if remap[indices[p]] >= 0:
+                    c += 1
+            out[i] = c
+        return out
+
+    @nb.njit(parallel=True, cache=True)
+    def pat_transpose_r(indptr, indices, remap, n_cols, n_chunks):
+        # pat_transpose_par of the remapped pattern (columns remap >= 0)
+        n_rows = indptr.shape[0] - 1
+        bounds = np.empty(n_chunks + 1, dtype=np.int64)
+        tot = indptr[n_rows]
+        r = 0
+        for c in range(n_chunks + 1):
+            target = (tot * c) // n_chunks
+            while r < n_rows and indptr[r] < target:
+                r += 1
+            bounds[c] = r
+        bounds[n_chunks] = n_rows
+        cnt = np.zeros((n_chunks, n_cols), dtype=np.int64)
+        for c in nb.prange(n_chunks):
+            for i in range(bounds[c], bounds[c + 1]):
+                for p in range(indptr[i], indptr[i + 1]):
+                    j = remap[indices[p]]
+                    if j >= 0:
+                        cnt[c, j] += 1
+        tp = np.zeros(n_cols + 1, dtype=np.int64)
+        for j in range(n_cols):
+            tp[j + 1] = tp[j]
+            for c in range(n_chunks):
+                tp[j + 1] += cnt[c, j]
+        for j in nb.prange(n_cols):
+            pos = tp[j]
+            for c in range(n_chunks):
+                k = cnt[c, j]
+                cnt[c, j] = pos
+                pos += k
+        ti = np.empty(tp[n_cols], dtype=np.int32)
+        for c in nb.prange(n_chunks):
+            for i in range(bounds[c], bounds[c + 1]):
+                for p in range(indptr[i], indptr[i + 1]):
+                    j = remap[indices[p]]
+                    if j >= 0:
+                        ti[cnt[c, j]] = i
+                        cnt[c, j] += 1
+        return tp, ti
+
     _FK.update(pat_sum=pat_sum, pat_mm=pat_mm, pat_transpose=pat_transpose, pat_gram=pat_gram,
                pat_filter=pat_filter, pat_transpose_par=pat_transpose_par, pat_select=pat_select,
-               col_count_par=col_count_par)
+               col_count_par=col_count_par, pat_sum_r=pat_sum_r, pat_mm_r=pat_mm_r,
+               row_nnz_r=row_nnz_r, pat_transpose_r=pat_transpose_r)
     return _FK
 
 
@@ -285,60 +366,93 @@ def _n_chunks() -> int:
 
 
 class Pattern:
-    """Sparsity pattern of a binary matrix: CSR ``indptr`` (int64 when needed)
-    and ``int32`` column ``indices``, no value array. Every BiRMT-2 kernel
-    reads only these arrays, so the pattern replaces the float32 0/1
-    ``csr_matrix`` (whose all-ones ``data`` and, above 2**31 non-zeros,
-    int64-upcast ``indices`` cost 8-12 bytes per non-zero)."""
+    """Sparsity pattern of a binary matrix without a value array: CSR
+    ``indptr`` / ``indices`` and, optionally, a column ``remap`` (an entry in
+    column ``c`` of the stored arrays is column ``remap[c]`` of the pattern,
+    dropped when ``remap[c] < 0``). The remapped form views the input
+    matrix's own index arrays (the min-cells feature filter costs nothing);
+    every BiRMT-2 kernel reads only these arrays, in the same entry order as
+    the compacted 0/1 matrix, so all sums are bit-identical to it."""
 
-    def __init__(self, indptr, indices, shape):
+    def __init__(self, indptr, indices, shape, remap=None):
         self.indptr = indptr
         self.indices = indices
         self.shape = tuple(int(v) for v in shape)
+        self.remap = remap
+        self._deg = None
+
+    def row_nnz(self) -> np.ndarray:
+        if self._deg is None:
+            if self.remap is None:
+                self._deg = np.diff(self.indptr)
+            else:
+                self._deg = _fast_kernels()["row_nnz_r"](self.indptr, self.indices, self.remap)
+        return self._deg
 
     @property
     def nnz(self) -> int:
-        return int(self.indptr[-1])
+        return int(self.indptr[-1]) if self.remap is None else int(self.row_nnz().sum())
 
     def transpose(self) -> "Pattern":
-        tp, ti = _fast_kernels()["pat_transpose_par"](self.indptr, self.indices, self.shape[1],
-                                                      _n_chunks())
+        K = _fast_kernels()
+        if self.remap is None:
+            tp, ti = K["pat_transpose_par"](self.indptr, self.indices, self.shape[1], _n_chunks())
+        else:
+            tp, ti = K["pat_transpose_r"](self.indptr, self.indices, self.remap, self.shape[1],
+                                          _n_chunks())
         return Pattern(tp, ti, self.shape[::-1])
 
     def take(self, rows=None, cols=None) -> "Pattern":
-        """Pattern of ``Y[rows][:, cols]`` (``cols`` sorted; ``None`` = all)."""
+        """Compact pattern of ``Y[rows][:, cols]`` (``cols`` sorted; ``None`` = all)."""
         rows = (np.arange(self.shape[0], dtype=np.int64) if rows is None
                 else np.asarray(rows, dtype=np.int64))
-        if cols is None:
+        if cols is None and self.remap is None:
             remap, use = np.zeros(1, np.int64), False
             ncol = self.shape[1]
         else:
-            cols = np.asarray(cols)
-            remap = np.full(self.shape[1], -1, np.int64)
-            remap[cols] = np.arange(len(cols))
-            use, ncol = True, len(cols)
+            if cols is None:
+                sel = np.arange(self.shape[1], dtype=np.int64)
+            else:
+                sel = np.full(self.shape[1], -1, np.int64)
+                sel[np.asarray(cols)] = np.arange(len(cols))
+            if self.remap is None:
+                remap = sel
+            else:
+                remap = np.where(self.remap >= 0, sel[np.maximum(self.remap, 0)], -1)
+            use = True
+            ncol = self.shape[1] if cols is None else len(cols)
         newp, newi = _fast_kernels()["pat_select"](self.indptr, self.indices, rows, remap, use)
         return Pattern(newp, newi, (len(rows), ncol))
 
     def col_counts(self) -> np.ndarray:
+        if self.remap is not None:
+            return self.take().col_counts()
         return _fast_kernels()["col_count_par"](self.indices, self.shape[1], _n_chunks())
 
     def matvec(self, v: np.ndarray) -> np.ndarray:
         """``Y @ v`` (float64; = SciPy's float32-ones CSR times ``v``)."""
-        return _fast_kernels()["pat_sum"](self.indptr, self.indices,
-                                         np.ascontiguousarray(v, dtype=np.float64))
+        v = np.ascontiguousarray(v, dtype=np.float64)
+        K = _fast_kernels()
+        if self.remap is None:
+            return K["pat_sum"](self.indptr, self.indices, v)
+        return K["pat_sum_r"](self.indptr, self.indices, self.remap, v)
 
     def matmat(self, V: np.ndarray) -> np.ndarray:
         V = np.ascontiguousarray(V, dtype=np.float64)
         out = np.empty((self.shape[0], V.shape[1]))
-        _fast_kernels()["pat_mm"](self.indptr, self.indices, V, out)
+        K = _fast_kernels()
+        if self.remap is None:
+            K["pat_mm"](self.indptr, self.indices, V, out)
+        else:
+            K["pat_mm_r"](self.indptr, self.indices, self.remap, V, out)
         return out
 
     def tocsr(self) -> sp.csr_matrix:
         """float32 0/1 ``csr_matrix`` (only for the optional tile / sequence /
         ``svd='v1'`` paths)."""
-        return sp.csr_matrix((np.ones(self.nnz, dtype=np.float32), self.indices, self.indptr),
-                             shape=self.shape)
+        P = self.take() if self.remap is not None else self
+        return sp.csr_matrix((np.ones(P.nnz, dtype=np.float32), P.indices, P.indptr),
+                             shape=P.shape)
 
     def toarray(self):
         return self.tocsr().toarray()
@@ -364,6 +478,7 @@ class BinaryBiwhitened:
     def __init__(self, Y: sp.csr_matrix, x: np.ndarray, y: np.ndarray, Yt: Optional[sp.csr_matrix] = None):
         self.shape = Y.shape
         self.rp, self.ri = Y.indptr, Y.indices
+        self.remap = Y.remap if isinstance(Y, Pattern) else None
         if Yt is None:
             Yt = Y.transpose() if isinstance(Y, Pattern) else Y.T.tocsr()
         self.cp, self.ci = Yt.indptr, Yt.indices
@@ -374,7 +489,10 @@ class BinaryBiwhitened:
     def matmat(self, X):
         X = np.ascontiguousarray(np.asarray(X, np.float64) * self.sy[:, None])
         out = np.empty((self.shape[0], X.shape[1]))
-        self.k["pat_mm"](self.rp, self.ri, X, out)
+        if self.remap is None:
+            self.k["pat_mm"](self.rp, self.ri, X, out)
+        else:
+            self.k["pat_mm_r"](self.rp, self.ri, self.remap, X, out)
         out *= self.sx[:, None]
         return out
 
@@ -390,6 +508,9 @@ class BinaryBiwhitened:
         out = np.zeros((len(idx), self.shape[1]))
         for a, i in enumerate(idx):
             cols = self.ri[self.rp[i]:self.rp[i + 1]]
+            if self.remap is not None:
+                cols = self.remap[cols]
+                cols = cols[cols >= 0]
             out[a, cols] = self.sx[i] * self.sy[cols]
         return out
 
@@ -405,10 +526,14 @@ def sinkhorn_binary(Y: sp.csr_matrix, Yt: sp.csr_matrix, *, tol: float = 1e-6,
     m, n = Y.shape
     x = np.ones(m)
     it = 0
+    remap = getattr(Y, "remap", None)
     cs = k["pat_sum"](Yt.indptr, Yt.indices, x)
     for it in range(1, max_iter + 1):
         y = m / cs
-        x = n / k["pat_sum"](Y.indptr, Y.indices, y)
+        if remap is None:
+            x = n / k["pat_sum"](Y.indptr, Y.indices, y)
+        else:
+            x = n / k["pat_sum_r"](Y.indptr, Y.indices, remap, y)
         cs = k["pat_sum"](Yt.indptr, Yt.indices, x)
         if np.max(np.abs(y * cs / m - 1.0)) < tol:
             break
@@ -736,7 +861,7 @@ def _fast_denoise_fit(
     if not keep.any():
         keep[0] = True
         s_sh[0] = sv[0]
-    depth = np.diff(Y.indptr).astype(np.float64)
+    depth = Y.row_nnz().astype(np.float64)
     return dict(U=U[:, :r][:, keep], s=s_sh[keep], s_raw=sv[:r][keep], row_scale=1.0 / (op.sx * depth), rank=r,
                 capped=bool(capped), alpha=alpha, beta=0.0, ks=float(ks_to_mp(ev / alpha, g)),
                 rank_pre=r0, krylov_dim=int(U.shape[1]), sinkhorn_iter=int(it),
@@ -760,7 +885,7 @@ def fast_denoise_binary(
     exactly :func:`_fast_denoise_fit`.
     """
     m, n = Y.shape
-    depth = np.diff(Y.indptr)
+    depth = as_pattern(Y).row_nnz()
     low = depth < (n / m)
     if not low.any():
         return _fast_denoise_fit(Y, k_max=k_max, shrinkage=shrinkage, block=block,
@@ -787,7 +912,7 @@ def fast_denoise_binary(
     U[low] = Ul
     rsc = np.empty(m)
     rsc[fit_rows] = lv["row_scale"]
-    dl = np.maximum(np.diff(Yl.indptr).astype(np.float64), 1.0)
+    dl = np.maximum(Yl.row_nnz().astype(np.float64), 1.0)
     rsc[low] = 1.0 / (np.sqrt(xl) * dl)
     lv.update(U=U, row_scale=rsc, n_out_of_sample=int(low.sum()))
     return lv
@@ -925,8 +1050,38 @@ def _filter_columns(Y, min_cells: int):
     feats = np.flatnonzero(cn >= min_cells)
     remap = np.full(Y.shape[1], -1, np.int64)
     remap[feats] = np.arange(len(feats))
-    newp, newi = _fast_kernels()["pat_filter"](Y.indptr, Y.indices, remap)
-    return Pattern(newp, newi, (Y.shape[0], len(feats))), feats
+    # A view of Y's own index arrays with the column relabelling (no copy,
+    # +4 B per non-zero overall for the transpose) when memory is tight;
+    # otherwise a compact int32 copy (+8 B per non-zero, ~1.5x faster
+    # products). Bit-identical results either way.
+    view = Pattern(Y.indptr, Y.indices, (Y.shape[0], len(feats)), remap=remap)
+    if _compact_pattern_fits(int(Y.indptr[-1]), Y.shape[0]):
+        newp, newi = _fast_kernels()["pat_filter"](Y.indptr, Y.indices, remap)
+        return Pattern(newp, newi, (Y.shape[0], len(feats))), feats
+    console.level2("[birmt2] memory-lean pattern view of the input (no compact copy)")
+    return view, feats
+
+
+def _compact_pattern_fits(nnz: int, n_rows: int) -> bool:
+    """Whether the compact pattern copy (+ its transpose, ~9 B per non-zero)
+    fits comfortably next to the current RSS within the process memory
+    limit (RAM / cgroup, e.g. Slurm --mem). ``EPIONE_BIRMT_PATTERN`` =
+    ``compact`` / ``view`` forces either."""
+    import os
+    mode = os.environ.get("EPIONE_BIRMT_PATTERN", "auto")
+    if mode in ("compact", "view"):
+        return mode == "compact"
+    from ..pp._fragment_io import memory_limit_bytes
+    rss = 0
+    try:
+        with open("/proc/self/status") as fh:
+            for line in fh:
+                if line.startswith("VmRSS:"):
+                    rss = int(line.split()[1]) * 1024
+    except OSError:
+        pass
+    need = 9 * nnz + 16 * n_rows + (4 << 30)
+    return rss + need <= 0.9 * memory_limit_bytes()
 
 
 def leiden_markov(W: sp.csr_matrix, resolution: float = 1.0, seed: int = 0) -> np.ndarray:
@@ -1020,7 +1175,7 @@ def birmt2(
     n_cells = X.shape[0]
     mc = int(max(5, np.ceil(2 * np.log(n_cells)))) if min_cells == "auto" else int(min_cells)
     Y0, feats = _filter_columns(X, mc)
-    if np.any(np.diff(Y0.indptr) == 0):
+    if np.any(Y0.row_nnz() == 0):
         raise ValueError("some cells have no retained feature")
     need_coords = len(tile_sizes) > 0 or seq_lambda > 0
     if need_coords:

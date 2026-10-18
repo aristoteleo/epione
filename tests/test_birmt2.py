@@ -326,3 +326,26 @@ def test_pattern_kernels_match_scipy():
     V = np.random.default_rng(1).random((Y.shape[1], 4))
     np.testing.assert_array_equal(P.matvec(v), Y @ v)
     np.testing.assert_array_equal(P.matmat(V), Y @ V)
+
+
+def test_pattern_view_and_compact_identical(monkeypatch):
+    """The memory-lean view of the input pattern and the compact int32 copy
+    give bit-identical BiRMT-2 results (normal and out-of-sample rows)."""
+    import epione as epi
+    import scipy.sparse as sp
+    a, _ = _peaks_adata(m=400, seed=12)
+    # a few near-empty cells -> Sinkhorn-infeasible, fitted out of sample
+    X = sp.csr_matrix(a.X)
+    pop = np.argsort(-np.bincount(X.indices, minlength=X.shape[1]))[:3]
+    L = sp.csr_matrix((np.ones(6), (np.repeat(np.arange(3), 2), pop[[0, 1, 1, 2, 0, 2]])),
+                      shape=(3, X.shape[1]))
+    outs = {}
+    for mode in ("compact", "view"):
+        monkeypatch.setenv("EPIONE_BIRMT_PATTERN", mode)
+        for name, ad in (("plain", a.copy()),
+                         ("low", AnnData(X=sp.vstack([X, L]).tocsr()))):
+            epi.tl.birmt(ad, n_jobs=2)
+            outs[mode, name] = (ad.obsm["X_birmt"], ad.uns["X_birmt"]["levels"][0]["rank"])
+    for name in ("plain", "low"):
+        np.testing.assert_array_equal(outs["compact", name][0], outs["view", name][0])
+        assert outs["compact", name][1] == outs["view", name][1]
