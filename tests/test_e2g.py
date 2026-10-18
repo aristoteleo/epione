@@ -67,3 +67,51 @@ def test_e2g_links_ranks_active_element(tmp_path):
     s = out.set_index(["element", "gene"])["score"]
     assert s[("chr1:1050000-1050500", "g1")] > s[("chr1:950000-950500", "g1")]
     assert ((out.score > 0) & (out.score < 1)).all()
+
+
+def _toy_multiome(seed=0, n=300):
+    rng = np.random.default_rng(seed)
+    grp = np.repeat([0, 1, 2], n // 3)
+    peaks = [f"chr1:{s}-{s + 500}" for s in range(100_000, 2_100_000, 20_000)]
+    lam = rng.gamma(2.0, 1.0, size=(3, len(peaks)))
+    X = rng.poisson(lam[grp]).astype(np.float32)
+    obs = pd.DataFrame({"n_fragment": X.sum(1) * 3 + 500, "ct": grp.astype(str)}, index=[f"c{i}" for i in range(n)])
+    ad = AnnData(X=sp.csr_matrix(X), obs=obs, var=pd.DataFrame(index=peaks))
+    ad.obsm["X_birmt"] = np.column_stack([grp + rng.normal(0, 0.1, n), rng.normal(0, 1, (n, 4))])
+    genes = [f"g{i}" for i in range(8)]
+    G = rng.poisson(np.exp(0.5 * lam[grp][:, ::12][:, :8])).astype(np.float32)
+    rn = AnnData(X=sp.csr_matrix(G), obs=obs.copy(), var=pd.DataFrame(index=genes))
+    ann = pd.DataFrame({"gene_name": genes, "chrom": "chr1", "start": np.arange(8) * 240_000 + 150_000,
+                        "end": np.arange(8) * 240_000 + 160_000, "strand": "+"})
+    return ad, rn, ann
+
+
+def test_link_peaks_to_genes_default_schema_and_dispatch():
+    import epione as epi
+    ad, rn, ann = _toy_multiome()
+    lk = epi.tl.link_peaks_to_genes(ad, rna=rn, gene_annotation=ann, n_metacells=50, k_neighbors=10, verbose=False)
+    for c in ("peak", "gene", "chrom", "peak_start", "peak_end", "tss", "distance", "score", "correlation", "fdr"):
+        assert c in lk.columns
+    np.testing.assert_allclose(lk.fdr, 1 - lk.score, rtol=1e-5)
+    assert ad.uns["peak_to_gene_params"]["model"] == "full" and ad.uns["peak_to_gene"] is not None
+    assert (np.abs(lk.distance) <= 250_000).all()
+    # ATAC-only model without RNA; correlation is NaN
+    la = epi.tl.link_peaks_to_genes(ad, gene_annotation=ann, inplace=False, verbose=False)
+    assert la.correlation.isna().all() and ad.uns["peak_to_gene_params"]["model"] == "full"
+    # explicit ArchR port unchanged
+    p2g = epi.tl.link_peaks_to_genes(ad, rna=rn, gene_annotation=ann, method="peak_to_gene", n_metacells=50,
+                                     k_neighbors=10, inplace=False, verbose=False)
+    ref = epi.tl.peak_to_gene(ad, rna=rn, gene_annotation=ann, use_rep="X_birmt", n_metacells=50, k_neighbors=10,
+                              seed=1, inplace=False, verbose=False)
+    pd.testing.assert_frame_equal(p2g.reset_index(drop=True), ref.reset_index(drop=True))
+
+
+def test_link_peaks_to_genes_works_with_plot_peak2gene():
+    import matplotlib
+    matplotlib.use("Agg")
+    import epione as epi
+    ad, rn, ann = _toy_multiome(1)
+    lk = epi.tl.link_peaks_to_genes(ad, rna=rn, gene_annotation=ann, n_metacells=50, k_neighbors=10, verbose=False)
+    g = lk.sort_values("score").gene.iloc[-1]
+    fig, _ = epi.pl.plot_peak2gene(ad, gene=g, fdr_thresh=1.0, gene_annotation=ann, show=False)
+    assert fig is not None
