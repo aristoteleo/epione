@@ -8,7 +8,6 @@ from __future__ import annotations
 import pandas as pd
 
 from epione.core.genome import Genome
-from ..single.atac._call_peaks import merge_peaks as _merge_peaks_impl
 
 
 def merge_peaks(
@@ -38,6 +37,9 @@ def merge_peaks(
         Non-overlapping peak set with ``chrom / start / end / Peaks``
         columns (``Peaks`` is the ``"chrN:s-e"`` label).
     """
+    # imported here: single.atac imports epione.utils, so a module-level import is circular
+    from ..single.atac._call_peaks import merge_peaks as _merge_peaks_impl
+
     # Normalise the input: accept pandas / polars / single DF.
     try:
         import polars as pl

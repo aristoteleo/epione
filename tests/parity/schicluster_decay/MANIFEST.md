@@ -33,3 +33,27 @@ Python env `epione-hic` for both sides.
 | T5 | `compartment_contact_hist` | `contact_hist` of `02.decay_compartment` (cell 11), verbatim | H200 with the cell's L1 column of `comp.impute.qnorm.hdf` | exact | identical histograms (distance × diff, distance × sum) summed per L1 |
 
 Speed is reported for T1 and T5, Epione vs reference.
+
+## Amendment T-1 (2026-10-20, after the first T2/T3 run, before any rerun)
+
+First run: T1, T4, T4b, T5 passed; T2 failed (6,480 of 8,040 cells differ) and T3 failed (max
+err 0.011), while `decay_ratio` applied to the *published* histograms reproduces `Short/Long`
+to 4.4e-16. Cause, found on 40 cells: the published histograms count cis contacts on
+chr1–chr22 and chrX only (no chrY); with that chromosome set all 40 cells are identical, with
+chrY included none is, with chrX also removed none is. The contact files are byte-identical to
+ENTEx's `contact/` copies. Change: T2/T3 pass `chrom_sizes` = chr1–22 + chrX (sizes from
+`hg38.main.chrom.sizes`; the largest chromosome, which sets the bins, is unchanged). Gates,
+fixture and thresholds unchanged.
+
+## Results (T), 2026-10-20
+
+Raw numbers in `results/decay_T.json` (rerun after Amendment T-1).
+
+| Gate | Measured | Threshold | Pass |
+|---|---|---|---|
+| T1 decay + sparsity vs scHiCluster (H200) | identical (132 bins); Epione 6.1 s on 8 processes, reference 43.9 s on 1 | exact | ✅ |
+| T2 decay vs published (8,040 cells) | 0 cells differ | exact | ✅ |
+| T3 `decay_ratio` vs published `Short/Long` | max abs err 1.3e-15 | ≤ 1e-12 | ✅ |
+| T4 `quantile_normalize` vs published `comp.impute.qnorm.hdf` | max abs err 1.1e-14 | ≤ 1e-10 | ✅ |
+| T4b vs qnorm 1.0.0 (HCEA scores + a matrix with ties) | 0.0 | ≤ 1e-13 | ✅ |
+| T5 `compartment_contact_hist` vs notebook `contact_hist` | identical for c0 / c1 / c7 (24.1 M contacts); 5.6 s vs 10.3 s on 8 processes | exact | ✅ |
