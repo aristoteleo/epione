@@ -74,3 +74,134 @@ this manifest: IHW adjustment (used when a condition has replicates), and the `m
 on R's random number stream and get their own gates when ported.
 
 Speed is reported for every gate, Epione vs reference on one core.
+
+## Amendment H-1 (2026-10-20, after the first H2 run, before any rerun)
+
+First run: H1 passed (identical mask, 24,478 of 28,760 bins kept); H2 failed (max abs err
+0.0061, Pearson r 0.9995–0.9999 per chromosome, same PC chosen on every chromosome). Cause,
+found by bisection on chr21: the published `raw_pcloading` was fitted on the correlation
+matrix **without** the 5/95-percentile clip. With `clip=None` the chr21 loadings match to
+2.3e-16 (both copies of the merged raw cool, `merged_cool_raw/merged.mcool` and
+`analysis/compartment/merged.raw.mcool`, give the same result). The clip lines in the
+notebook's cell 22 were evidently added after the stored model was produced; the projection
+function `compute_comp` (cell 31) does clip.
+
+Change: H2 calls `compartment_model(..., clip=None)`. The gate, its fixture and its threshold
+are unchanged. The function's default follows whatever reproduces the published objects
+(fit unclipped if H3 confirms the projection is clipped); this is documented in the docstring.
+
+## Amendment D-1 (2026-10-20, before any CovSde comparison): Donoho–Stahel branch
+
+Reason: the tutorial differential-compartment step compares three cell types, so per
+chromosome `robust::covRob` sees n ≈ 1,000–2,500 bins × p = 3 and its `estim = "auto"` rule
+((n < 1000 and p < 10) or (n < 5000 and p < 5)) chooses `donostah`, not `pairwiseqc`. That
+branch is therefore ported now instead of raising `NotImplementedError`.
+
+The branch is `set.seed(21)` followed by `rrcov::CovSde(x, tune = 0.95, prob = 0.99,
+eps = 0.5)` (Fortran `rlds`, rrcov 1.7-3). The port needs R's uniform stream; the emulator
+(`epione/bulk/hic/_r_rng.py`) was checked before this amendment as a building block, not a
+gate: after `set.seed(21)` and `set.seed(123)`, 5,000 and 3,000 `runif` draws and
+`.Random.seed` are bit-identical. R's `qchisq(0.5, p)` / `qchisq(0.95, p)` for p = 1..9 are
+embedded, because `scipy.stats.chi2.ppf` differs from them by about one ulp.
+
+| Gate | Epione | Reference | Fixture | Class | Threshold |
+|---|---|---|---|---|---|
+| D6 | `cov_sde` (center and cov) | `robust::covRob(x)` (`$center`, `$cov`; `estim = "auto"` → `donostah`) | 5 random matrices generated in R, shapes (300, 3), (900, 4), (2500, 3), (4000, 4), (800, 9); 3 columns (c0, c1, c7) of E `L1/comp.raw.hdf` on chr1 and on chr2 | 1, deterministic-standard | max rel err ≤ 1e-10 on cov and on center (relative to max abs of the reference entry block) |
+
+`MCD` (5–19 conditions) and IHW (replicates) remain unported and keep raising
+`NotImplementedError`.
+
+
+## Results (D6), 2026-10-20
+
+**PASS.** Max rel err 3.9e-15 (threshold 1e-10). `results/covsde_D6.json`;
+reference script `covsde_make_ref.R`, driver `covsde_parity.py`.
+
+| Matrix | n × p | R estim | valid subsets | center | cov (max rel err) | Epione s | R s |
+|---|---|---|---|---|---|---|---|
+| rand_300x3 | 300 × 3 | donostah | 1000 | identical | identical | 0.04 | 0.04 |
+| rand_900x4 | 900 × 4 | donostah | 1000 | identical | identical | 0.06 | 0.14 |
+| rand_2500x3 | 2500 × 3 | donostah | 1000 | identical | identical | 0.08 | 0.50 |
+| rand_4000x4 | 4000 × 4 | donostah | 1000 | identical | 3.9e-15 | 0.12 | 0.87 |
+| rand_800x9 | 800 × 9 | donostah | 4714 | identical | 1.7e-16 | 0.67 | 0.66 |
+| real_chr1 | 2079 × 3 | donostah | 1000 | identical | 3.0e-16 | 0.07 | 0.35 |
+| real_chr2 | 2235 × 3 | donostah | 1000 | identical | 3.7e-16 | 0.07 | 0.39 |
+
+The center (weighted mean) is bit-identical on every matrix: same random subsets, directions,
+outlyingness and weights as the Fortran `rlds`. The covariance differs by at most 4e-15,
+which comes only from CovSde's final consistency factor (`median(mahalanobis(x, center,
+cov)) / qchisq(0.5, p)`), where R uses its `solve` and `%*%` and Epione numpy's LAPACK/BLAS.
+
+Run history: the first run exchanged the matrices as CSV text and passed with max rel err
+4.6e-12, but no output was bit-identical. Tracing `rlds` (instrumented copy compiled with
+`R CMD SHLIB` in the `dchic` env) showed identical subsets and arithmetic, but different
+inputs: R's `read.csv` and pandas' default parser round some 17-digit strings to different
+doubles. The fixture was switched to raw float64 files (same values, no text round trip);
+gate and threshold unchanged.
+
+## Results (D), 2026-10-20
+
+**All five gates PASS** (`results/dchic_D.json`; driver `dchic_parity.py`, R side
+`dchic_make_ref.R`). Fixture D: 35 major-type tracks of `analysis/diff_comp/all`, 24,478 bins.
+
+| Gate | Measured | Threshold | Pass |
+|---|---|---|---|
+| D1 `cov_rob` vs `robust::covRob(x)$cov` (22 HCEA per-chromosome matrices + 3 random) | max rel err 2.1e-15; every matrix `pairwiseqc` on both sides | ≤ 1e-10 | ✅ |
+| D2 `normalize_quantiles` vs `limma::normalizeQuantiles(ties=TRUE)` (22 HCEA + 4 incl. ties) | max abs err 0 (bit-identical) | ≤ 1e-13 | ✅ |
+| D3 `pcOri` / `pcQnm` tables (44 global + 1,540 per-condition files) | identical bins, identical written values in all 1,584 files | exact | ✅ |
+| D4 `sample_maha` / `pval` / `padj` | 2.8e-11 / 6.2e-9 / 6.2e-9 max rel err; 15,508 p-values below 1e-300 in both (0 in R's file); identical padj < 0.1 set (20,339 bins); normalised score columns identical | ≤ 1e-8 | ✅ |
+| D5 file names, columns, row order | 2,382 files on both sides, all layouts identical | exact | ✅ |
+
+Byte level: 2,354 of 2,382 output files are byte-identical. The 28 that differ are the
+`fdr_result` tables, only in the last digits of `sample_maha` / `pval` / `padj`.
+
+Speed (whole `analyze` step, wall clock, one BLAS thread): Epione 32 s, R 38 s.
+
+What it took to get there, for the record:
+
+- R's number round trips are reproduced exactly: `write.table` digits (`formatReal` /
+  `scientific()`, which picks the digit count by rounding in long double, e.g. R writes
+  `13.708020988103` where `%.15g` gives `13.7080209881029`), the `read.table` parser
+  (`R_strtod5`), `round(x, 5)` (`fround.c`; `numpy.round` differs on 11,845 of 135,000 test
+  values), `pnorm` (Cody), and long-double means / row means / variances.
+- First full run: 20 chromosomes matched to ~1e-12, chr9 and chr22 differed by O(1). Cause:
+  on the refinement subset of chr22 (119 bins × 35 types) every pairwise quadrant
+  correlation is 1, so OGK's correlation matrix is all ones with a 34-fold zero eigenvalue.
+  The eigenbasis there is arbitrary and is fixed by rounding noise (~1e-28) in LAPACK
+  `dsptrd`. R's answer is therefore a property of its OpenBLAS build: with R's own
+  `libopenblasp-r0.3.30.so` the port matches R to 2e-15, with the OpenBLAS bundled in the
+  scipy wheel it does not. The port now calls `dsptrd` → `dstegr` → `dopmtr` like rrcov,
+  using the environment's LAPACK (`sys.prefix/lib/liblapack*`, conda OpenBLAS 0.3.34 here,
+  which agrees with 0.3.30 on this input) and falls back to scipy's; it emits a
+  `RuntimeWarning` when the eigenvalues repeat (3 times on fixture D). This is not a gate
+  change: the D4 threshold was met only after the fix, with the same threshold.
+- Remaining unported: covRob `mcd` (fewer than 20 conditions where the `donostah` rule does not apply) and IHW
+  (replicates); both raise `NotImplementedError`. `padj_method="BH"` is the documented
+  opt-in deviation for replicates.
+
+## Results (S, H) — 2026-10-20
+
+Drivers: `s_gates.py` (fixture H200: 200 cells, c1 108 / c0 64 / c7 28) and `h_gates.py`;
+raw numbers in `results/schicluster_S.json` and `results/hcea_H.json`. Env `epione-hic`
+(cooler 0.10.4, cooltools 0.7.1, scHiCluster c958838).
+
+| Gate | Measured | Threshold | Pass |
+|---|---|---|---|
+| S1 `cpg_ratio` | 28,760 rows identical, values identical (max err 0.0) | exact | ✅ |
+| S2 scool pixels | 0 of 200 cells differ | exact | ✅ |
+| S3 scores, cool input | max abs err 0.0; NaN mask identical | ≤ 1e-12 | ✅ |
+| S4 scores, contact tables | max abs err 0.0; NaN mask identical | ≤ 1e-12 | ✅ |
+| S5 per-chromosome strength | max rel err 0.0 (40 cells × 22 chromosomes) | ≤ 1e-12 | ✅ |
+| S6 `merge_cells(double_diagonal=True)` vs `merge_cell_raw` | identical pixels, c0 / c1 / c7 | exact | ✅ |
+| H1 bin filter | identical mask (24,478 of 28,760 bins) | exact | ✅ |
+| H2 loadings (`clip=None`, Amendment H-1) | max abs err 1.2e-15; PC1 chosen on all 22 chromosomes, as published | ≤ 1e-8 | ✅ |
+| H3 projection, 35 major types | max abs err 5.3e-14 (reference model); 9.8e-14 end to end (Epione fit → projection) | ≤ 1e-8 | ✅ |
+| H4 saddle (c0, c1, c7; chr1–chr21; `clip=None`) | max rel err 6.4e-16 on sums and counts | ≤ 1e-12 | ✅ |
+
+Notes. (1) The scHiCluster reference cannot write its NetCDF with current xarray (categorical
+`chrom` coordinate); `s_gates.py` casts `chrom` to str in upstream's aggregation step only.
+(2) Speed, one run each, Epione vs scHiCluster: S1 39 s vs 114 s (bedtools nuc); S2 54 s
+(8 processes) vs 257 s (1 process); S4 22 s vs 44 s (8 processes each); S6 48 s vs 78 s. The
+S3 reference timing is not meaningful (upstream reused its cached per-cell files from the
+first, crashed run). (3) H3 first run (before Amendment H-1) already passed with the
+reference model (5.3e-14); its end-to-end error was 0.088 because the fit was clipped.

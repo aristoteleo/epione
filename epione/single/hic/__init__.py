@@ -30,6 +30,17 @@ Public API (flat — call as ``epi.single.hic.X``):
     * :func:`demux_pairs_by_barcode`   — split multi-cell pairs by celltype
     * :func:`pseudobulk_by_celltype`   — demux + ``pairs_to_cool`` + balance
     * :func:`cluster_correlation`      — celltype × celltype Pearson r
+
+Compartments from raw contacts (scHiCluster + Human Cell Epigenome Atlas):
+    * :func:`cpg_ratio`                — per-bin CpG density (phasing track)
+    * :func:`contacts_to_scool`        — per-cell contact tables → raw ``.scool``
+    * :func:`load_contact_tables`      — index contact tables without binning
+    * :func:`compartment_scores`       — scHiCluster single-cell score
+    * :func:`merge_cells`              — raw pseudobulk ``.cool`` per group
+    * :func:`compartment_model`        — fit the HCEA PCA model on merged contacts
+    * :func:`project_compartments`     — score each pseudobulk on that model
+    * :func:`compartment_saddle`       — saddle matrix + AA/BB/AB/BA strength
+    * :func:`oe_correlation`           — O/E and correlation matrix of one chromosome
 """
 from __future__ import annotations
 
@@ -39,6 +50,18 @@ from ._embed import embedding
 from ._demux import demux_pairs_by_barcode, pseudobulk_by_celltype
 from ._correlation import cluster_correlation, cell_celltype_correlation
 from ._scgad import scgad_score, load_refflat_genes
+from ._compartment import (
+    cpg_ratio,
+    contacts_to_scool,
+    load_contact_tables,
+    compartment_scores,
+    merge_cells,
+    compartment_model,
+    project_compartments,
+    compartment_saddle,
+    oe_correlation,
+    write_bedgraph,
+)
 # Plotting helpers live in :mod:`epione.pl` since v0.4 (PR 3); import
 # them from there so ``epi.single.hic.plot_*`` still resolves.
 from epione.pl._embedding import plot_embedding
@@ -56,6 +79,16 @@ __all__ = [
     "cell_celltype_correlation",
     "scgad_score",
     "load_refflat_genes",
+    "cpg_ratio",
+    "contacts_to_scool",
+    "load_contact_tables",
+    "compartment_scores",
+    "merge_cells",
+    "compartment_model",
+    "project_compartments",
+    "compartment_saddle",
+    "oe_correlation",
+    "write_bedgraph",
     "plot_embedding",
     "plot_cell_contacts",
     "plot_correlation_heatmap",
