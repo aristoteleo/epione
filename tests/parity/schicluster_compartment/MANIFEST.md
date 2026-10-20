@@ -205,3 +205,19 @@ Notes. (1) The scHiCluster reference cannot write its NetCDF with current xarray
 S3 reference timing is not meaningful (upstream reused its cached per-cell files from the
 first, crashed run). (3) H3 first run (before Amendment H-1) already passed with the
 reference model (5.3e-14); its end-to-end error was 0.088 because the fit was clipped.
+
+## Amendment D-2 (2026-10-20, before any comparison): end-to-end three-condition run
+
+D1–D5 used 35 conditions (covRob → OGK) and D6 tested the Donoho–Stahel estimator alone. The
+tutorial runs dcHiC on three major types, where covRob picks Donoho–Stahel inside the full
+`analyze` step. New gate, same classes and thresholds as D3–D5:
+
+| Gate | Epione | Reference | Fixture | Class | Threshold |
+|---|---|---|---|---|---|
+| D7 | `dchic_analyze` | `dchicf.r --pcatype analyze --dirovwt T --diffdir all` | **D3t**: HCEA published raw scores of c0, c1, c7 (`L1/comp.raw.hdf`, bins with `raw_binfilter`), written as dcHiC `pc.bedGraph` inputs | as D3 / D4 / D5 | D3: exact; D4: rel err ≤ 1e-8, identical padj < 0.1 set; D5: exact |
+
+## Results (D7), 2026-10-20
+
+Raw numbers in `results/dchic_D7.json`. 270 output files with identical names, columns and row
+order (242 byte-identical); `pcOri` / `pcQnm` tables identical; `sample_maha` rel err 9.8e-13,
+`pval` / `padj` 1.2e-10; the same 5,877 bins at padj < 0.1. Epione 5.1 s, R 18.4 s. ✅
