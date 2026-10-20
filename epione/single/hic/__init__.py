@@ -41,6 +41,12 @@ Compartments from raw contacts (scHiCluster + Human Cell Epigenome Atlas):
     * :func:`project_compartments`     — score each pseudobulk on that model
     * :func:`compartment_saddle`       — saddle matrix + AA/BB/AB/BA strength
     * :func:`oe_correlation`           — O/E and correlation matrix of one chromosome
+
+Contact decay (scHiCluster + Human Cell Epigenome Atlas):
+    * :func:`contact_decay`            — per-cell contact-distance histogram
+    * :func:`decay_ratio`              — log2 short/long contact ratio per cell
+    * :func:`compartment_contact_hist` — contacts by distance × compartment score
+    * :func:`quantile_normalize`       — qnorm-style quantile normalisation
 """
 from __future__ import annotations
 
@@ -61,6 +67,13 @@ from ._compartment import (
     compartment_saddle,
     oe_correlation,
     write_bedgraph,
+)
+from ._decay import (
+    contact_decay,
+    decay_bins,
+    decay_ratio,
+    compartment_contact_hist,
+    quantile_normalize,
 )
 # Plotting helpers live in :mod:`epione.pl` since v0.4 (PR 3); import
 # them from there so ``epi.single.hic.plot_*`` still resolves.
@@ -89,6 +102,11 @@ __all__ = [
     "compartment_saddle",
     "oe_correlation",
     "write_bedgraph",
+    "contact_decay",
+    "decay_bins",
+    "decay_ratio",
+    "compartment_contact_hist",
+    "quantile_normalize",
     "plot_embedding",
     "plot_cell_contacts",
     "plot_correlation_heatmap",

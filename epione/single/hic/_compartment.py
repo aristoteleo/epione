@@ -547,26 +547,66 @@ def _cell_csr(source, kind, n_bins, chrom_offset, resolution, columns, min_pos_d
                       shape=(n_bins, n_bins))
 
 
+def _iter_pixels(sources, kind, n, chrom_offset, resolution, columns, min_pos_dist,
+                 remove_duplicates):
+    """Yield ``(bin1, bin2, count)`` arrays per cell.
+
+    Cells of a ``.scool`` are read straight from its HDF5 groups with the file
+    opened once, which is much faster than one ``cooler.Cooler`` per cell.
+    """
+    import h5py
+
+    if kind == "cool" and all("::/cells/" in s for s in sources):
+        by_file: Dict[str, list] = {}
+        for s in sources:
+            f, g = s.split("::", 1)
+            by_file.setdefault(f, []).append(g)
+        for f, groups in by_file.items():
+            with h5py.File(f, "r") as h:
+                for g in groups:
+                    px = h[g]["pixels"]
+                    yield px["bin1_id"][:], px["bin2_id"][:], px["count"][:]
+        return
+    for s in sources:
+        m = _cell_csr(s, kind, n, chrom_offset, resolution, columns, min_pos_dist,
+                      remove_duplicates).tocoo()
+        yield m.row, m.col, m.data
+
+
 def _merge_group(args):
     import cooler
     from scipy.sparse import triu
 
     (sources, kind, bins, chrom_offset, resolution, columns, min_pos_dist,
-     remove_duplicates, double_diagonal, out_path) = args
+     remove_duplicates, double_diagonal, cis_only, out_path) = args
+    from scipy.sparse import coo_matrix
+
     n = len(bins)
+    chrom_id = pd.factorize(bins["chrom"])[0]
     total = None
-    for s in sources:
-        m = _cell_csr(s, kind, n, chrom_offset, resolution, columns, min_pos_dist,
-                      remove_duplicates)
-        total = m if total is None else total + m
+    # Sum cells in batches: concatenating a batch's pixels and converting once is
+    # linear in the number of pixels, whereas adding cells one at a time copies the
+    # growing total for every cell.
+    for start in range(0, len(sources), 256):
+        rows, cols, vals = [], [], []
+        for r, c, v in _iter_pixels(sources[start:start + 256], kind, n, chrom_offset, resolution,
+                                    columns, min_pos_dist, remove_duplicates):
+            if cis_only:
+                keep = chrom_id[r] == chrom_id[c]
+                r, c, v = r[keep], c[keep], v[keep]
+            rows.append(r); cols.append(c); vals.append(v)
+        batch = coo_matrix((np.concatenate(vals).astype(np.int64),
+                            (np.concatenate(rows), np.concatenate(cols))), shape=(n, n)).tocsr()
+        total = batch if total is None else total + batch
     if double_diagonal:
         from scipy.sparse import diags
         total = total + diags(total.diagonal(), dtype=total.dtype)
-    total = triu(total).tocoo()
-    order = np.lexsort((total.col, total.row))
-    pixels = pd.DataFrame({"bin1_id": total.row[order].astype(np.int64),
-                           "bin2_id": total.col[order].astype(np.int64),
-                           "count": total.data[order].astype(np.int64)})
+    total = triu(total, format="csr")
+    total.sort_indices()
+    total = total.tocoo()  # row-major, columns sorted within rows: cooler's pixel order
+    pixels = pd.DataFrame({"bin1_id": total.row.astype(np.int64),
+                           "bin2_id": total.col.astype(np.int64),
+                           "count": total.data.astype(np.int64)})
     pixels = pixels[pixels["count"] != 0]
     cooler.create_cooler(str(out_path), bins=bins, pixels=pixels, ordered=True,
                          dtypes={"count": np.int64},
@@ -583,6 +623,7 @@ def merge_cells(
     min_pos_dist: int = 2500,
     remove_duplicates: bool = True,
     double_diagonal: bool = False,
+    cis_only: bool = False,
     nproc: int = 1,
     overwrite: bool = False,
 ) -> Dict[str, str]:
@@ -605,6 +646,10 @@ def merge_cells(
         double_diagonal: add the diagonal a second time, as scHiCluster's
             ``merge_cell_raw`` does. Off by default; the diagonal does not
             enter any compartment score.
+        cis_only: keep only intra-chromosomal pixels. Compartments, saddles
+            and decay use cis contacts only, and trans pixels are most of a
+            genome-wide pseudobulk, so this makes the files several times
+            smaller and faster to write.
         nproc: groups merged in parallel.
         overwrite: rebuild existing files.
 
@@ -644,7 +689,7 @@ def merge_cells(
         if not srcs:
             raise ValueError(f"group {g!r} has no cells")
         tasks.append((srcs, kind, bins, chrom_offset, resolution, columns, int(min_pos_dist),
-                      bool(remove_duplicates), bool(double_diagonal), path))
+                      bool(remove_duplicates), bool(double_diagonal), bool(cis_only), path))
     if tasks:
         _map(_merge_group, tasks, nproc, progress=False, desc="merge")
     return out
