@@ -19,6 +19,11 @@ Public API (flat — call as ``epi.bulk.hic.X``):
     * :func:`correlate_matrices`      — pairwise Pearson / Spearman of matrices
     * :func:`differential_tads`       — Wilcoxon test of TADs between conditions
     * :func:`h5_to_cool`              — HiCExplorer ``.h5`` → ``.cool``
+    * :func:`differential_compartments` — dcHiC differential compartments
+                                         (``dchicf.r --pcatype analyze``)
+    * :func:`dchic_analyze`           — file-based drop-in for the dcHiC CLI step
+    * :func:`cov_rob`                 — ``robust::covRob`` (OGK branches)
+    * :func:`normalize_quantiles`     — ``limma::normalizeQuantiles``
 
 ``compartments``, ``insulation`` / ``tad_boundaries`` and ``loops`` take
 ``method="cooltools"`` (default) or ``method="hicexplorer"`` (ports of
@@ -42,6 +47,7 @@ from ._loops import loops, pileup
 from ._compare import compare_matrices, correlate_matrices
 from ._differential import differential_tads
 from ._io import h5_to_cool
+from ._dchic import differential_compartments, dchic_analyze, cov_rob, normalize_quantiles
 # Plotting helpers live in :mod:`epione.pl` since v0.4 (PR 3); import
 # them from there so ``epi.bulk.hic.plot_*`` still resolves.
 from epione.pl._contact import (
@@ -69,6 +75,10 @@ __all__ = [
     "correlate_matrices",
     "differential_tads",
     "h5_to_cool",
+    "differential_compartments",
+    "dchic_analyze",
+    "cov_rob",
+    "normalize_quantiles",
     "plot_contact_matrix",
     "plot_contact_triangle",
     "plot_decay_curve",
