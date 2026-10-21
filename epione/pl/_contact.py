@@ -112,7 +112,7 @@ def plot_contact_matrix(
     )
     ax.set_xlabel(f"{chrom} position (bp)")
     ax.set_ylabel(f"{chrom} position (bp)")
-    ax.set_title(title or f"{Path(cool_path).name} — {region}")
+    ax.set_title(f"{Path(cool_path).name} — {region}" if title is None else title)
     if colorbar:
         fig.colorbar(img, ax=ax, shrink=0.8,
                      label="log contact" if log else "contact")
@@ -205,7 +205,7 @@ def plot_decay_curve(
               color=color, lw=1.4)
     ax.set_xlabel("genomic distance (bp)")
     ax.set_ylabel("mean contact" + (" (balanced)" if balance else " (raw)"))
-    ax.set_title(title or f"P(s) — {Path(cool_path).name}")
+    ax.set_title(f"P(s) — {Path(cool_path).name}" if title is None else title)
     for sp in ("top", "right"):
         ax.spines[sp].set_visible(False)
     return fig, ax, df
@@ -492,7 +492,7 @@ def plot_compartments(
     ax.axhline(0, color="black", lw=0.5)
     ax.set_xlabel(f"{chromosome} (Mb)")
     ax.set_ylabel(track_column)
-    ax.set_title(title or f"compartments — {chromosome}")
+    ax.set_title(f"compartments — {chromosome}" if title is None else title)
     for sp in ("top", "right"):
         ax.spines[sp].set_visible(False)
     return fig, ax
@@ -617,7 +617,7 @@ def plot_contact_triangle(
     # actual visual aspect via ``figsize``.
     ax.set_xlabel(f"{chrom} position (bp)")
     ax.set_ylabel("contact distance (bp)")
-    ax.set_title(title or f"{Path(cool_path).name} — {region}")
+    ax.set_title(f"{Path(cool_path).name} — {region}" if title is None else title)
     for sp in ("top", "right"):
         ax.spines[sp].set_visible(False)
     if colorbar:
@@ -723,7 +723,7 @@ def plot_insulation(
                                                  else f" ({int(window_bp)/1000:.0f} kb)"))
     else:
         ax.set_ylabel(f"log2 insulation\n(window {int(window_bp)/1000:.0f} kb)")
-    ax.set_title(title or f"insulation — {chromosome}")
+    ax.set_title(f"insulation — {chromosome}" if title is None else title)
     for sp in ("top", "right"):
         ax.spines[sp].set_visible(False)
     return fig, ax
