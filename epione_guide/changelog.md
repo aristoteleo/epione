@@ -22,9 +22,18 @@ The format roughly follows Keep a Changelog.
 - Contact decay (`epi.single.hic`): `contact_decay` (scHiCluster `contact-distance`), `decay_ratio`
   (short/long ratio), `compartment_contact_hist`, `quantile_normalize`; identical to HCEA's published
   decay histograms (`tests/parity/schicluster_decay`).
-- Tutorials `t_sc_hic_compartment` and `t_sc_hic_decay` (13,166 HCEA snm3C-seq cells, six haematopoietic major types).
+- `epi.single.hic.embedding(method="schicluster")`: scHiCluster's `hicluster embedding` (per-chromosome
+  band SVD, then SVD of the concatenation; `norm_sig=`). Band matrices identical to scHiCluster, final
+  embedding within scHiCluster's own run-to-run variation (`tests/parity/schicluster_embedding`).
+- `impute_cells(resolution=, window_size=, step_size=)`: cells loaded with `load_contact_tables` are
+  imputed straight from raw contacts at any resolution, as `hicluster impute-cell` with a contact file.
+- Tutorials `t_sc_hic_compartment` and `t_sc_hic_decay` (13,166 HCEA snm3C-seq cells, six haematopoietic
+  major types), `t_sc_hic_embedding` (6,000 of them), and a rebuilt Droplet Hi-C case study.
 
 ### Fixed
+- `impute_cells` wrote empty matrices with scHiCluster ≥ 1.3, which saves `.npz` instead of HDF; failures
+  were silenced. It now reads both formats and warns when a cell fails.
+- `epi.pl` contact plots: `title=''` hides the default title.
 - `from epione.single import hic` (and `epi.single` before `epi.pl`) no longer fails with a circular
   import between `epione.utils` and `epione.single.atac`.
 - `epi.tl.e2g_links`, `epi.tl.e2g_features`, `epi.tl.count_insertions` (Tn5 insertions in arbitrary
