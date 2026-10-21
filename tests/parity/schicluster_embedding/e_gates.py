@@ -134,6 +134,41 @@ def main(scool, work, results_path, nproc=8):
                      "pass": bool(ours.shape == ref.shape and err <= 2 * self_err
                                   and min(corr) >= 0.9999)}
     print("E2", results["E2"], flush=True)
+
+    # E3 (Amendment E-2): the same with norm_sig=True, the lab's `--norm_sig`
+    ref_ns = work / "ref_embed_normsig"
+    ref_embedding(str(tbl), str(ref_ns), dim=50, dist=1_000_000, resolution=RES,
+                  scale_factor=100_000, norm_sig=True, cpu=nproc, save_model=False, save_raw=False)
+    ref3 = np.load(ref_ns / "decomp" / "total_decomp.npz")["arr_0"]
+    ours3 = hic.embedding(ad, method="schicluster", norm_sig=True).obsm["X_schicluster"].astype(np.float64)
+
+    def reference_run_ns(seed):
+        np.random.seed(seed)
+        parts = []
+        for c in AUTOS:
+            M = bands[c]
+            d = min(50, M.shape[0] - 1, M.shape[1] - 1)
+            m = TruncatedSVD(n_components=d, algorithm="arpack")
+            x = m.fit_transform(M)
+            k = m.singular_values_ > 0
+            parts.append(x[:, k] / m.singular_values_[k][None, :])
+        m = TruncatedSVD(n_components=50, algorithm="arpack")
+        x = m.fit_transform(np.concatenate(parts, 1))
+        k = m.singular_values_ > 0
+        return x[:, k] / m.singular_values_[k][None, :]
+
+    runs3 = [reference_run_ns(s) for s in (1, 2, 3)]
+    self3 = max(aligned_err(runs3[i], runs3[j]) for i, j in ((0, 1), (0, 2), (1, 2)))
+    err3 = aligned_err(ours3, ref3)
+    scale3 = float(np.abs(ref3).max())
+    corr3 = [abs(np.corrcoef(ours3[:, k], ref3[:, k])[0, 1]) for k in range(ref3.shape[1])]
+    results["E3"] = {"shape": list(ours3.shape), "ref_shape": list(ref3.shape),
+                     "max_abs_err": err3, "max_abs_value": scale3, "rel": err3 / scale3,
+                     "reference_self_max_abs_err": self3, "reference_self_rel": self3 / scale3,
+                     "min_component_abs_corr": float(min(corr3)),
+                     "pass": bool(ours3.shape == ref3.shape and err3 <= 2 * self3
+                                  and min(corr3) >= 0.9999)}
+    print("E3", results["E3"], flush=True)
     Path(results_path).parent.mkdir(parents=True, exist_ok=True)
     with open(results_path, "w") as f:
         json.dump(results, f, indent=2)
