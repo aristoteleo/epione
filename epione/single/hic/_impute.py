@@ -22,6 +22,7 @@ backward-compatible with v0.4 callers; if both are given, ``rp`` wins.
 """
 from __future__ import annotations
 
+import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import Dict, Optional, Sequence, Tuple, Union
@@ -128,11 +129,16 @@ def impute_cell_chromosome(
 
 
 def _impute_one_cell(
-    args: Tuple[str, str, Sequence[str], int, str, dict, bool],
+    args: Tuple[str, dict, Sequence[str], int, str, dict, bool],
 ) -> Tuple[str, str]:
     """Worker — call schicluster.impute_chromosome on every chrom of one
-    cell, then collate results into a single ``.npz``."""
-    cell_id, cool_path, chromosomes, resolution, out_dir, kwargs, overwrite = args
+    cell, then collate results into a single ``.npz``.
+
+    ``source`` is ``{"scool_url": <cool>}`` or the contact-table arguments of
+    ``impute_chromosome`` (``contact_path``, ``chrom_size_path``, ``chrom1``,
+    ``pos1``, ``chrom2``, ``pos2``)."""
+    cell_id, source, chromosomes, resolution, out_dir, kwargs, overwrite = args
+    cool_path = source.get("scool_url")
     kwargs = dict(kwargs)
     compress = bool(kwargs.pop("_compress", False))
     out_npz = Path(out_dir) / f"{cell_id}.npz"
@@ -161,7 +167,7 @@ def _impute_one_cell(
             try:
                 hdf_path = tmp / f"{chrom}.hdf"
                 impute_chromosome(
-                    scool_url=str(cool_path),
+                    **source,
                     chrom=chrom,
                     resolution=int(resolution),
                     output_path=str(hdf_path),
@@ -174,6 +180,8 @@ def _impute_one_cell(
                     E = load_npz(sparse_path).tocoo()
                     arr = np.zeros(E.shape, dtype=np.float32)
                     arr[E.row, E.col] = E.data
+                elif cool_path is None:
+                    raise FileNotFoundError(f"no imputation output at {sparse_path}")
                 else:
                     # older scHiCluster: pandas HDF with global bin ids
                     import pandas as pd
@@ -211,12 +219,15 @@ def impute_cells(
     rp: float = 0.5,
     tol: float = 0.01,
     output_dist: Optional[int] = None,
+    window_size: Optional[int] = None,
+    step_size: Optional[int] = None,
     logscale: bool = False,
     chromosomes: Optional[Sequence[str]] = None,
     overwrite: bool = False,
     progress: bool = True,
     nproc: int = 1,
     compress: bool = False,
+    resolution: Optional[int] = None,
     # v0.4 backward-compat aliases — deprecated
     rwr_alpha: Optional[float] = None,
     top_pct: Optional[float] = None,
@@ -239,15 +250,17 @@ def impute_cells(
     imputation in the same ``<out_dir>/<cell_id>.npz`` layout; the
     scHiCluster-specific arguments are then ignored.
 
-    Reads each cell's ``cool_path`` (from ``adata.obs``), runs
+    Reads each cell's ``cool_path`` (binned cells) or ``contact_path`` (raw
+    contact tables, binned at ``resolution``) from ``adata.obs``, runs
     :func:`schicluster.impute.impute_chromosome.impute_chromosome` per
-    chromosome, and collates the per-chromosome HDF5 outputs into a
-    single ``<out_dir>/<cell_id>.npz`` keyed by chromosome.
+    chromosome, and collates the outputs into a single
+    ``<out_dir>/<cell_id>.npz`` keyed by chromosome.
     ``adata.uns['hic']['imputed_dir']`` is set so :func:`embedding`
     knows where to look.
 
     Arguments:
-        adata: AnnData from :func:`load_cool_collection`.
+        adata: AnnData from :func:`load_cool_collection` /
+            :func:`load_scool_cells`, or from :func:`load_contact_tables`.
         out_dir: output directory; created if missing.
         pad, std, rp, tol, output_dist, logscale: forwarded directly
             to ``schicluster.impute.impute_chromosome``. Defaults match
@@ -262,6 +275,19 @@ def impute_cells(
         compress: write each cell's ``.npz`` compressed. Recommended at
             100 kb and finer with ``output_dist``: the stored matrices are
             dense, and a band of a few Mb is mostly zeros.
+        window_size, step_size: scHiCluster's RWR window and step in bp
+            (``--window_size``, ``--step_size``). ``None`` keeps upstream's
+            defaults (5 Gb window, 10 Mb step): the window covers any
+            chromosome, so RWR runs on whole chromosomes.
+        resolution: bin size in bp. Cells loaded from raw contact tables
+            (:func:`load_contact_tables`) are binned at this size by
+            scHiCluster itself (``impute_chromosome(contact_path=...)``, as
+            ``hicluster impute-cell --resolution``); default: the
+            ``resolution`` given to ``load_contact_tables``. Contacts are
+            counted as they are, with no de-duplication or minimum-distance
+            filter, as upstream. Cells from cools are already binned:
+            leave it ``None`` (the cools' bin size is used); any other value
+            raises ``ValueError``.
         rwr_alpha, top_pct, n_iter, use_sparse, sparse_keep_pct:
             deprecated v0.4 parameters. ``rwr_alpha`` is silently
             mapped to ``rp`` if ``rp`` is at its default.
@@ -315,22 +341,48 @@ def impute_cells(
         )
 
     cell_ids = list(adata.obs_names)
-    cool_paths = [str(p) for p in adata.obs["cool_path"].astype(str)]
-    # Resolve resolution from the first cool — all cells share it.
-    import cooler
-    resolution = int(cooler.Cooler(cool_paths[0]).binsize)
+    sizes_file = None
+    if "cool_path" in adata.obs:
+        # binned cells: the resolution is the cools' bin size
+        import cooler
+        cool_paths = [str(p) for p in adata.obs["cool_path"].astype(str)]
+        binsize = int(cooler.Cooler(cool_paths[0]).binsize)
+        if resolution is not None and int(resolution) != binsize:
+            raise ValueError(
+                f"cells are binned at {binsize:,} bp; resolution={int(resolution):,} needs cells "
+                "binned at that size (contacts_to_scool) or raw contacts (load_contact_tables)")
+        resolution = binsize
+        sources = [{"scool_url": cp} for cp in cool_paths]
+    elif "contact_path" in adata.obs:
+        # raw contact tables (load_contact_tables): scHiCluster bins them at `resolution`
+        if "chrom_sizes" not in info:
+            raise ValueError("adata.uns['hic']['chrom_sizes'] missing; load cells with load_contact_tables")
+        resolution = int(resolution if resolution is not None else info["resolution"])
+        import tempfile
+        fd, sizes_file = tempfile.mkstemp(suffix=".chrom.sizes", dir=out_dir)
+        with os.fdopen(fd, "w") as fh:
+            for c, n in info["chrom_sizes"].items():
+                fh.write(f"{c}\t{int(n)}\n")
+        cols = {k: int(v) for k, v in info.get("contact_columns", {}).items()}
+        sources = [{"contact_path": cp, "chrom_size_path": sizes_file, **cols}
+                   for cp in adata.obs["contact_path"].astype(str)]
+    else:
+        raise ValueError("adata.obs needs 'cool_path' (load_cool_collection / load_scool_cells) "
+                         "or 'contact_path' (load_contact_tables)")
 
     impute_kwargs = dict(
         pad=int(pad), std=float(std), rp=float(rp),
         tol=float(tol), logscale=bool(logscale),
     )
-    if output_dist is not None:
-        impute_kwargs["output_dist"] = int(output_dist)
+    for name, value in (("output_dist", output_dist), ("window_size", window_size),
+                        ("step_size", step_size)):
+        if value is not None:
+            impute_kwargs[name] = int(value)
     impute_kwargs["_compress"] = bool(compress)
 
     args_list = [
-        (cid, cp, chromosomes, resolution, str(out_dir), impute_kwargs, overwrite)
-        for cid, cp in zip(cell_ids, cool_paths)
+        (cid, src, chromosomes, resolution, str(out_dir), impute_kwargs, overwrite)
+        for cid, src in zip(cell_ids, sources)
     ]
 
     pbar = None
@@ -356,6 +408,8 @@ def impute_cells(
                     pbar.update(1)
     if pbar:
         pbar.close()
+    if sizes_file is not None:
+        os.unlink(sizes_file)
     failed = [(c, st) for c, st in statuses if st.startswith("fail")]
     if failed:
         import warnings
@@ -364,6 +418,11 @@ def impute_cells(
 
     adata.uns.setdefault("hic", {})
     adata.uns["hic"]["imputed_dir"] = str(out_dir)
+    if "contact_path" in adata.obs and "cool_path" not in adata.obs:
+        # record the resolution the raw contacts were imputed at (embedding reads it)
+        sizes = info["chrom_sizes"]
+        adata.uns["hic"]["resolution"] = int(resolution)
+        adata.uns["hic"]["n_chrom_bins"] = {c: int(sizes[c] // resolution + 1) for c in chromosomes}
     adata.uns["hic"]["impute_params"] = {
         "pad": int(pad),
         "std": float(std),
