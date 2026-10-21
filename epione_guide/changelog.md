@@ -27,8 +27,12 @@ The format roughly follows Keep a Changelog.
   embedding within scHiCluster's own run-to-run variation (`tests/parity/schicluster_embedding`).
 - `impute_cells(resolution=, window_size=, step_size=)`: cells loaded with `load_contact_tables` are
   imputed straight from raw contacts at any resolution, as `hicluster impute-cell` with a contact file.
+- `epi.single.hic.gene_score`: scHiCluster's `hicluster gene-score --mode raw` (contacts inside each gene
+  body) from contact tables, with `min_pos_dist=` to drop short contacts; identical to scHiCluster's
+  `gene_score_raw`.
 - Tutorials `t_sc_hic_compartment` and `t_sc_hic_decay` (13,166 HCEA snm3C-seq cells, six haematopoietic
-  major types), `t_sc_hic_embedding` (6,000 of them), and a rebuilt Droplet Hi-C case study.
+  major types), `t_sc_hic_embedding` (6,000 of them), and a rebuilt Droplet Hi-C case study (Fig 1d
+  by gene scores co-embedded with snRNA-seq through `epi.tl.integrate(method='cca')`).
 
 ### Fixed
 - `impute_cells` wrote empty matrices with scHiCluster ≥ 1.3, which saves `.npz` instead of HDF; failures

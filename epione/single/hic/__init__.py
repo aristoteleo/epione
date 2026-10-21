@@ -35,6 +35,7 @@ Compartments from raw contacts (scHiCluster + Human Cell Epigenome Atlas):
     * :func:`cpg_ratio`                — per-bin CpG density (phasing track)
     * :func:`contacts_to_scool`        — per-cell contact tables → raw ``.scool``
     * :func:`load_contact_tables`      — index contact tables without binning
+    * :func:`gene_score`               — contacts inside each gene body (``hicluster gene-score``)
     * :func:`compartment_scores`       — scHiCluster single-cell score
     * :func:`merge_cells`              — raw pseudobulk ``.cool`` per group
     * :func:`compartment_model`        — fit the HCEA PCA model on merged contacts
@@ -56,6 +57,7 @@ from ._embed import embedding
 from ._demux import demux_pairs_by_barcode, pseudobulk_by_celltype
 from ._correlation import cluster_correlation, cell_celltype_correlation
 from ._scgad import scgad_score, load_refflat_genes
+from ._gene_score import gene_score
 from ._compartment import (
     cpg_ratio,
     contacts_to_scool,
@@ -91,6 +93,7 @@ __all__ = [
     "cluster_correlation",
     "cell_celltype_correlation",
     "scgad_score",
+    "gene_score",
     "load_refflat_genes",
     "cpg_ratio",
     "contacts_to_scool",
