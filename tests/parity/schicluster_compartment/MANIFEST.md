@@ -221,3 +221,24 @@ tutorial runs dcHiC on three major types, where covRob picks Donoho–Stahel ins
 Raw numbers in `results/dchic_D7.json`. 270 output files with identical names, columns and row
 order (242 byte-identical); `pcOri` / `pcQnm` tables identical; `sample_maha` rel err 9.8e-13,
 `pval` / `padj` 1.2e-10; the same 5,877 bins at padj < 0.1. Epione 5.1 s, R 18.4 s. ✅
+
+## Amendment D-3 (2026-10-20, before any MCD comparison): MCD branch and six conditions
+
+The tutorial moves to six Hema major types. With 6 conditions, `robust::covRob(estim="auto")`
+picks `donostah` on chromosomes with fewer than 1,000 bins (chr13–chr22 at 100 kb) and `mcd`
+on the others (chr1–chr12). The `mcd` branch is `robustbase::covMcd` (robustbase 0.95-1;
+`covRob.control("mcd")`: alpha 0.5, nsamp 500, nmini 300, kmini 5, scalefn "hrv2012",
+use.correction TRUE) and covRob returns its **raw** centre and covariance. covMcd draws from R's
+RNG without reseeding, so its result depends on the stream left by earlier calls: dcHiC's
+`set.seed(123)`, the MCD calls of earlier chromosomes, and the `set.seed(21)` of every
+Donoho–Stahel call (which is not restored). Chromosomes are processed in R's `list.files`
+order, twice each when `refine=TRUE`.
+
+| Gate | Epione | Reference | Fixture | Class | Threshold |
+|---|---|---|---|---|---|
+| D8 | `cov_mcd` (raw centre and covariance) given an R RNG state | `robust::covRob(x)$center` / `$cov` (mcd branch) after `set.seed(s)` | 6 random matrices (n 1,000–5,000, p 5–19) and the six-Hema chr1 / chr2 group matrices, seeds 123 and 21 | 1, deterministic-standard | max rel err ≤ 1e-10; the RNG state after the call identical (`.Random.seed`) |
+| D9 | `dchic_analyze` | `dchicf.r --pcatype analyze --dirovwt T --diffdir all` | **D6h**: HCEA published raw scores of the six Hema types c0, c1, c7, c15, c24, c27 (`L1/comp.raw.hdf`, `raw_binfilter` bins) as dcHiC inputs | as D3 / D4 / D5 | D3: exact; D4: rel err ≤ 1e-8, identical padj < 0.1 set; D5: exact |
+
+If FastMCD's result turns out not to depend on the random subsets for these data (the same
+optimal h-subset from any start), that is reported, but the gates still require the emulated
+RNG stream to match R's after every call.
