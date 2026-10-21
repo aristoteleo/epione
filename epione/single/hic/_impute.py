@@ -133,6 +133,8 @@ def _impute_one_cell(
     """Worker — call schicluster.impute_chromosome on every chrom of one
     cell, then collate results into a single ``.npz``."""
     cell_id, cool_path, chromosomes, resolution, out_dir, kwargs, overwrite = args
+    kwargs = dict(kwargs)
+    compress = bool(kwargs.pop("_compress", False))
     out_npz = Path(out_dir) / f"{cell_id}.npz"
     if out_npz.exists() and not overwrite:
         return cell_id, "skip"
@@ -152,6 +154,7 @@ def _impute_one_cell(
         return cell_id, f"fail:missing-schicluster:{e}"
 
     per_chrom: Dict[str, np.ndarray] = {}
+    failed = []
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
         for chrom in chromosomes:
@@ -164,33 +167,38 @@ def _impute_one_cell(
                     output_path=str(hdf_path),
                     **kwargs,
                 )
-                # schicluster writes pandas HDF; convert COO → dense
-                import pandas as pd
-                with pd.HDFStore(hdf_path, 'r') as h:
-                    parts = [h[k] for k in h.keys()]
-                if not parts:
-                    continue
-                df = parts[0] if len(parts) == 1 else __import__("pandas").concat(parts, ignore_index=True)
-                # Build dense array — get n_bins from the cooler
-                import cooler
-                clr = cooler.Cooler(str(cool_path))
-                ext = clr.extent(chrom)
-                n_bins = ext[1] - ext[0]
-                arr = np.zeros((n_bins, n_bins), dtype=np.float32)
-                # df has bin1_id / bin2_id GLOBAL — adjust to chrom-relative
-                bin1 = df['bin1_id'].to_numpy() - ext[0]
-                bin2 = df['bin2_id'].to_numpy() - ext[0]
-                vals = df['count'].to_numpy(dtype=np.float32)
-                # Drop pixels outside the chromosome extent (defensive)
-                m = (bin1 >= 0) & (bin1 < n_bins) & (bin2 >= 0) & (bin2 < n_bins)
-                arr[bin1[m], bin2[m]] = vals[m]
-                # Symmetrise (HDF stores upper triangle only)
+                sparse_path = Path(str(hdf_path) + ".npz")
+                if sparse_path.exists():
+                    # scHiCluster >= 1.3: scipy sparse upper triangle, chromosome-relative
+                    from scipy.sparse import load_npz
+                    E = load_npz(sparse_path).tocoo()
+                    arr = np.zeros(E.shape, dtype=np.float32)
+                    arr[E.row, E.col] = E.data
+                else:
+                    # older scHiCluster: pandas HDF with global bin ids
+                    import pandas as pd
+                    import cooler
+                    with pd.HDFStore(hdf_path, 'r') as h:
+                        parts = [h[k] for k in h.keys()]
+                    if not parts:
+                        raise ValueError("empty imputation output")
+                    df = parts[0] if len(parts) == 1 else pd.concat(parts, ignore_index=True)
+                    ext = cooler.Cooler(str(cool_path)).extent(chrom)
+                    n_bins = ext[1] - ext[0]
+                    arr = np.zeros((n_bins, n_bins), dtype=np.float32)
+                    bin1 = df['bin1_id'].to_numpy() - ext[0]
+                    bin2 = df['bin2_id'].to_numpy() - ext[0]
+                    vals = df['count'].to_numpy(dtype=np.float32)
+                    m = (bin1 >= 0) & (bin1 < n_bins) & (bin2 >= 0) & (bin2 < n_bins)
+                    arr[bin1[m], bin2[m]] = vals[m]
+                # symmetrise (both formats store the upper triangle)
                 arr = arr + arr.T - np.diag(np.diag(arr))
                 per_chrom[chrom] = arr
             except Exception as e:
-                continue
-
-    np.savez(out_npz, **per_chrom)
+                failed.append(f"{chrom}: {type(e).__name__}: {e}")
+    (np.savez_compressed if compress else np.savez)(out_npz, **per_chrom)
+    if failed:
+        return cell_id, "fail:" + "; ".join(failed[:3])
     return cell_id, "ok"
 
 
@@ -208,6 +216,7 @@ def impute_cells(
     overwrite: bool = False,
     progress: bool = True,
     nproc: int = 1,
+    compress: bool = False,
     # v0.4 backward-compat aliases — deprecated
     rwr_alpha: Optional[float] = None,
     top_pct: Optional[float] = None,
@@ -250,6 +259,9 @@ def impute_cells(
         progress: show a per-cell progress bar via ``tqdm`` if available.
         nproc: parallel workers. ``1`` (default) is serial; raise to
             saturate a multi-core node.
+        compress: write each cell's ``.npz`` compressed. Recommended at
+            100 kb and finer with ``output_dist``: the stored matrices are
+            dense, and a band of a few Mb is mostly zeros.
         rwr_alpha, top_pct, n_iter, use_sparse, sparse_keep_pct:
             deprecated v0.4 parameters. ``rwr_alpha`` is silently
             mapped to ``rp`` if ``rp`` is at its default.
@@ -314,6 +326,7 @@ def impute_cells(
     )
     if output_dist is not None:
         impute_kwargs["output_dist"] = int(output_dist)
+    impute_kwargs["_compress"] = bool(compress)
 
     args_list = [
         (cid, cp, chromosomes, resolution, str(out_dir), impute_kwargs, overwrite)
@@ -328,20 +341,26 @@ def impute_cells(
         except ImportError:
             pass
 
+    statuses = []
     if nproc <= 1:
         for args in args_list:
-            _impute_one_cell(args)
+            statuses.append(_impute_one_cell(args))
             if pbar:
                 pbar.update(1)
     else:
         with ProcessPoolExecutor(max_workers=int(nproc)) as ex:
             futures = [ex.submit(_impute_one_cell, a) for a in args_list]
             for fut in as_completed(futures):
-                _ = fut.result()
+                statuses.append(fut.result())
                 if pbar:
                     pbar.update(1)
     if pbar:
         pbar.close()
+    failed = [(c, st) for c, st in statuses if st.startswith("fail")]
+    if failed:
+        import warnings
+        warnings.warn(f"impute_cells: {len(failed)} of {len(statuses)} cells had failures; "
+                      f"first: {failed[0][0]} -> {failed[0][1]}", RuntimeWarning)
 
     adata.uns.setdefault("hic", {})
     adata.uns["hic"]["imputed_dir"] = str(out_dir)
