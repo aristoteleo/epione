@@ -22,7 +22,7 @@ The format roughly follows Keep a Changelog.
 - Contact decay (`epi.single.hic`): `contact_decay` (scHiCluster `contact-distance`), `decay_ratio`
   (short/long ratio), `compartment_contact_hist`, `quantile_normalize`; identical to HCEA's published
   decay histograms (`tests/parity/schicluster_decay`).
-- Tutorials `t_sc_hic_compartment` and `t_sc_hic_decay` (8,040 HCEA snm3C-seq cells).
+- Tutorials `t_sc_hic_compartment` and `t_sc_hic_decay` (13,166 HCEA snm3C-seq cells, six haematopoietic major types).
 
 ### Fixed
 - `from epione.single import hic` (and `epi.single` before `epi.pl`) no longer fails with a circular
