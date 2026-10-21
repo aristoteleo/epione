@@ -21,7 +21,7 @@ def code(src):
 
 
 md(r"""
-# Contact decay of single cells
+# Case study: HCEA contact decay
 
 How often two loci touch falls with their genomic distance. The shape of
 that decay differs between cell types: some nuclei are rich in short-range
