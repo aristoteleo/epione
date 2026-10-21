@@ -2,9 +2,10 @@
 
 Execute with ``jupyter nbconvert --to notebook --execute --inplace``; needs
 ``pip install 'epione[hic]'``, scHiCluster, the GEO files of sample LC462
-(GSE253407) and an mm10 FASTA. The first run takes about 2.5 h on 30 cores:
-1.5 h to split the 25 GB pairs file by cell, the rest for the scool, the
-pseudobulks and the 100 kb imputation. Later runs read the cached files.
+(GSE253407), the frontal-cortex RNA of GSE224560, a GENCODE vM25 GTF and an
+mm10 FASTA. The first run takes about 2.5 h on 30 cores, most of it to split
+the 25 GB pairs file by cell; later runs read the cached files and take
+about 20 min.
 """
 import pathlib
 
@@ -34,14 +35,16 @@ the paper, adult mouse cortex, with `epione`:
 |---|---|---|
 | 1f | contact maps and A/B compartments of each cell type on chr1 | `merge_cells`, `compartment_model`, `project_compartments` |
 | 1e | correlation of compartment scores between cell types | `project_compartments` |
-| 1d | cell embedding from single-cell contacts | `impute_cells` (scHiCluster, 100 kb), `embedding(method="schicluster")` |
+| 1d | cells co-embedded with snRNA-seq through gene scores | `gene_score`, `epi.tl.integrate(method='cca')`, `epi.tl.transfer_labels` |
 
 **Data.** Sample LC462 of GEO GSE253407: `GSM8020244_LC462_mm10.sc.pairs.gz`
 (all contacts, 25 GB; the barcode is the `barcode1` column) and the paper's
 cell table `GSE253407_Droplet_Hi-C_mouse_ctx_metadata.xls.gz` (tab-separated
 despite the name). LC462 has 3,329 nuclei in 20 cortical cell types
-(`rnatype`); the labels are used to group cells and to colour and score the
-embedding, never to build it.
+(`rnatype`). The labels group the cells for the pseudobulks; for Fig 1d we
+transfer labels from an RNA reference ourselves and compare them with these.
+Fig 1d also needs the RNA reference (GEO GSE224560, section 8) and a GENCODE
+vM25 gene annotation (`gencode.vM25.*annotation.gtf`).
 """)
 
 md("## 1 · Setup")
@@ -59,6 +62,9 @@ import epione as epi
 from epione.single import hic
 
 epi.pl.plot_set()
+sc.settings.verbosity = 0
+import logging
+logging.getLogger('matplotlib.font_manager').setLevel(logging.ERROR)
 
 # Folder with the GEO files, mm10.chrom.sizes and mm10.fa; override with EPIONE_CHANG2024_DIR.
 DATA = pathlib.Path(os.environ.get('EPIONE_CHANG2024_DIR', 'data/chang2024-droplet'))
@@ -69,10 +75,11 @@ NPROC = int(os.environ.get('EPIONE_NPROC', 16))
 PAIRS = DATA / 'GSM8020244_LC462_mm10.sc.pairs.gz'
 META = DATA / 'GSE253407_Droplet_Hi-C_mouse_ctx_metadata.xls.gz'
 FASTA = DATA / 'mm10.fa'
+GTF = DATA / 'gencode.vM25.chr_patch_hapl_scaff.annotation.gtf'
 RES = 100_000
 CHROMS = [f'chr{i}' for i in range(1, 20)] + ['chrX']
 sizes = pd.read_csv(DATA / 'mm10.chrom.sizes', sep='\t', header=None, index_col=0)[1].loc[CHROMS]
-for p in (PAIRS, META, FASTA):
+for p in (PAIRS, META, FASTA, GTF):
     assert p.exists(), f'missing: {p}'
 print(f'pairs: {PAIRS.stat().st_size / 1e9:.1f} GB')
 """)
@@ -238,97 +245,208 @@ part of their distance from the others is sampling noise.
 """)
 
 md(r"""
-## 7 · Fig 1d — cell embedding from imputed 100 kb contacts
+## 7 · Gene scores
 
-`impute_cells` runs scHiCluster's imputation on every cell and chromosome at
-100 kb, from each cell's raw pairs file, as `hicluster impute-cell` does with a
-contact file: scHiCluster bins the contacts itself (`resolution`, pairs
-columns 1–4), convolves with a 3 × 3 kernel (`pad=1`), runs a random walk with
-restart (`rp=0.5`, `tol=0.01`) over whole chromosomes (`window_size` larger
-than any chromosome) and normalises by square-root vanilla coverage. It keeps
-imputed contacts up to 10 Mb (`output_dist`); the cut comes after the
-normalisation, so the values kept are the same as with a longer
-`output_dist`. `load_contact_tables` indexes the raw files without binning
-them.
+At 100 kb a single LC462 cell is too sparse to place by its contact map
+alone. The paper summarises each cell at the gene level instead, with
+scHiCluster's gene score (`hicluster gene-score`): for every gene, the
+contacts whose two ends both fall inside the gene body, in 10 kb bins.
+`gene_score` computes the same score from the raw per-cell pairs files,
+indexed without binning by `load_contact_tables`. Genes are the
+protein-coding and lncRNA genes of GENCODE vM25.
 
-`embedding(method="schicluster")` is scHiCluster's `hicluster embedding`: per
-chromosome, the imputed contacts within 1 Mb of the diagonal are reduced by a
-50-component truncated SVD, and the chromosome reductions are reduced again.
-The settings are those of `hicluster embedding --dim 50 --dist 1000000
---resolution 100000 --scale_factor 100000 --norm_sig`: with `norm_sig=True`
-every component is divided by its singular value, at both steps. Only
-contacts go into the embedding; the labels only colour it.
+Most LC462 contacts are shorter than 1 kb: a median cell has 159,000 cis
+contacts, of which only 22,000 are 1 kb or longer. Inside a gene body the
+short ones mostly measure read coverage rather than folding. `min_pos_dist=1000` keeps only contacts at least 1 kb
+apart, which separated the cell types better than all contacts in our tests.
 """)
 code(r"""
-raw = hic.load_contact_tables([cell_files[c] for c in cells], chrom_sizes=sizes, resolution=RES,
-                              cell_ids=cells, obs=adata.obs[['rnatype', 'major', 'total']],
-                              columns={'chrom1': 1, 'pos1': 2, 'chrom2': 3, 'pos2': 4},
-                              chromosomes=CHROMS)
-IMPUTED = OUT / 'imputed_100kb_contacts'
-hic.impute_cells(raw, out_dir=IMPUTED, resolution=RES, pad=1, std=1.0, rp=0.5, tol=0.01,
-                 window_size=500_000_000, step_size=500_000_000, output_dist=10_000_000,
-                 compress=True, nproc=NPROC, progress=False)
-emb = hic.embedding(raw, method='schicluster', dim=50, dist=1_000_000, scale_factor=100_000, norm_sig=True)
-emb.obs['major'] = emb.obs['major'].astype('category')
-emb.obs['rnatype'] = pd.Categorical(emb.obs['rnatype'], categories=TYPES)
-sc.pp.neighbors(emb, n_neighbors=15, use_rep='X_schicluster')
-sc.tl.umap(emb, random_state=0)
-emb.obs['log10 contacts'] = np.log10(emb.obs['total'].astype(float))
-fig, axes = plt.subplots(1, 3, figsize=(19, 5))
-sc.pl.umap(emb, color='major', ax=axes[0], show=False, title='Fig 1d — Glu / GABA / glia')
-sc.pl.umap(emb, color='rnatype', ax=axes[1], show=False, title='Fig 1d — 20 cell types')
-sc.pl.umap(emb, color='log10 contacts', ax=axes[2], show=False, title='contacts per cell (log10)')
+GS_RES = 10_000
+gtf = epi.io.read_gtf(GTF, required_attrs=('gene_id', 'gene_name', 'gene_type'),
+                      feature_whitelist=['gene'], keep_attribute=False)
+gtf = gtf[gtf['gene_type'].isin(['protein_coding', 'lncRNA']) & gtf['seqname'].isin(CHROMS)]
+genes = pd.DataFrame({'chrom': gtf['seqname'].to_numpy(), 'start': gtf['start'].to_numpy() - 1,
+                      'end': gtf['end'].to_numpy(), 'gene_name': gtf['gene_name'].to_numpy()},
+                     index=gtf['gene_id'].str.split('.').str[0].to_numpy())
+genes = genes[~genes.index.duplicated()]
+
+contacts = hic.load_contact_tables([cell_files[c] for c in cells], chrom_sizes=sizes, resolution=GS_RES,
+                                   cell_ids=cells, obs=adata.obs[['rnatype', 'major', 'total']],
+                                   columns={'chrom1': 1, 'pos1': 2, 'chrom2': 3, 'pos2': 4},
+                                   chromosomes=CHROMS)
+gs = hic.gene_score(contacts, genes, resolution=GS_RES, min_pos_dist=1000, nproc=NPROC, progress=False)
+per_cell = np.asarray(gs.X.sum(axis=1)).ravel()
+print(f'{gs.n_obs:,} cells x {gs.n_vars:,} genes; median {np.median(per_cell):,.0f} contacts per cell inside genes')
+""")
+
+md(r"""
+Do the gene scores carry cell-type information? Each cell has only a few
+thousand contacts inside genes. A Wilcoxon test of each type against all other
+cells ranks genes by how much higher their (log-normalised) scores are in that
+type. The top five genes per type:
+""")
+code(r"""
+gsl = gs.copy()
+sc.pp.normalize_total(gsl, target_sum=1e4)
+sc.pp.log1p(gsl)
+gsl.var_names = gsl.var['gene_name'].astype(str)
+gsl.var_names_make_unique()
+gsl.obs['rnatype'] = pd.Categorical(gsl.obs['rnatype'], categories=TYPES)
+sc.tl.rank_genes_groups(gsl, 'rnatype', method='wilcoxon')
+top = sc.get.rank_genes_groups_df(gsl, None)
+top = top[top['logfoldchanges'] > 0].groupby('group', observed=True).head(5)
+top.groupby('group', observed=True)['names'].apply(', '.join).reindex(TYPES).to_frame('top genes')
+""")
+
+md(r"""
+Known type genes come out on top without a marker list: Rasgrf2 for layer
+2/3 IT neurons, Hs3st4 for CT neurons, Rarb and Foxp1 for striatal neurons
+(D12MSN), Adarb2 and Gad2 for VIP neurons, Cacna2d2 for PV neurons and Sox6 for
+OPC. The signal comes from long genes; short markers such as Sst (1.4 kb) or
+Vip (8 kb) span one or two 10 kb bins and collect almost no contacts.
+""")
+
+md(r"""
+## 8 · Fig 1d: co-embedding with snRNA-seq
+
+The UMAP of the paper's Fig 1d is not built from Hi-C alone. The authors
+co-embedded the Hi-C gene scores with snRNA-seq of the same tissue (frontal
+cortex Droplet Paired-Tag RNA, GEO GSE224560; 22,054 nuclei) and gave each
+Hi-C cell the label of its nearest RNA nuclei. The `rnatype` column of the
+cell table is the result. The RNA labels (`Anno0.8_yel`) are the same 20
+types.
+
+We repeat the co-embedding with epione: canonical correlation analysis (CCA)
+between the two gene-level matrices (`epi.tl.integrate(method='cca')`), then a
+distance-weighted vote of the 15 nearest RNA nuclei (`epi.tl.transfer_labels`).
+As in the paper, the features are the 2,000 genes whose gene scores vary
+most across cells (standard deviation after depth normalisation) among the
+genes measured in the RNA. Both matrices are depth-normalised and
+log-transformed; `integrate` z-scores each feature before the CCA.
+
+**RNA data.** The six frontal-cortex RNA matrices of GSE224560
+(`GSM7025954`, `GSM7025955`, `GSM7025960`–`GSM7025963`,
+`*_raw_feature_bc_matrix.h5`) and the cell table in
+`GSE224560_FC_Droplet_Paired-Tag_metadata.tar.gz`. Nuclei with
+`RNA_keep_cells` are the 22,054 used in the paper.
+""")
+code(r"""
+import tarfile
+import anndata as ad
+with tarfile.open(DATA / 'GSE224560_FC_Droplet_Paired-Tag_metadata.tar.gz') as t:
+    rmeta = pd.read_csv(t.extractfile('metadata/FC_RNA_merged_rmScrublet.meta.xls'), sep='\t', index_col=0)
+rmeta = rmeta[rmeta['RNA_keep_cells'] == True]
+parts = []
+for gsm in ('GSM7025954_YX796', 'GSM7025955_YX797', 'GSM7025960_YX839',
+            'GSM7025961_YX840', 'GSM7025962_YX841', 'GSM7025963_YX842'):
+    r = sc.read_10x_h5(DATA / f'{gsm}_raw_feature_bc_matrix.h5')
+    r.var_names = r.var['gene_ids'].astype(str)
+    r.obs_names = gsm.split('_')[1] + ':' + r.obs_names
+    parts.append(r[r.obs_names.isin(rmeta.index)].copy())
+rna = ad.concat(parts, merge='first')
+rna.obs = rmeta.loc[rna.obs_names, ['Anno0.8_yel']].copy()
+print(f'RNA: {rna.n_obs:,} nuclei x {rna.n_vars:,} genes')
+rna.obs['Anno0.8_yel'].value_counts().reindex(TYPES).rename('nuclei').to_frame().T
+""")
+code(r"""
+hic_gs = gs[:, gs.var_names.isin(rna.var_names)].copy()
+hic_gs = hic_gs[:, np.asarray((hic_gs.X > 0).sum(axis=0)).ravel() > 10].copy()
+depth = np.asarray(hic_gs.X.sum(axis=1)).ravel()
+sd = (hic_gs.X.toarray() / depth[:, None] * np.median(depth)).std(axis=0)
+features = list(hic_gs.var_names[np.argsort(-sd)[:2000]])
+
+for a in (hic_gs, rna):
+    sc.pp.normalize_total(a, target_sum=1e4)
+    sc.pp.log1p(a)
+epi.tl.integrate(hic_gs, rna, method='cca', features=features, num_cc=30)
+epi.tl.transfer_labels(hic_gs, rna, reference_label='Anno0.8_yel', k=15, key_added='transferred')
+
+pred, pub = hic_gs.obs['transferred'].astype(str), hic_gs.obs['rnatype'].astype(str)
+print(f"same cell type as the paper's label: {np.mean(pred == pub):.3f}")
+print(f"same major class (Glu / GABA / glia): {np.mean(pred.map(MAJOR) == pub.map(MAJOR)):.3f}")
+""")
+code(r"""
+colors = rmeta.drop_duplicates('Anno0.8_yel').set_index('Anno0.8_yel')['Subclass.color']
+joint = ad.concat([rna, hic_gs], label='modality', keys=['RNA', 'Hi-C'])
+joint.obs['cell type'] = pd.Categorical(np.r_[rna.obs['Anno0.8_yel'].astype(str), pred.to_numpy()],
+                                        categories=TYPES)
+joint.obs['paper label'] = pd.Categorical(np.r_[rna.obs['Anno0.8_yel'].astype(str), pub.to_numpy()],
+                                          categories=TYPES)
+sc.pp.neighbors(joint, n_neighbors=25, use_rep='X_cca')
+sc.tl.umap(joint, random_state=0)
+for key in ('cell type', 'paper label'):
+    joint.uns[f'{key}_colors'] = [colors[t] for t in TYPES]
+is_rna = (joint.obs['modality'] == 'RNA').to_numpy()
+fig, axes = plt.subplots(1, 4, figsize=(26, 6))
+joint.obs['modality'] = pd.Categorical(joint.obs['modality'].astype(str), categories=['RNA', 'Hi-C'])
+joint.uns['modality_colors'] = ['#BBBBBB', '#D62728']
+sc.pl.umap(joint, color='modality', ax=axes[0], show=False, size=4, title='RNA and Hi-C')
+sc.pl.umap(joint[is_rna], color='cell type', ax=axes[1], show=False, size=4, legend_loc='on data',
+           legend_fontsize=7, title='RNA: Anno0.8_yel')
+sc.pl.umap(joint[~is_rna], color='cell type', ax=axes[2], show=False, size=8, legend_loc='on data',
+           legend_fontsize=7, title='Hi-C: transferred label')
+sc.pl.umap(joint[~is_rna], color='paper label', ax=axes[3], show=False, size=8, legend_loc='on data',
+           legend_fontsize=7, title="Hi-C: paper's label (rnatype)")
 plt.tight_layout(); plt.show()
-X = emb.obsm['X_schicluster']
-r = [np.corrcoef(X[:, k], emb.obs['log10 contacts'])[0, 1] for k in range(3)]
-print('correlation of components 1-3 with log10 contacts:', np.round(r, 2))
 """)
 
 md(r"""
-The embedding separates glia from neurons: oligodendrocytes (OGC), OPC and
-microglia (MGL) each form a group of their own, and astrocytes (ASC) sit at the
-edge of the neurons. Glu and GABA neurons, and the neuronal subtypes, share one
-large group. Within it the main gradient is sequencing depth: components 1 and
-3 correlate with log10 contacts at r = 0.60 and 0.72.
-""")
-
-md(r"""
-How much of the labels does the embedding recover? A cross-validated
-15-nearest-neighbour classifier on the 50 components predicts each cell's
-label from its neighbours; Leiden clusters are compared with the labels by
-the adjusted Rand index (ARI).
+The Hi-C cells fall among the RNA nuclei rather than in a block of their own.
+Glia and striatal neurons land on their RNA clusters; many cortical neurons
+sit between the IT clusters. How often does the transferred label agree with
+the paper's?
 """)
 code(r"""
-from sklearn.model_selection import StratifiedKFold, cross_val_score
-from sklearn.neighbors import KNeighborsClassifier
-from sklearn.metrics import adjusted_rand_score
-cv = StratifiedKFold(5, shuffle=True, random_state=0)
-rows = {}
-for level in ('major', 'rnatype'):
-    y = emb.obs[level].astype(str)
-    acc = cross_val_score(KNeighborsClassifier(15), emb.obsm['X_schicluster'], y, cv=cv)
-    rows[level] = {'15-NN accuracy': acc.mean(), 'largest class': y.value_counts(normalize=True).iloc[0]}
-sc.tl.leiden(emb, resolution=1.0, random_state=0, key_added='leiden')
-for level in ('major', 'rnatype'):
-    rows[level]['ARI (Leiden)'] = adjusted_rand_score(emb.obs[level].astype(str), emb.obs['leiden'])
-pd.DataFrame(rows).T.round(3)
+agree = pd.Series({t: np.mean(pred[pub == t] == t) for t in TYPES}, name='agreement')
+fig, axes = plt.subplots(1, 2, figsize=(17, 6.5), gridspec_kw={'width_ratios': [1, 2.2]})
+agree.plot.barh(ax=axes[0], color=[colors[t] for t in TYPES])
+axes[0].invert_yaxis(); axes[0].set_xlim(0, 1); axes[0].set_xlabel("fraction with the paper's label")
+cm = epi.tl.confusion_matrix(pub.to_numpy(), pred.to_numpy()).reindex(index=TYPES, columns=TYPES).fillna(0)
+epi.pl.plot_confusion_matrix(cm, normalize='row', ax=axes[1])
+axes[1].set_ylabel("paper's label"); axes[1].set_xlabel('transferred label')
+plt.tight_layout(); plt.show()
 """)
 
 md(r"""
-The 15-NN classifier gets the major class right for 71 % of cells, against
-63 % for always guessing Glu, and the cell type for 26 %, against 17 %. The
-Leiden clusters hardly match the labels (ARI 0.03 and 0.06). On the
-scool-binned contacts, removing depth (regressing log10 contacts out of the
-components, or keeping the deepest half of the cells) or widening `dist` to
-5 Mb left the 15-NN accuracy between 0.70 and 0.79.
+The transferred label matches the paper's for 46 % of the cells, and the
+major class (Glu, GABA or glia) for 74 %. Agreement follows how distinct a type
+is in the RNA. Microglia, OPC, striatal neurons (D12MSN), astrocytes and
+oligodendrocytes agree for 73–97 % of cells, PV interneurons and
+corticothalamic neurons (CTGL) for about 60–70 %. The IT neurons of
+neighbouring layers, the claustrum (CLAGL) and striatal GABA neurons (STRGA)
+agree least; their cells mostly go to another IT or neighbouring neuronal
+type. None of the 68 VLMC cells is called VLMC.
 
-So with contacts alone, the 100 kb scHiCluster embedding of LC462 separates
-glia from neurons but not the neuronal types. One reason is depth: a median
-LC462 cell has 22,000 cis contacts longer than 1 kb (most of its 167,000
-contacts are shorter), against about 200,000 long-range cis contacts in an
-HCEA cell, where the same embedding separates six blood types (see the HCEA
-embedding case study). The paper's Fig 1d labels come from co-embedding with
-snRNA-seq (Droplet Paired-Tag), not from contacts alone.
+The paper's labels are not ground truth: they came from the same kind of
+transfer, but with gene scores from imputed 10 kb contacts (see below) and
+both samples (6,235 cells). The comparison shows that raw gene scores of
+LC462 recover the glial and the most distinct neuronal types; finer neuronal
+subtypes need more signal per cell than raw contacts give.
+""")
+
+md(r"""
+### Gene scores from imputed 10 kb contacts
+
+The paper computed its gene scores from contacts imputed at 10 kb, not from
+raw contacts. Imputation spreads each contact over neighbouring bins, which
+can help cells as sparse as these. With scHiCluster it is two commands: impute
+every cell at 10 kb (this writes a Snakemake workflow that produces one
+imputed `.cool` per cell), then score the genes on the imputed cools
+(`--cell_table_path`: two columns, cell id and imputed cool path):
+
+```
+hicluster prepare-impute --cell_table cell_table.tsv --batch_size 1536 --cpu_per_job 96 \
+    --pad 2 --chr1 1 --pos1 2 --chr2 3 --pos2 4 --resolution 10000 \
+    --window_size 30000000 --step_size 10000000 --output_dist 5050000 \
+    --chrom_size_path mm10.chrom.sizes --output_dir impute/10K/
+hicluster gene-score --mode impute --resolution 10000 --cell_table_path imputed_cools.tsv \
+    --gene_meta_path genes.bed --chrom_size_path mm10.chrom.sizes \
+    --output_hdf_path geneimputescore.hdf --cpu 48
+```
+
+The gene-score table can then replace `gs` above. At 10 kb the imputed
+matrices take about 1 GB per cell (about 3.5 TB for LC462) and several hours
+on a cluster, so this case study scores raw contacts.
 """)
 
 md(r"""
@@ -338,15 +456,15 @@ md(r"""
 |---|---|
 | Fig 1f (chr1 maps, compartments) | `demux_pairs_by_barcode` → `contacts_to_scool` → `merge_cells` → `compartment_model` / `project_compartments` |
 | Fig 1e (compartment SCC) | `project_compartments` → Spearman |
-| Fig 1d (cell embedding) | `impute_cells` (scHiCluster, 100 kb) → `embedding(method="schicluster")` → UMAP |
+| gene scores | `load_contact_tables` → `gene_score` (10 kb, contacts ≥ 1 kb) |
+| Fig 1d (co-embedding with RNA) | `epi.tl.integrate(method='cca')` → `epi.tl.transfer_labels` → UMAP |
 
 Not covered: Fig 1g (25 kb insulation, TAD boundaries) and Fig 1h (10 kb
 zoom). Build the pseudobulks at those resolutions with `contacts_to_scool` /
 `merge_cells` and use `epi.bulk.hic.insulation` / `tad_boundaries`. The paper's
-UMAP combines both samples (LC462 and LC716, 6,235 cells); this case study uses
-LC462 only.
+UMAP combines both samples (LC462 and LC716, 6,235 cells) and gene scores from
+imputed 10 kb contacts; this case study uses LC462 and raw contacts.
 """)
-
 
 nb = nbf.v4.new_notebook()
 nb["cells"] = CELLS
