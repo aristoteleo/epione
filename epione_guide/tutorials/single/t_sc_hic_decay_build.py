@@ -42,8 +42,9 @@ their two ends. This tutorial follows that analysis:
 The decay histograms and ratios reproduce HCEA's published values exactly
 (`tests/parity/schicluster_decay/MANIFEST.md`).
 
-**Data.** The 8,040 HCEA snm3C-seq nuclei of the compartment tutorial: memory
-T cells (`c1`), myeloid cells (`c0`) and B cells (`c7`) from 13 tissues.
+**Data.** The 13,166 HCEA snm3C-seq nuclei of the compartment tutorial: the six
+haematopoietic major types (memory T `c1`, myeloid `c0`, B `c7`, naive T `c15`,
+mast `c24`, NK `c27`) from 15 tissues.
 """)
 
 md("## 0 · Setup")
@@ -183,11 +184,11 @@ plt.tight_layout(); plt.show()
 md(r"""
 ### Ratio by type and tissue
 
-The ratio separates the three types. Within a type, the tissue the cell came
+The ratio separates the types. Within a type, the tissue the cell came
 from shifts it too; the cis/trans ratio of a cell tracks its short/long ratio.
 """)
 code(r"""
-fig, axes = plt.subplots(1, 2, figsize=(11, 3.4), width_ratios=[1, 3])
+fig, axes = plt.subplots(1, 2, figsize=(15, 3.6), width_ratios=[1, 3.5])
 sns.boxplot(data=adata.obs, x='majortype', y='short_long', order=leg, ax=axes[0], showfliers=False,
             palette=L1_color)
 axes[0].set_xticklabels([L1_annot[t] for t in leg], rotation=30, ha='right')
@@ -205,19 +206,21 @@ print(f'Pearson r(cis/trans, short/long) = {r:.3f}')
 
 md(r"""
 Myeloid cells have the most short-range contacts (median log2 ratio −0.29),
-memory T cells the fewest (−0.77), with B cells in between (−0.64). The same
-order holds within almost every tissue, so it is a property of the cell type
-rather than of where the cells were sampled; tissue still moves the ratio
-within a type (myeloid cells of the right atrium and liver sit highest). The
-cis/trans ratio is only weakly related to it (r ≈ 0.24).
+mast and memory T cells the fewest (−0.82 and −0.77), with NK (−0.45), naive
+T (−0.52) and B cells (−0.72) in between. Within most tissues myeloid cells
+still sit highest, so the difference is a property of the cell type; tissue
+moves the ratio too (myeloid cells of the right atrium and liver are the
+highest). Naive T cells, almost all from blood, are the most uniform (s.d.
+0.15). The cis/trans ratio is only weakly related to the short/long ratio
+(r ≈ 0.16).
 """)
 
 md(r"""
 ### Ratio and compartmentalisation, cell by cell
 
-HCEA compared the ratio of each major type with its compartment strength. With
-three types that is three points, so we use the per-cell strength from the
-compartment tutorial (scHiCluster's AA, BB, AB sums) instead.
+HCEA compared the ratio of each major type with its compartment strength. We
+also look cell by cell, using the per-cell strength from the compartment
+tutorial (scHiCluster's AA, BB, AB sums).
 """)
 code(r"""
 SC = COMP_OUT / 'sc_compartment.h5ad'
@@ -241,10 +244,10 @@ else:
 """)
 
 md(r"""
-Within each type, cells with stronger compartments also have relatively more
-short-range contacts (Spearman 0.20–0.31). Across all cells the sign flips
-(−0.12), because memory T cells combine the strongest compartments with the
-lowest ratio: the between-type difference hides the within-type trend.
+Within each type, cells with stronger compartments have relatively more
+short-range contacts (Spearman 0.11–0.43, strongest in NK and B cells).
+Pooled over all cells the relation almost vanishes (0.08), because the types
+differ in both quantities.
 """)
 
 md(r"""
@@ -293,8 +296,8 @@ pd.Series({L1_annot[t]: int(hist[t]['diff'].sum()) for t in types}, name='contac
 
 md(r"""
 Each panel shows, for every distance (rows), how a type's contacts are spread
-over score differences (top) or score means (bottom), relative to the three
-types together (log2). Red: the type has more of its contacts there than the
+over score differences (top) or score means (bottom), relative to all types
+together (log2). Red: the type has more of its contacts there than the
 average; white cells have fewer than 50 contacts.
 """)
 code(r"""
@@ -314,7 +317,7 @@ def rel(kind):
     return out
 
 order_t = [t for t in leg if t in types]
-fig, axes = plt.subplots(2, len(order_t), figsize=(3.2 * len(order_t), 6.4), sharey=True)
+fig, axes = plt.subplots(2, len(order_t), figsize=(2.6 * len(order_t), 5.6), sharey=True)
 for row, (kind, xt, xl, xlabel) in enumerate([
         ('diff', np.arange(0, 51, 50 / 3) - 0.5, [0, 10, 20, 30], 'compartment score difference'),
         ('sum', np.arange(0, 51, 50 / 3) - 0.5, [-15, -5, 5, 15], 'compartment score mean')]):
@@ -324,16 +327,16 @@ for row, (kind, xt, xl, xlabel) in enumerate([
         ax.imshow(r[t], cmap=cmap, aspect='auto', interpolation='none', vmin=-1, vmax=1)
         ax.set_xticks(xt); ax.set_xticklabels(xl)
         ax.set_yticks(dist_t); ax.set_yticklabels(dist_l)
-        ax.set_title(L1_annot[t]); ax.set_xlabel(xlabel)
+        ax.set_title(L1_annot[t]); ax.set_xlabel(xlabel if ax is axes[row, 0] else '')
 plt.tight_layout(); plt.show()
 """)
 
 md(r"""
-Memory T cells have relatively more contacts between ends with very different
-scores (A–B contacts, right side of the top row), most clearly below 10 Mb;
-B cells have fewer, and myeloid cells sit in between. By the mean score
-(bottom row: B–B on the left, A–A on the right) the three immune types differ
-little.
+At large score differences (A–B contacts, right side of the top row), memory
+T cells have more contacts than the average of the six types at every
+distance, while NK, naive T and B cells have fewer; myeloid and mast cells sit
+in between. By the mean score (bottom row: B–B on the left, A–A on the right)
+the types differ little.
 """)
 
 md(r"""

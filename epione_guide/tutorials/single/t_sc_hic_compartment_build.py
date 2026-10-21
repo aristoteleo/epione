@@ -58,9 +58,13 @@ Every step is checked against its reference (HCEA's published objects,
 dcHiC in R, scHiCluster); the gates and measured errors are in
 `tests/parity/schicluster_compartment/MANIFEST.md`.
 
-**Data.** 8,040 HCEA nuclei profiled by snm3C-seq: immune cells from 13
-tissues in three major types — memory T cells (`c1`), myeloid cells (`c0`)
-and B cells (`c7`). Each cell is a contact table
+**Data.** 13,166 HCEA nuclei profiled by snm3C-seq from the public release
+(Hugging Face `zhoujt1994/HumanCellEpigenomeAtlas_sc_contact`): the six
+haematopoietic major types — memory T cells (`c1`), myeloid cells (`c0`),
+B cells (`c7`), naive T cells (`c15`), mast cells (`c24`) and NK cells
+(`c27`) — from 15 tissues. Naive T, mast and NK cells are complete; the
+other three are subsets of the atlas (memory T 4,344 of 7,914; myeloid 2,588
+of 8,306; B 2,000 of 3,513). Each cell is a contact table
 (`*.3C.contact.rmbkl.tsv.gz`, blacklist removed) with a median of about
 200,000 long-range cis contacts. HCEA ran the same pipeline on all 86,689
 cells and 35 major types; section 8 compares the two.
@@ -123,8 +127,8 @@ md(r"""
 
 `contacts_to_scool` bins every cell at 100 kb exactly as scHiCluster's
 `generate-scool` does (duplicates dropped, cis contacts closer than 2.5 kb
-dropped, `(pos - 1) // 100 kb`), into one `.scool` that holds all 8,040 raw
-cells. `merge_cells` then sums the raw contacts of each major type into one
+dropped, `(pos - 1) // 100 kb`), into one `.scool` that holds every raw
+cell. `merge_cells` then sums the raw contacts of each major type into one
 `.cool`, as `cooler merge` does, plus one cool
 of all cells that defines the model. Compartments only use contacts within a
 chromosome, so `cis_only=True` leaves out the trans pixels, which are most of
@@ -240,11 +244,11 @@ def chrom_panels(cool, scores, column, title):
     fig.suptitle(title, y=1.0)
     plt.tight_layout(); plt.show()
 
-chrom_panels(cool_merged, merged_score, 'merged', 'merged raw contacts, 8,040 cells')
+chrom_panels(cool_merged, merged_score, 'merged', f'merged raw contacts, {len(cell_ids):,} cells')
 """)
 
 md(r"""
-PC1 is the compartment axis on every chromosome, and 24,611 of the 28,760
+PC1 is the compartment axis on every chromosome, and 24,647 of the 28,760
 autosomal bins pass the filter (24,478 in the full atlas). The filtered bins
 are centromeres, gaps and the short arms of the acrocentric chromosomes
 (chr13–15, 21, 22).
@@ -273,18 +277,20 @@ comp[TYPES].rename(columns=L1_annot).corr().round(3)
 """)
 
 md(r"""
-The three immune types share most of their compartments (r = 0.84–0.91
-between their tracks); memory T and B cells are the most alike.
+The six types share most of their compartments (r = 0.84–0.96 between
+their tracks). The lymphocytes are the most alike (naive and memory T cells
+0.96, NK cells with either T type 0.95); myeloid and mast cells are the most
+distinct (0.84–0.88 with every other type).
 """)
 md(r"""
-The three types on one chromosome: correlation matrix and projected score of
-chr15, where Part 2 finds the strongest difference between them.
+All types on one chromosome: correlation matrix and projected score of chr5,
+which carries the strongest difference between the types (Part 2).
 """)
 code(r"""
-C15 = 'chr15'
+C15 = 'chr5'
 m15 = model[model['chrom'] == C15]
 k15 = np.where(m15['keep'])[0]
-fig, axes = plt.subplots(2, len(TYPES), figsize=(3.4 * len(TYPES), 4.4), height_ratios=[5, 1.2],
+fig, axes = plt.subplots(2, len(TYPES), figsize=(2.5 * len(TYPES), 3.6), height_ratios=[5, 1.2],
                          sharex='col')
 for j, ct in enumerate(TYPES):
     _, C = hic.oe_correlation(cool_L1[ct], C15, keep=m15['keep'].to_numpy())
@@ -315,8 +321,8 @@ sad = {ct: hic.compartment_saddle(cool_L1[ct], model) for ct in TYPES}
 compstr = pd.DataFrame({ct: s['strength'] for ct, s in sad.items()}).T
 compstr.index = compstr.index.map(L1_annot)
 
-fig, axes = plt.subplots(1, len(TYPES), figsize=(4.2 * len(TYPES), 3.8))
-for ax, ct in zip(axes, TYPES):
+fig, axes = plt.subplots(2, 3, figsize=(12.6, 7.4))
+for ax, ct in zip(axes.flat, TYPES):
     s = sad[ct]['strength']
     epi.pl.plot_saddle(sad[ct]['saddle'], ax=ax, vmin=-0.8, vmax=0.8, title=L1_annot[ct],
                        label='log2 normalized interaction')
@@ -327,10 +333,11 @@ compstr.sort_values('strength').round(3)
 """)
 
 md(r"""
-Memory T cells are the most compartmentalised (strength 8.7), B cells next
-(7.5) and myeloid cells the least (5.5), the same order as the short/long
-contact ratio in the decay tutorial: myeloid cells have the most short-range
-contacts and the weakest compartments.
+Naive T cells are the most compartmentalised (strength 10.2), then memory T
+(8.7), NK (7.8), mast (7.3) and B cells (7.2); myeloid cells are the least
+(5.5). Myeloid cells also have the most short-range contacts (decay tutorial);
+across the other types, strength and the short/long ratio do not follow the
+same order.
 """)
 
 md(r"""
@@ -356,9 +363,12 @@ HCEA wrote each type's scores as dcHiC's per-chromosome `pc.bedGraph` files
 memory. Here dcHiC gets the raw-contact scores of section 4. HCEA's published
 differential compartments used scores of *imputed* contacts projected on the
 same raw model and bins, so its numbers differ from these; the dcHiC statistic
-itself is the same. With three types, `covRob` picks the Donoho–Stahel estimator; with
-HCEA's 35 types it picks the OGK estimator. Both are ported from R and match
-it (see the MANIFEST). `out_dir=` also writes dcHiC's result tree, and
+itself is the same. `covRob` chooses its estimator from the number of types
+and of bins per chromosome: with these six types it uses MCD on chromosomes
+with at least 1,000 bins (chr1–12) and Donoho–Stahel on the others; with
+HCEA's 35 types it uses OGK. All three are ported from R, including R's random
+number stream that MCD and Donoho–Stahel draw from, and match it (see the
+MANIFEST). `out_dir=` also writes dcHiC's result tree, and
 `epi.bulk.hic.dchic_analyze` runs from dcHiC's own `input.txt` layout.
 """)
 code(r"""
@@ -373,9 +383,9 @@ binall.sort_values('sample_maha', ascending=False).head()
 """)
 
 md(r"""
-5,420 of 24,611 bins have padj < 0.1. With three well-separated cell types
-and 100 kb bins, a large fraction of the genome passes a nominal FDR, which is
-why HCEA ranked bins by the size of the statistic instead (next section).
+9,282 of 24,647 bins (38 %) have padj < 0.1. With six well-separated cell
+types and 100 kb bins, a large part of the genome passes a nominal FDR, which
+is why HCEA ranked bins by the size of the statistic instead (next section).
 """)
 
 md(r"""
@@ -419,22 +429,23 @@ cg = sns.clustermap(tmp3c, cmap='bwr', vmin=-3, vmax=3, metric='cosine', col_clu
                     figsize=(3.5, 5), xticklabels=[L1_annot[c] for c in TYPES],
                     yticklabels=[], cbar_pos=(1.0, 0.35, 0.04, 0.3))
 cg.ax_cbar.set_title('score', fontsize=9)
-cg.ax_heatmap.set_ylabel(f'{tmp3c.shape[0]} differential bins')
+cg.ax_heatmap.set_ylabel('')
+cg.ax_heatmap.set_title(f'{tmp3c.shape[0]:,} differential bins')
 plt.show()
 
 pattern = pd.DataFrame(np.sign(tmp3c), columns=[L1_annot[c] for c in TYPES]).replace({1: 'A', -1: 'B'})
-pattern.value_counts().rename('bins').to_frame()
+pattern.value_counts().rename('bins').to_frame().head(10)
 """)
 
 md(r"""
-735 bins pass the selection. The largest group (246 bins) is A in myeloid
-cells and B in both lymphoid types; the next (162) is A in myeloid and B cells
-but B in memory T cells.
+1,278 bins pass the selection. The largest groups are A only in mast cells
+(181 bins), A in myeloid and mast cells (110), A only in myeloid cells (87),
+and A in the T and NK cells but B in the others (81).
 """)
 
 md(r"""
-A differential region in the browser: the three projected tracks and the
-statistic around the strongest differential bin.
+A differential region in the browser: the projected tracks of all types and
+the statistic around the strongest differential bin.
 """)
 code(r"""
 top = binall.loc[selb].sort_values('sample_maha', ascending=False).iloc[0]
@@ -455,30 +466,31 @@ plt.tight_layout(); plt.show()
 """)
 
 md(r"""
-The strongest differential region, chr15 ≈ 51 Mb, is a block that is A in
-myeloid cells and B in memory T and B cells; its neighbours keep the same
-compartment in all three types.
+The strongest differential region, chr5 ≈ 88.8–90.2 Mb, is A in myeloid and
+B cells and B in memory T, naive T and mast cells, with NK cells weakly B; the
+flanking blocks keep the same compartment in every type.
 """)
 
 md(r"""
 ### 8 · Validation against the published atlas
 
-HCEA's published scores for these three major types come from all 86,689
-cells (this tutorial uses 8,040) and are on the atlas-wide model. If
-`published/hcea_L1_compartment_raw_c0_c1_c7.tsv.gz` is present, we compare bin
-by bin.
+HCEA's published scores for these six major types come from all 86,689
+cells and are on the atlas-wide model. If
+`published/hcea_L1_compartment_raw_hema.tsv.gz` is present, we compare bin by
+bin.
 """)
 code(r"""
-PUB = DATA / 'published/hcea_L1_compartment_raw_c0_c1_c7.tsv.gz'
+PUB = DATA / 'published/hcea_L1_compartment_raw_hema.tsv.gz'
 if PUB.exists():
     pub = pd.read_csv(PUB, sep='\t')
     both = comp.merge(pub, on=['chrom', 'start', 'end'], suffixes=('', '_atlas'))
     print(f'{len(both):,} shared bins')
-    fig, axes = plt.subplots(1, len(TYPES), figsize=(3.4 * len(TYPES), 3.2))
-    for ax, ct in zip(axes, TYPES):
+    n_type = adata.obs['majortype'].value_counts()
+    fig, axes = plt.subplots(2, 3, figsize=(10.5, 6.6))
+    for ax, ct in zip(axes.flat, TYPES):
         x, y = both[f'{ct}_atlas'], both[ct]
         ax.scatter(x, y, s=1, alpha=0.3, color=L1_color[ct], rasterized=True)
-        ax.set_xlabel('atlas (86,689 cells)'); ax.set_ylabel('this tutorial (8,040)')
+        ax.set_xlabel('atlas'); ax.set_ylabel(f'this tutorial ({n_type[ct]:,} cells)')
         ax.set_title(f'{L1_annot[ct]}: r = {np.corrcoef(x, y)[0, 1]:.3f}')
     plt.tight_layout(); plt.show()
 else:
@@ -486,9 +498,10 @@ else:
 """)
 
 md(r"""
-With a tenth of the atlas's cells, the tracks still agree closely with the
-published ones (r = 0.997 for memory T cells, 0.982 for B cells, 0.977 for
-myeloid cells).
+The types that are complete here (naive T, mast and NK cells) reproduce the
+atlas almost exactly (r = 0.999); the remaining differences come from the
+merged model, fitted on 13,166 instead of 86,689 cells. The subsampled types
+agree closely too (memory T 0.997, B 0.995, myeloid 0.977).
 """)
 
 md(r"""
@@ -529,7 +542,7 @@ pd.Series({L1_annot[ct]: spearmanr(np.asarray(sc_comp.X[(sc_comp.obs['majortype'
 """)
 
 md(r"""
-The agreement is moderate (Spearman 0.63–0.71): the scHiCluster score is a
+The agreement is moderate (Spearman 0.63–0.72): the scHiCluster score is a
 CpG-weighted average of a bin's partners, so it is pulled toward the CpG
 density of the neighbourhood, while the projected score is centred on each
 chromosome's own A/B axis.
@@ -569,10 +582,10 @@ print(f'15-NN accuracy of the major type from 30 PCs: {acc.mean():.3f} ± {acc.s
 """)
 
 md(r"""
-Single-cell compartment scores alone separate the three types (15-NN accuracy
-0.995 against 0.54 for always guessing the largest type). Within types, cells
-group further by origin: blood (PBMC) B and T cells sit apart from the cells
-of solid tissues.
+Single-cell compartment scores alone separate the six types (15-NN accuracy
+0.967 against 0.33 for always guessing the largest type). Mast and naive T
+cells form their own groups; memory T and NK cells overlap most; B cells split
+by origin, blood (PBMC) apart from solid tissues.
 """)
 
 md(r"""
@@ -608,9 +621,11 @@ pd.DataFrame(rows).round(4)
 """)
 
 md(r"""
-For all six pairs of types, single cells of the type called A score higher
-than single cells of the type called B at the same bins (AUC 0.97–1.00), so
-the pseudobulk calls are carried by the cells, not by a few outliers.
+For 26 of the 30 ordered pairs of types, cells of the type called A score
+higher than cells of the type called B with AUC ≥ 0.95 (median 0.995), so the
+pseudobulk calls are carried by the cells. The weakest pairs are lymphocytes
+that share most of their compartments, with few differential bins between
+them: memory T vs NK (AUC 0.78, 73 bins) and memory T vs naive T (0.92).
 """)
 
 md(r"""
