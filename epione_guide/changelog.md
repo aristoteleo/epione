@@ -8,6 +8,24 @@ The format roughly follows Keep a Changelog.
 ## Unreleased
 
 ### Added
+- Single-cell Hi-C compartments from raw contacts (`epi.single.hic`): `cpg_ratio`, `contacts_to_scool`,
+  `load_contact_tables`, `compartment_scores` (scHiCluster single-cell score), `merge_cells` (raw
+  pseudobulks, `cis_only=`), and the Human Cell Epigenome Atlas recipe `compartment_model` →
+  `project_compartments` / `compartment_saddle` / `oe_correlation`. scHiCluster outputs are reproduced
+  exactly and HCEA's published model and 35 major-type scores to ≤ 1e-13
+  (`tests/parity/schicluster_compartment`).
+- `epi.bulk.hic.differential_compartments` / `dchic_analyze`: dcHiC's `dchicf.r --pcatype analyze` in
+  Python, with `robust::covRob` (OGK and Donoho–Stahel branches), `limma::normalizeQuantiles` and R's
+  rounding; matches R on HCEA's 35 types and on three types (p-values ≤ 1e-8 relative, identical
+  padj < 0.1 sets). IHW (replicates) and covRob's MCD branch raise `NotImplementedError`.
+- Contact decay (`epi.single.hic`): `contact_decay` (scHiCluster `contact-distance`), `decay_ratio`
+  (short/long ratio), `compartment_contact_hist`, `quantile_normalize`; identical to HCEA's published
+  decay histograms (`tests/parity/schicluster_decay`).
+- Tutorials `t_sc_hic_compartment` and `t_sc_hic_decay` (8,040 HCEA snm3C-seq cells).
+
+### Fixed
+- `from epione.single import hic` (and `epi.single` before `epi.pl`) no longer fails with a circular
+  import between `epione.utils` and `epione.single.atac`.
 - `epi.tl.e2g_links`, `epi.tl.e2g_features`, `epi.tl.count_insertions` (Tn5 insertions in arbitrary
   intervals from fragment files), `epi.tl.contact_links`, `epi.tl.contact_gene_score`,
   `epi.tl.fit_contact_gamma`, `epi.tl.powerlaw_contact`.
