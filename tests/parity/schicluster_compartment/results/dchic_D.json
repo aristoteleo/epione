@@ -2,7 +2,7 @@
   "date": "2026-10-20",
   "fixture": "/large_storage/zhoulab/shengmao/epione_hic_dev/dchic_ref_hcea",
   "speed": {
-    "epione_s": 32.1,
+    "epione_s": 31.4,
     "R_s": 38.44,
     "note": "whole analyze step, wall clock; Epione with OPENBLAS_NUM_THREADS=1"
   },
@@ -21,7 +21,7 @@
         "max_rel_err": 4.642040378930312e-16,
         "degenerate_warning": false,
         "epione_s": 0.08,
-        "R_s": 0.053
+        "R_s": 0.054
       },
       "hcea_chr11": {
         "shape": [
@@ -32,7 +32,7 @@
         "epione_estim": "pairwiseqc",
         "max_rel_err": 9.870886008781464e-16,
         "degenerate_warning": false,
-        "epione_s": 0.078,
+        "epione_s": 0.077,
         "R_s": 0.049
       },
       "hcea_chr12": {
@@ -69,7 +69,7 @@
         "max_rel_err": 1.9014401821235106e-15,
         "degenerate_warning": false,
         "epione_s": 0.066,
-        "R_s": 0.037
+        "R_s": 0.036
       },
       "hcea_chr15": {
         "shape": [
@@ -80,7 +80,7 @@
         "epione_estim": "pairwiseqc",
         "max_rel_err": 1.87927201063965e-15,
         "degenerate_warning": false,
-        "epione_s": 0.062,
+        "epione_s": 0.061,
         "R_s": 0.03
       },
       "hcea_chr16": {
@@ -105,7 +105,7 @@
         "max_rel_err": 1.500451666033225e-15,
         "degenerate_warning": false,
         "epione_s": 0.062,
-        "R_s": 0.027
+        "R_s": 0.028
       },
       "hcea_chr18": {
         "shape": [
@@ -116,7 +116,7 @@
         "epione_estim": "pairwiseqc",
         "max_rel_err": 1.3243398316114704e-15,
         "degenerate_warning": false,
-        "epione_s": 0.064,
+        "epione_s": 0.063,
         "R_s": 0.031
       },
       "hcea_chr19": {
@@ -129,7 +129,7 @@
         "max_rel_err": 1.4595980164146665e-15,
         "degenerate_warning": false,
         "epione_s": 0.056,
-        "R_s": 0.024
+        "R_s": 0.023
       },
       "hcea_chr1": {
         "shape": [
@@ -140,7 +140,7 @@
         "epione_estim": "pairwiseqc",
         "max_rel_err": 5.492250043776219e-16,
         "degenerate_warning": false,
-        "epione_s": 0.099,
+        "epione_s": 0.098,
         "R_s": 0.088
       },
       "hcea_chr20": {
@@ -152,7 +152,7 @@
         "epione_estim": "pairwiseqc",
         "max_rel_err": 1.553619444570168e-15,
         "degenerate_warning": false,
-        "epione_s": 0.058,
+        "epione_s": 0.059,
         "R_s": 0.025
       },
       "hcea_chr21": {
@@ -164,8 +164,8 @@
         "epione_estim": "pairwiseqc",
         "max_rel_err": 6.437777307818947e-16,
         "degenerate_warning": false,
-        "epione_s": 0.052,
-        "R_s": 0.013
+        "epione_s": 0.051,
+        "R_s": 0.014
       },
       "hcea_chr22": {
         "shape": [
@@ -188,8 +188,8 @@
         "epione_estim": "pairwiseqc",
         "max_rel_err": 4.559398515826021e-16,
         "degenerate_warning": false,
-        "epione_s": 0.103,
-        "R_s": 0.095
+        "epione_s": 0.104,
+        "R_s": 0.094
       },
       "hcea_chr3": {
         "shape": [
@@ -212,8 +212,8 @@
         "epione_estim": "pairwiseqc",
         "max_rel_err": 4.387673243887052e-16,
         "degenerate_warning": false,
-        "epione_s": 0.096,
-        "R_s": 0.08
+        "epione_s": 0.095,
+        "R_s": 0.081
       },
       "hcea_chr5": {
         "shape": [
@@ -224,7 +224,7 @@
         "epione_estim": "pairwiseqc",
         "max_rel_err": 4.59074741783235e-16,
         "degenerate_warning": false,
-        "epione_s": 0.088,
+        "epione_s": 0.09,
         "R_s": 0.066
       },
       "hcea_chr6": {
@@ -236,7 +236,7 @@
         "epione_estim": "pairwiseqc",
         "max_rel_err": 4.673556176823297e-16,
         "degenerate_warning": false,
-        "epione_s": 0.087,
+        "epione_s": 0.086,
         "R_s": 0.069
       },
       "hcea_chr7": {
@@ -248,7 +248,7 @@
         "epione_estim": "pairwiseqc",
         "max_rel_err": 5.658480879023444e-16,
         "degenerate_warning": false,
-        "epione_s": 0.082,
+        "epione_s": 0.081,
         "R_s": 0.058
       },
       "hcea_chr8": {
@@ -260,8 +260,8 @@
         "epione_estim": "pairwiseqc",
         "max_rel_err": 6.062350441263375e-16,
         "degenerate_warning": false,
-        "epione_s": 0.083,
-        "R_s": 0.059
+        "epione_s": 0.081,
+        "R_s": 0.06
       },
       "hcea_chr9": {
         "shape": [
@@ -284,7 +284,7 @@
         "epione_estim": "pairwiseqc",
         "max_rel_err": 4.820659275381628e-16,
         "degenerate_warning": false,
-        "epione_s": 0.02,
+        "epione_s": 0.019,
         "R_s": 0.008
       },
       "rand_t3_1500x25": {
@@ -309,7 +309,7 @@
         "max_rel_err": 0.0,
         "degenerate_warning": false,
         "epione_s": 0.061,
-        "R_s": 0.01
+        "R_s": 0.011
       }
     }
   },

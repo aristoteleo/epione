@@ -55,6 +55,13 @@ class RRandom:
         words = np.asarray(st["key"], dtype=np.uint32).view(np.int32)
         return np.r_[np.int32(10403), np.int32(st["pos"]), words]
 
+    def get_state(self) -> dict:
+        """Snapshot of the generator state (restore with :meth:`set_state`)."""
+        return self._bitgen.state
+
+    def set_state(self, state: dict) -> None:
+        self._bitgen.state = state
+
     def unif_rand(self, size: int | None = None):
         """Next uniform(s) in ``(0, 1)``; one draw each, as R's ``unif_rand()``."""
         n = 1 if size is None else int(size)

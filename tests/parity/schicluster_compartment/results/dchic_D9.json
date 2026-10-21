@@ -1,0 +1,365 @@
+{
+  "date": "2026-10-20",
+  "D9": {
+    "D3": {
+      "pass": true,
+      "n_files": 308,
+      "mismatched": []
+    },
+    "D4": {
+      "same_bins": true,
+      "sample_maha": {
+        "max_rel_err": 9.951637796228945e-13,
+        "n_below_1e-300": 0,
+        "tiny_agree": true
+      },
+      "pval": {
+        "max_rel_err": 1.611694136139359e-10,
+        "n_below_1e-300": 1092,
+        "tiny_agree": true
+      },
+      "padj": {
+        "max_rel_err": 1.6117196122212546e-10,
+        "n_below_1e-300": 1088,
+        "tiny_agree": true
+      },
+      "padj_lt_0.1": {
+        "R": 9398,
+        "epione": 9398,
+        "identical_set": true
+      },
+      "score_columns_identical": true,
+      "per_chromosome_max_rel_err": {
+        "chr10": {
+          "sample_maha": 8.333633919862e-13,
+          "pval": 2.2034946327239515e-13
+        },
+        "chr11": {
+          "sample_maha": 5.314786031523086e-14,
+          "pval": 9.940607951139465e-14
+        },
+        "chr12": {
+          "sample_maha": 5.016368966265354e-14,
+          "pval": 4.542903036777315e-14
+        },
+        "chr13": {
+          "sample_maha": 6.784155628790987e-13,
+          "pval": 2.69066851849375e-13
+        },
+        "chr14": {
+          "sample_maha": 7.675223503837509e-13,
+          "pval": 5.637133621227574e-11
+        },
+        "chr15": {
+          "sample_maha": 8.701188339771486e-13,
+          "pval": 1.21482936597113e-10
+        },
+        "chr16": {
+          "sample_maha": 9.951637796228945e-13,
+          "pval": 1.4446501324263945e-10
+        },
+        "chr17": {
+          "sample_maha": 4.7849257418794656e-14,
+          "pval": 1.301324501983077e-13
+        },
+        "chr18": {
+          "sample_maha": 3.6906352931007996e-14,
+          "pval": 1.4021575712993716e-13
+        },
+        "chr19": {
+          "sample_maha": 9.456696342517392e-15,
+          "pval": 6.683782840620442e-14
+        },
+        "chr1": {
+          "sample_maha": 9.162169289781805e-13,
+          "pval": 1.527093241408851e-10
+        },
+        "chr20": {
+          "sample_maha": 7.03892413154756e-13,
+          "pval": 3.057760331213935e-11
+        },
+        "chr21": {
+          "sample_maha": 4.638092098020424e-15,
+          "pval": 1.4217073426416947e-13
+        },
+        "chr22": {
+          "sample_maha": 5.788827752231038e-13,
+          "pval": 4.044057689730131e-11
+        },
+        "chr2": {
+          "sample_maha": 9.901263464346479e-13,
+          "pval": 1.611694136139359e-10
+        },
+        "chr3": {
+          "sample_maha": 9.891333684730809e-13,
+          "pval": 1.1248563008538668e-10
+        },
+        "chr4": {
+          "sample_maha": 9.300416338221422e-13,
+          "pval": 1.259461695229899e-10
+        },
+        "chr5": {
+          "sample_maha": 7.505272997204176e-13,
+          "pval": 4.9984429633929976e-11
+        },
+        "chr6": {
+          "sample_maha": 9.925507666097977e-13,
+          "pval": 1.858837108187947e-13
+        },
+        "chr7": {
+          "sample_maha": 9.589473562607438e-13,
+          "pval": 5.301840097090924e-13
+        },
+        "chr8": {
+          "sample_maha": 1.5799584891262815e-14,
+          "pval": 1.2199717839913648e-13
+        },
+        "chr9": {
+          "sample_maha": 5.774559672325582e-13,
+          "pval": 2.0999072328989697e-13
+        }
+      },
+      "pass": true
+    },
+    "D5": {
+      "pass": true,
+      "n_files_R": 468,
+      "n_files_epione": 468,
+      "only_R": [],
+      "only_epione": [],
+      "layout_mismatched": []
+    },
+    "byte_identical_files": {
+      "identical": 440,
+      "of": 468,
+      "differing": [
+        "fdr_result/differential.intra_sample_chr10_combined.pcQnm.bedGraph",
+        "fdr_result/differential.intra_sample_chr11_combined.pcQnm.bedGraph",
+        "fdr_result/differential.intra_sample_chr12_combined.pcQnm.bedGraph",
+        "fdr_result/differential.intra_sample_chr13_combined.pcQnm.bedGraph",
+        "fdr_result/differential.intra_sample_chr14_combined.pcQnm.bedGraph",
+        "fdr_result/differential.intra_sample_chr15_combined.pcQnm.bedGraph",
+        "fdr_result/differential.intra_sample_chr16_combined.pcQnm.bedGraph",
+        "fdr_result/differential.intra_sample_chr17_combined.pcQnm.bedGraph",
+        "fdr_result/differential.intra_sample_chr18_combined.pcQnm.bedGraph",
+        "fdr_result/differential.intra_sample_chr19_combined.pcQnm.bedGraph",
+        "fdr_result/differential.intra_sample_chr1_combined.pcQnm.bedGraph",
+        "fdr_result/differential.intra_sample_chr20_combined.pcQnm.bedGraph",
+        "fdr_result/differential.intra_sample_chr21_combined.pcQnm.bedGraph",
+        "fdr_result/differential.intra_sample_chr22_combined.pcQnm.bedGraph",
+        "fdr_result/differential.intra_sample_chr2_combined.pcQnm.bedGraph",
+        "fdr_result/differential.intra_sample_chr3_combined.pcQnm.bedGraph",
+        "fdr_result/differential.intra_sample_chr4_combined.pcQnm.bedGraph",
+        "fdr_result/differential.intra_sample_chr5_combined.pcQnm.bedGraph",
+        "fdr_result/differential.intra_sample_chr6_combined.pcQnm.bedGraph",
+        "fdr_result/differential.intra_sample_chr7_combined.pcQnm.bedGraph",
+        "fdr_result/differential.intra_sample_chr8_combined.pcQnm.bedGraph",
+        "fdr_result/differential.intra_sample_chr9_combined.pcQnm.bedGraph",
+        "fdr_result/differential.intra_sample_combined.Filtered.pcQnm.bedGraph",
+        "fdr_result/differential.intra_sample_combined.pcQnm.bedGraph",
+        "fdr_result/differential.intra_sample_group.Filtered.pcOri.bedGraph",
+        "fdr_result/differential.intra_sample_group.Filtered.pcQnm.bedGraph",
+        "fdr_result/differential.intra_sample_group.pcOri.bedGraph",
+        "fdr_result/differential.intra_sample_group.pcQnm.bedGraph"
+      ]
+    },
+    "speed": {
+      "epione_s": 8.1,
+      "R_s": 17.7
+    },
+    "pass": true,
+    "covRob_first_call_estimator": {
+      "chr10": "mcd",
+      "chr11": "mcd",
+      "chr12": "mcd",
+      "chr13": "donostah",
+      "chr14": "donostah",
+      "chr15": "donostah",
+      "chr16": "donostah",
+      "chr17": "donostah",
+      "chr18": "donostah",
+      "chr19": "donostah",
+      "chr1": "mcd",
+      "chr20": "donostah",
+      "chr21": "donostah",
+      "chr22": "donostah",
+      "chr2": "mcd",
+      "chr3": "mcd",
+      "chr4": "mcd",
+      "chr5": "mcd",
+      "chr6": "mcd",
+      "chr7": "mcd",
+      "chr8": "mcd",
+      "chr9": "mcd"
+    }
+  },
+  "D7_rerun": {
+    "D3": {
+      "pass": true,
+      "n_files": 176,
+      "mismatched": []
+    },
+    "D4": {
+      "same_bins": true,
+      "sample_maha": {
+        "max_rel_err": 9.846208368213165e-13,
+        "n_below_1e-300": 0,
+        "tiny_agree": true
+      },
+      "pval": {
+        "max_rel_err": 1.1949796264580012e-10,
+        "n_below_1e-300": 275,
+        "tiny_agree": true
+      },
+      "padj": {
+        "max_rel_err": 1.194977309678694e-10,
+        "n_below_1e-300": 270,
+        "tiny_agree": true
+      },
+      "padj_lt_0.1": {
+        "R": 5877,
+        "epione": 5877,
+        "identical_set": true
+      },
+      "score_columns_identical": true,
+      "per_chromosome_max_rel_err": {
+        "chr10": {
+          "sample_maha": 5.67646287784617e-13,
+          "pval": 1.0550295516269328e-13
+        },
+        "chr11": {
+          "sample_maha": 5.2714134594032915e-14,
+          "pval": 4.9313402026969084e-14
+        },
+        "chr12": {
+          "sample_maha": 3.626981965975129e-13,
+          "pval": 1.97178793303435e-14
+        },
+        "chr13": {
+          "sample_maha": 1.6144878395725882e-14,
+          "pval": 2.2247562743036174e-14
+        },
+        "chr14": {
+          "sample_maha": 5.834172772538953e-13,
+          "pval": 1.4138995267063413e-13
+        },
+        "chr15": {
+          "sample_maha": 3.332343341790305e-13,
+          "pval": 1.3197754053576623e-13
+        },
+        "chr16": {
+          "sample_maha": 7.884198470069072e-13,
+          "pval": 1.1949796264580012e-10
+        },
+        "chr17": {
+          "sample_maha": 5.143872000279313e-14,
+          "pval": 8.70869108623773e-15
+        },
+        "chr18": {
+          "sample_maha": 7.54265537038468e-15,
+          "pval": 4.387921538173538e-14
+        },
+        "chr19": {
+          "sample_maha": 6.048195171712952e-14,
+          "pval": 9.917360124051281e-14
+        },
+        "chr1": {
+          "sample_maha": 8.340033128017938e-13,
+          "pval": 5.401588243406531e-11
+        },
+        "chr20": {
+          "sample_maha": 8.06138378959945e-13,
+          "pval": 3.706510370006376e-11
+        },
+        "chr21": {
+          "sample_maha": 5.2700085623805496e-14,
+          "pval": 1.4857242234190267e-14
+        },
+        "chr22": {
+          "sample_maha": 1.8667089385481057e-13,
+          "pval": 1.4375302421534825e-13
+        },
+        "chr2": {
+          "sample_maha": 9.846208368213165e-13,
+          "pval": 8.515528937857754e-14
+        },
+        "chr3": {
+          "sample_maha": 4.873830962734135e-13,
+          "pval": 7.03169755324986e-14
+        },
+        "chr4": {
+          "sample_maha": 9.294531891164858e-15,
+          "pval": 4.042997081368901e-14
+        },
+        "chr5": {
+          "sample_maha": 7.894874823790201e-13,
+          "pval": 6.784584051830409e-11
+        },
+        "chr6": {
+          "sample_maha": 8.724478949942905e-13,
+          "pval": 1.3434678550793135e-13
+        },
+        "chr7": {
+          "sample_maha": 8.526457759718563e-13,
+          "pval": 1.5740774254640214e-13
+        },
+        "chr8": {
+          "sample_maha": 2.592634667817671e-14,
+          "pval": 3.0843107414921626e-14
+        },
+        "chr9": {
+          "sample_maha": 9.446052973855388e-13,
+          "pval": 1.7067490098995245e-13
+        }
+      },
+      "pass": true
+    },
+    "D5": {
+      "pass": true,
+      "n_files_R": 270,
+      "n_files_epione": 270,
+      "only_R": [],
+      "only_epione": [],
+      "layout_mismatched": []
+    },
+    "byte_identical_files": {
+      "identical": 242,
+      "of": 270,
+      "differing": [
+        "fdr_result/differential.intra_sample_chr10_combined.pcQnm.bedGraph",
+        "fdr_result/differential.intra_sample_chr11_combined.pcQnm.bedGraph",
+        "fdr_result/differential.intra_sample_chr12_combined.pcQnm.bedGraph",
+        "fdr_result/differential.intra_sample_chr13_combined.pcQnm.bedGraph",
+        "fdr_result/differential.intra_sample_chr14_combined.pcQnm.bedGraph",
+        "fdr_result/differential.intra_sample_chr15_combined.pcQnm.bedGraph",
+        "fdr_result/differential.intra_sample_chr16_combined.pcQnm.bedGraph",
+        "fdr_result/differential.intra_sample_chr17_combined.pcQnm.bedGraph",
+        "fdr_result/differential.intra_sample_chr18_combined.pcQnm.bedGraph",
+        "fdr_result/differential.intra_sample_chr19_combined.pcQnm.bedGraph",
+        "fdr_result/differential.intra_sample_chr1_combined.pcQnm.bedGraph",
+        "fdr_result/differential.intra_sample_chr20_combined.pcQnm.bedGraph",
+        "fdr_result/differential.intra_sample_chr21_combined.pcQnm.bedGraph",
+        "fdr_result/differential.intra_sample_chr22_combined.pcQnm.bedGraph",
+        "fdr_result/differential.intra_sample_chr2_combined.pcQnm.bedGraph",
+        "fdr_result/differential.intra_sample_chr3_combined.pcQnm.bedGraph",
+        "fdr_result/differential.intra_sample_chr4_combined.pcQnm.bedGraph",
+        "fdr_result/differential.intra_sample_chr5_combined.pcQnm.bedGraph",
+        "fdr_result/differential.intra_sample_chr6_combined.pcQnm.bedGraph",
+        "fdr_result/differential.intra_sample_chr7_combined.pcQnm.bedGraph",
+        "fdr_result/differential.intra_sample_chr8_combined.pcQnm.bedGraph",
+        "fdr_result/differential.intra_sample_chr9_combined.pcQnm.bedGraph",
+        "fdr_result/differential.intra_sample_combined.Filtered.pcQnm.bedGraph",
+        "fdr_result/differential.intra_sample_combined.pcQnm.bedGraph",
+        "fdr_result/differential.intra_sample_group.Filtered.pcOri.bedGraph",
+        "fdr_result/differential.intra_sample_group.Filtered.pcQnm.bedGraph",
+        "fdr_result/differential.intra_sample_group.pcOri.bedGraph",
+        "fdr_result/differential.intra_sample_group.pcQnm.bedGraph"
+      ]
+    },
+    "speed": {
+      "epione_s": 5.2,
+      "R_s": null
+    },
+    "pass": true
+  }
+}
