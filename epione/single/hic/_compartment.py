@@ -9,8 +9,8 @@ Two complementary scores, both computed from **raw** (not imputed) contacts.
   (A) bins, a B bin mostly CpG-poor ones. It needs no eigendecomposition, so
   it is defined for a single sparse cell.
 * **Pseudobulk score** (:func:`compartment_model`, :func:`project_compartments`)
-  — the recipe of the Human Cell Epigenome Atlas (HCEA; Zhou, Wu, Liu *et al.*,
-  ``fig4/04.compartment.ipynb``). A PCA model is fitted once on the contacts of
+  — the recipe of the Human Cell Epigenome Atlas (HCEA; Zhou, Wu, Liu *et al.*).
+  A PCA model is fitted once on the contacts of
   all cells merged (coverage filter, distance-normalised observed/expected,
   correlation, PCA; the PC with the stronger saddle contrast is kept and its
   sign is fixed by CpG density). Each cell type's pseudobulk is then
@@ -23,7 +23,7 @@ Helpers: :func:`cpg_ratio` (per-bin CpG density, as ``bedtools nuc``),
 :func:`load_contact_tables` (index contact tables without converting them) and
 :func:`merge_cells` (raw pseudobulk ``.cool`` per group).
 
-Parity with scHiCluster and the HCEA notebook is tested in
+Parity with scHiCluster and HCEA's published results is tested in
 ``tests/parity/schicluster_compartment``.
 """
 from __future__ import annotations
@@ -884,7 +884,7 @@ def project_compartments(
     For each cool and chromosome: the model's bins, the same O/E and clipped
     correlation as the fit, then ``(C - colmeans(C)) @ loading``. Because
     every group uses the merged model's bins and loadings, the scores are on
-    one scale (HCEA ``compute_comp``).
+    one scale, as in HCEA.
 
     Arguments:
         cool_paths: ``{name: path}`` (e.g. from :func:`merge_cells`) or a list
@@ -936,7 +936,7 @@ def compartment_saddle(
         n_quantiles: quantiles per axis.
         ws: number of quantiles in each corner for the strength summary.
         clip: percentile clip used to compute the projected score. HCEA's
-            ``compsaddle`` projects without clipping (``clip=None``).
+            published saddles project without clipping (``clip=None``).
 
     Returns:
         ``dict`` with ``saddle`` (mean O/E, quantiles ordered B → A),

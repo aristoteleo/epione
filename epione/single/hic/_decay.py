@@ -4,11 +4,11 @@
   log2 bins of 1/8 starting at 2.5 kb, plus the number of off-diagonal pixels
   per chromosome (scHiCluster ``hicluster contact-distance``).
 * :func:`decay_ratio` — log2 ratio of short- to long-range contacts per cell
-  (HCEA ``fig4/01.decay``; published as ``Short/Long``).
+  (HCEA; published as ``Short/Long``).
 * :func:`compartment_contact_hist` — contacts of each group binned by distance
   and by the compartment scores of their two ends: the difference (A–B
   contacts have a large difference) and the mean (A–A high, B–B low)
-  (HCEA ``fig4/02.decay_compartment``).
+  (HCEA).
 * :func:`quantile_normalize` — quantile normalisation with tied values mapped
   to the mean of their ranks (the ``qnorm`` package, used by HCEA to put the
   compartment scores of all cell types on one distribution).
