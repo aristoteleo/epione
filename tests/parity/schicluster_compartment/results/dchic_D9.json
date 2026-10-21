@@ -164,8 +164,8 @@
       ]
     },
     "speed": {
-      "epione_s": 8.1,
-      "R_s": 17.7
+      "epione_s": 8.0,
+      "R_s": 16.7
     },
     "pass": true,
     "covRob_first_call_estimator": {
@@ -357,7 +357,7 @@
       ]
     },
     "speed": {
-      "epione_s": 5.2,
+      "epione_s": 5.1,
       "R_s": null
     },
     "pass": true

@@ -35,11 +35,18 @@ import pandas as pd
 from epione.bulk.hic import _dchic as dc
 
 HERE = Path(__file__).resolve().parent
-DEV = Path("/large_storage/zhoulab/shengmao/epione_hic_dev")
-R_ENV = Path("/home/shengmao/.local/share/mamba/envs/dchic")
+# Machine-specific locations come from the environment:
+#   EPIONE_DCHIC_R_ENV  conda env with R, dcHiC's R packages (robust, rrcov, limma, ...) and Rscript
+#   EPIONE_DCHICF       path to dcHiC's dchicf.r (ay-lab/dcHiC 144b4df)
+#   EPIONE_HIC_DEV      scratch folder for fixtures and reference runs (default ./parity_work)
+DEV = Path(os.environ.get("EPIONE_HIC_DEV", "parity_work"))
+R_ENV = Path(os.environ.get("EPIONE_DCHIC_R_ENV", ""))
+DCHICF = os.environ.get("EPIONE_DCHICF", "dchicf.r")
 
 
 def _rscript(*args):
+    if not str(R_ENV):
+        raise RuntimeError("set EPIONE_DCHIC_R_ENV to the conda env that runs dcHiC")
     env = dict(os.environ, PATH=f"{R_ENV}/bin:" + os.environ["PATH"], CONDA_PREFIX=str(R_ENV))
     subprocess.run([str(R_ENV / "bin" / "Rscript"), *map(str, args)], check=True, env=env)
 

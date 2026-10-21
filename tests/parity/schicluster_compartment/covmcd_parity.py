@@ -35,7 +35,7 @@ import pandas as pd
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
-from dchic_parity import R_ENV, _read_table, _rscript, _write_bin, gates_d3_d5  # noqa: E402
+from dchic_parity import DCHICF, DEV, R_ENV, _read_table, _rscript, _write_bin, gates_d3_d5  # noqa: E402
 
 from epione.bulk.hic import _dchic as dc  # noqa: E402
 from epione.bulk.hic._covmcd import cov_mcd  # noqa: E402
@@ -64,7 +64,7 @@ def run_r_analyze(wd: Path) -> float:
     env = dict(os.environ, PATH=f"{R_ENV}/bin:" + os.environ["PATH"], CONDA_PREFIX=str(R_ENV))
     t = time.perf_counter()
     with open(wd / "run.log", "w") as log:
-        subprocess.run([str(R_ENV / "bin" / "Rscript"), "/large_storage/zhoulab/shengmao/dcHiC/dchicf.r",
+        subprocess.run([str(R_ENV / "bin" / "Rscript"), DCHICF,
                         "--file", "input.txt", "--pcatype", "analyze", "--dirovwt", "T", "--diffdir", "all"],
                        cwd=wd, env=env, check=True, stdout=log, stderr=subprocess.STDOUT)
     return time.perf_counter() - t
@@ -136,8 +136,9 @@ def gate_d8(work: Path, ref6: Path) -> dict:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--comp-hdf", type=Path,
-                    default=Path("/large_storage/zhoulab/shengmao/Hic_data/HCEA/analysis/compartment/L1/comp.raw.hdf"))
-    ap.add_argument("--dev", type=Path, default=Path("/large_storage/zhoulab/shengmao/epione_hic_dev"))
+                    default=Path(os.environ.get("EPIONE_HCEA_COMP_RAW", "comp.raw.hdf")),
+                    help="HCEA analysis/compartment/L1/comp.raw.hdf (or set EPIONE_HCEA_COMP_RAW)")
+    ap.add_argument("--dev", type=Path, default=DEV)
     a = ap.parse_args()
 
     comp = pd.read_hdf(a.comp_hdf, key="data")
