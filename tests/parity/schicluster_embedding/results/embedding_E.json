@@ -1,0 +1,28 @@
+{
+  "cells": 200,
+  "seconds_impute": 0.1,
+  "imputation_identical": true,
+  "E1": {
+    "identical": true,
+    "pass": true
+  },
+  "E2": {
+    "shape": [
+      200,
+      50
+    ],
+    "ref_shape": [
+      200,
+      50
+    ],
+    "max_abs_err": 51.125,
+    "max_abs_value": 1581683.75,
+    "rel": 3.232314930212819e-05,
+    "reference_self_max_abs_err": 82.08203125,
+    "reference_self_rel": 5.1895349655074856e-05,
+    "min_component_abs_corr": 0.9999999918825976,
+    "seconds_ref": 15.8,
+    "seconds_epi": 70.5,
+    "pass": true
+  }
+}

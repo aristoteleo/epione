@@ -27,3 +27,30 @@ matrices (upper triangle).
 
 E1 also checks that imputation itself matches: the per-cell `.npz` written by `impute_cells`
 equals scHiCluster's `impute_chromosome` output for the same cell and chromosome (exact).
+
+## Amendment E-1 (2026-10-21, after the first E2 run, before any rerun)
+
+First run: E1 passed (band matrices identical; imputation identical). E2 failed: max abs err
+4.2e-5 × max abs value, above 1e-6. Diagnosis: the reference is not reproducible to 1e-6 itself.
+Its matrices are float32 and `TruncatedSVD(algorithm="arpack")` starts from a random vector
+(`random_state=None`, the global numpy RNG). Running scHiCluster's own SVD steps on the same band
+matrices with global seeds 1, 2 and 3 gives max errors of 2.9e-5 to 3.7e-5 between runs; the
+largest per-component differences are in components 31–44, whose singular values lie within 0.2 %
+of a neighbour's. The 1e-6 threshold assumed a determinism the reference does not have.
+
+Change: E2 passes when (a) the epione-vs-reference error is at most 2 × the largest error between
+three reference runs with global seeds 1, 2, 3 (measured in the same driver), and (b) every
+component's absolute Pearson correlation with the reference is ≥ 0.9999. E1 and the fixture are
+unchanged.
+
+## Results (E), 2026-10-21
+
+Raw numbers in `results/embedding_E.json` (rerun after Amendment E-1).
+
+| Gate | Measured | Threshold | Pass |
+|---|---|---|---|
+| E1 band matrices (22 chromosomes, 200 cells) | identical; imputation of the test cell identical to `impute_chromosome` | exact | ✅ |
+| E2 final embedding (200 × 50) | max abs err 3.2e-5 × max value; reference vs itself 5.2e-5; min component \|r\| 0.99999999 | ≤ 2 × reference self-error, \|r\| ≥ 0.9999 | ✅ |
+
+Speed: imputation of 200 cells × 22 chromosomes at 100 kb, 430 s on 16 processes. Embedding 70 s
+(epione, one process) vs 16 s (scHiCluster, 16 processes).

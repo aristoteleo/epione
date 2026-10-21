@@ -107,7 +107,10 @@ def cpg_ratio(
         bins = bins[bins["chrom"].isin(list(chromosomes))]
     bins = bins.reset_index(drop=True)
 
-    fa = pyfaidx.Fasta(str(fasta_path), sequence_always_upper=True, as_raw=True)
+    # use an existing .fai as is: reference folders are often read-only, and pyfaidx would
+    # otherwise try to rebuild an index older than the FASTA
+    fa = pyfaidx.Fasta(str(fasta_path), sequence_always_upper=True, as_raw=True,
+                       rebuild=not Path(f"{fasta_path}.fai").exists())
     count = np.zeros(len(bins), dtype=np.int64)
     n_n = np.zeros(len(bins), dtype=np.int64)
     for chrom, idx in bins.groupby("chrom", sort=False).groups.items():
