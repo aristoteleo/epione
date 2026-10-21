@@ -242,3 +242,33 @@ order, twice each when `refine=TRUE`.
 If FastMCD's result turns out not to depend on the random subsets for these data (the same
 optimal h-subset from any start), that is reported, but the gates still require the emulated
 RNG stream to match R's after every call.
+
+## Results (D8, D9), 2026-10-20
+
+Drivers `covmcd_parity.py` (+ `covmcd_make_ref.R`); raw numbers in `results/covmcd_D8.json` and
+`results/dchic_D9.json`. The port is `epione/bulk/hic/_covmcd.py` (robustbase 0.95-1
+`rffastmcd` + `.MCDcons` / `.MCDcnp2`); `_dchic.py` now threads one emulated R generator
+(`RRandom(seed)`, dcHiC `--seed`, default 123) through every `covRob` call in dcHiC's chromosome
+order; `cov_sde` reseeds that shared generator with 21, as covRob does on R's global stream.
+
+| Gate | Measured | Threshold | Pass |
+|---|---|---|---|
+| D8 `cov_mcd` vs `covRob` mcd (6 random matrices n 1,000–5,000, p 5–19, 10 % shifted cluster; six-Hema chr1 / chr2 group matrices; seeds 123 and 21 → 16 cases) | covariance max rel err 1.9e-15; centre identical in 16 / 16; `.Random.seed` after the call identical in 16 / 16 | ≤ 1e-10; identical RNG state | ✅ |
+| D9 six Hema types end to end vs `dchicf.r` (chr1–12 mcd, chr13–22 donostah on the first call) | 468 files, identical names / columns / rows (440 byte-identical); pcOri / pcQnm identical; `sample_maha` rel err 1.0e-12, `pval` / `padj` 1.6e-10 (1,092 p-values < 1e-300 on both sides); the same 9,398 bins at padj < 0.1 | as D3–D5 | ✅ |
+
+Speed: D8, 16 calls: Epione 2.0 s, R 2.5 s (`covRob`); D9 whole analyze step: Epione 8.1 s, R 17.7 s.
+
+FastMCD's answer does depend on the random subsets for these data: over 20 seeds, the raw
+covariance of the six-Hema chr1 / chr2 matrices varies by up to 0.19 % / 0.13 % (relative, max
+entry) and that of the contaminated random matrices by up to 32 % (1,500 × 6) and 368 %
+(5,000 × 19). Matching R therefore requires the emulated random stream.
+
+Regression check after the RNG threading change: D1–D5 rerun pass with the same errors (2,354 /
+2,382 files byte-identical, as before); D6 rerun passes with the same errors; D7 rerun (via
+`covmcd_parity.py`) passes with the same errors (5,877 bins at padj < 0.1; p-values 1.2e-10).
+Only timing fields changed in `results/dchic_D.json` and `results/covsde_D6.json`.
+
+Still not ported: IHW (replicates; `NotImplementedError`, `padj_method="BH"` opt-in), and the MCD
+exact-fit paths (more than h observations on a hyperplane, a zero MAD, a singular classical
+covariance), the `nsamp = "exact"` / all-subsets path (n ≤ 22 for small p) and covMcd's
+simulated small-sample factors (n ≤ 20); these raise `NotImplementedError`.

@@ -23,13 +23,16 @@ scores) and reads them back; the port repeats those round trips with R's
 row means and variances with R's long-double accumulation. ``robust::covRob``
 picks its estimator from the data size; the ``pairwiseqc`` / ``pairwisegk``
 branch (orthogonalised Gnanadesikan-Kettenring, ``rrcov::CovOgk``, used when
-there are 20 or more conditions) is ported from ``rrcov`` 1.7-3 ``covOPW.c``.
+there are 20 or more conditions) is ported from ``rrcov`` 1.7-3 ``covOPW.c``;
+the ``donostah`` branch (few conditions and bins, ``rrcov::CovSde``) is in
+``epione.bulk.hic._covsde`` and the ``mcd`` branch (fewer than 20 conditions
+with many bins, ``robustbase::covMcd``) in ``epione.bulk.hic._covmcd``. Those
+two draw random subsets; one emulated R generator (``_r_rng``), seeded like
+dcHiC's ``set.seed(--seed)``, is threaded through all ``covRob`` calls in
+dcHiC's chromosome order, so the draws are R's.
 
-Not ported yet (``NotImplementedError``): the ``mcd`` branch of ``covRob``
-(fewer than 20 conditions with many bins) and IHW, which dcHiC uses for the
-adjusted p-value when any condition has replicates. Both use R's random number
-stream. The ``donostah`` branch (few conditions and bins) is delegated to
-``epione.bulk.hic._covsde`` when that module is present.
+Not ported yet (``NotImplementedError``): IHW, which dcHiC uses for the
+adjusted p-value when any condition has replicates.
 
 When every pairwise quadrant correlation of the condition profiles is equal
 (it happens on small refinement subsets), the OGK eigenvectors are not unique
@@ -787,26 +790,30 @@ def _cov_ogk(x: np.ndarray, smrob: str, svrob: str, niter: int = 2, beta: float 
             "raw_dist": dist2, "raw_wt": wt}
 
 
-def cov_rob(x, estim: str = "auto") -> dict:
-    """``robust::covRob(x)`` (robust 0.7.1) for the pairwise estimators.
+def cov_rob(x, estim: str = "auto", rng=None) -> dict:
+    """``robust::covRob(x)`` (robust 0.7.1).
 
     ``estim="auto"`` picks the estimator as robust does: ``donostah`` if
     ``(n < 1000 and p < 10) or (n < 5000 and p < 5)``, ``mcd`` if
-    ``n < 50000 and p < 20``, otherwise ``pairwiseqc``. Only ``pairwiseqc``
-    (OGK with MAD scale and quadrant correlation) and ``pairwisegk`` (OGK with
-    tau scale and Gnanadesikan-Kettenring) are ported.
+    ``n < 50000 and p < 20``, otherwise ``pairwiseqc``.
 
     Arguments:
         x: ``n x p`` data matrix; rows with missing values are dropped.
-        estim: ``"auto"``, ``"pairwiseqc"``, ``"pairwisegk"`` or
-            ``"donostah"`` (Stahel-Donoho, ``rrcov::CovSde`` under
-            ``set.seed(21)``; provided by ``epione.bulk.hic._covsde`` when
-            present).
+        estim: ``"auto"``, ``"pairwiseqc"`` (OGK with MAD scale and quadrant
+            correlation), ``"pairwisegk"`` (OGK with tau scale and
+            Gnanadesikan-Kettenring), ``"donostah"`` (Stahel-Donoho,
+            ``rrcov::CovSde`` under ``set.seed(21)``) or ``"mcd"``
+            (``robustbase::covMcd``, raw estimate).
+        rng: R's random number generator
+            (:class:`epione.bulk.hic._r_rng.RRandom`) for the ``donostah`` and
+            ``mcd`` branches, advanced as R's global stream would be. Default:
+            a generator in the state of ``set.seed(123)`` (dcHiC's default
+            seed).
 
     Returns:
-        ``dict`` with ``cov`` and ``center`` (the reweighted estimate that
-        ``covRob(...)$cov`` returns), the raw OGK estimate (``raw_cov``,
-        ``raw_center``, ``raw_dist``) and the chosen ``estim``.
+        ``dict`` with ``cov`` and ``center`` (what ``covRob(...)$cov`` /
+        ``$center`` return) and the chosen ``estim``; for the OGK branches also
+        the raw estimate (``raw_cov``, ``raw_center``, ``raw_dist``).
     """
     x = np.asarray(x, dtype=np.float64)
     x = x[np.isfinite(x).all(axis=1)]
@@ -827,21 +834,19 @@ def cov_rob(x, estim: str = "auto") -> dict:
         res = _cov_ogk(x, "s_mad", "qc")
     elif estim == "pairwisegk":
         res = _cov_ogk(x, "scaleTau2", "gk")
-    elif estim == "donostah":
-        try:
+    elif estim in ("donostah", "mcd"):
+        from ._r_rng import RRandom
+        if rng is None:
+            rng = RRandom(123)
+        if estim == "donostah":
             from ._covsde import cov_sde
-        except ImportError:
-            raise NotImplementedError(
-                f"covRob estimator 'donostah' is not available (see {_MANIFEST}); dcHiC "
-                "reaches it with few conditions and fewer than 1000-5000 bins."
-            ) from None
-        center, cov = cov_sde(x)
+            center, cov = cov_sde(x, rng=rng)
+        else:
+            from ._covmcd import cov_mcd
+            center, cov = cov_mcd(x, rng=rng)
         res = {"cov": np.asarray(cov, dtype=np.float64), "center": np.asarray(center, dtype=np.float64)}
     else:
-        raise NotImplementedError(
-            f"covRob estimator {estim!r} is not ported (it depends on R's random number "
-            f"stream); see {_MANIFEST}. dcHiC reaches it with fewer than 20 conditions."
-        )
+        raise ValueError(f"unknown covRob estimator {estim!r}")
     res["estim"] = estim
     return res
 
@@ -983,8 +988,14 @@ def _key(df: pd.DataFrame) -> pd.Index:
 
 def _pcanalyze(samples: List[_Sample], conditions: List[str], *, out: Optional[Path],
                rzscore: float, szscore: float, fdr: float, distclust: float, numberclust: float,
-               refine: bool, rconf: float, padj_method: str) -> pd.DataFrame:
+               refine: bool, rconf: float, padj_method: str, seed: int = 123) -> pd.DataFrame:
     from scipy.stats import chi2
+    from ._r_rng import RRandom
+
+    # dchicf.r calls set.seed(opt$seed) at start-up; the covRob calls below are the only
+    # consumers of R's global random stream, in chromosome order (donostah reseeds with
+    # 21 without restoring, mcd continues the stream).
+    rng = RRandom(seed)
 
     data_prefix = [s.prefix for s in samples]               # data$prefix (input order)
     by_cond = {c: [s for s in samples if s.cond == c] for c in conditions}
@@ -1149,12 +1160,12 @@ def _pcanalyze(samples: List[_Sample], conditions: List[str], *, out: Optional[P
         mmd = mmd * mmd
         dfree = intra_grp.shape[1] - 1
         diff = intra_grp - grp_cen
-        S = cov_rob(intra_grp)["cov"]
+        S = cov_rob(intra_grp, rng=rng)["cov"]
         smaha = _maha_scaled(diff, np.linalg.inv(S), mmd)
         pval = chi2.sf(smaha, dfree)
         if refine:
             thr = chi2.sf(chi2.ppf(rconf, dfree), dfree)
-            S = cov_rob(intra_grp[pval > thr])["cov"]
+            S = cov_rob(intra_grp[pval > thr], rng=rng)["cov"]
             smaha = _maha_scaled(diff, np.linalg.inv(S), mmd)
             pval = chi2.sf(smaha, dfree)
 
@@ -1249,6 +1260,7 @@ def differential_compartments(
     numberclust: float = 1,
     padj_method: str = "auto",
     out_dir: Optional[Union[str, Path]] = None,
+    seed: int = 123,
 ) -> pd.DataFrame:
     """Differential compartments across conditions with dcHiC's statistic.
 
@@ -1277,6 +1289,9 @@ def differential_compartments(
         padj_method: ``"auto"`` follows dcHiC (Benjamini-Hochberg without
             replicates; IHW with replicates, which raises
             ``NotImplementedError``). ``"BH"`` forces Benjamini-Hochberg.
+        seed: dcHiC ``--seed`` (default 123), the ``set.seed`` before the
+            analysis; the robust covariance draws random subsets when it uses
+            the Donoho-Stahel or MCD estimator (fewer than 20 conditions).
         out_dir: if given, the dcHiC result tree (``<cond>_data``, ``pcOri``,
             ``pcQnm``, ``fdr_result``) is written there.
 
@@ -1326,7 +1341,7 @@ def differential_compartments(
     out = Path(out_dir) if out_dir is not None else None
     return _pcanalyze(samples, conds, out=out, rzscore=rzscore, szscore=szscore, fdr=fdr,
                       distclust=distclust, numberclust=numberclust, refine=refine, rconf=rconf,
-                      padj_method=padj_method)
+                      padj_method=padj_method, seed=seed)
 
 
 def _read_bedgraph_r(path: Path) -> pd.DataFrame:
@@ -1354,6 +1369,7 @@ def dchic_analyze(
     distclust: float = -1,
     numberclust: float = 1,
     padj_method: str = "auto",
+    seed: int = 123,
 ) -> Optional[pd.DataFrame]:
     """Python drop-in for ``Rscript dchicf.r --file <input> --pcatype analyze``.
 
@@ -1372,7 +1388,8 @@ def dchic_analyze(
         dirovwt: ``--dirovwt``. As in dcHiC, nothing is done when
             ``DifferentialResult`` exists and this is ``False``.
         rzscore, szscore, refine, rconf, fdr, distclust, numberclust,
-            padj_method: as in :func:`differential_compartments`.
+            padj_method, seed: as in :func:`differential_compartments`
+            (``seed`` is ``--seed``).
 
     Returns:
         The combined table (see :func:`differential_compartments`), or
@@ -1409,4 +1426,4 @@ def dchic_analyze(
     out = root / diffdir
     return _pcanalyze(samples, conds, out=out, rzscore=rzscore, szscore=szscore, fdr=fdr,
                       distclust=distclust, numberclust=numberclust, refine=refine, rconf=rconf,
-                      padj_method=padj_method)
+                      padj_method=padj_method, seed=seed)

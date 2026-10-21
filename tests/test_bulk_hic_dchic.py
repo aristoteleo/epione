@@ -47,13 +47,14 @@ def test_cov_rob_pairwise_matches_robust():
     np.testing.assert_allclose(dc.cov_rob(X, "pairwisegk")["cov"], ref_gk, rtol=1e-12, atol=0)
 
 
-def test_cov_rob_auto_dispatch_and_unported():
+def test_cov_rob_auto_dispatch():
     rng = np.random.default_rng(0)
     # p >= 20 -> pairwiseqc
     assert dc.cov_rob(rng.normal(size=(200, 20)))["estim"] == "pairwiseqc"
-    # n >= 1000, 5 <= p < 20 -> mcd (not ported)
-    with pytest.raises(NotImplementedError):
-        dc.cov_rob(rng.normal(size=(1200, 6)))
+    # n >= 1000, 5 <= p < 20 -> mcd; n < 1000, p < 10 -> donostah
+    r = dc.cov_rob(rng.normal(size=(1200, 6)))
+    assert r["estim"] == "mcd" and r["cov"].shape == (6, 6)
+    assert dc.cov_rob(rng.normal(size=(300, 3)))["estim"] == "donostah"
     with pytest.raises(ValueError):
         dc.cov_rob(rng.normal(size=(3, 5)))
 

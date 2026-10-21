@@ -215,6 +215,7 @@ def cov_sde(
     nsamp: Optional[int] = None,
     maxres: Optional[int] = None,
     seed: Optional[int] = 21,
+    rng: Optional[RRandom] = None,
     return_details: bool = False,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Stahel–Donoho location and scatter, equal to ``robust::covRob``'s
@@ -232,6 +233,10 @@ def cov_sde(
             default ``2 * nsamp``.
         seed: R ``set.seed`` value; covRob uses 21. ``None`` is not supported
             (R would continue its global stream).
+        rng: a shared R generator to reseed with ``seed`` and draw from, so that
+            its state afterwards equals R's global ``.Random.seed`` (covRob calls
+            ``set.seed(21)`` on the global stream and does not restore it).
+            Default: a private generator.
         return_details: also return the weights, the outlyingness and the
             number of valid subsets.
 
@@ -265,7 +270,10 @@ def cov_sde(
     maxres = min(int(maxres), 2**31 - 1)
     c = math.sqrt(_qchisq(tune, p))
 
-    rng = RRandom(seed)
+    if rng is None:
+        rng = RRandom(seed)
+    else:
+        rng.set_seed(seed)
     center, cov, wts, nresper, z = _rlds(x, nsamp, maxres, c, rng)
 
     # CovSde: consistency correction from the Mahalanobis distances
