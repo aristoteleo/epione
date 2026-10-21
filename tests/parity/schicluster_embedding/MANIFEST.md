@@ -54,3 +54,27 @@ Raw numbers in `results/embedding_E.json` (rerun after Amendment E-1).
 
 Speed: imputation of 200 cells × 22 chromosomes at 100 kb, 430 s on 16 processes. Embedding 70 s
 (epione, one process) vs 16 s (scHiCluster, 16 processes).
+
+## Amendment E-2 (2026-10-21, before any norm_sig comparison): gate E3
+
+The lab's standard call is `hicluster embedding --dim 50 --dist 1000000 --resolution 100000
+--scale_factor 100000 --norm_sig`. E2 tested only `norm_sig=False` (the CLI default). New gate,
+same fixture (H200i) and same driver:
+
+| Gate | Epione | Reference | Class | Threshold |
+|---|---|---|---|---|
+| E3 | `embedding(method="schicluster", norm_sig=True)` | `embedding(..., norm_sig=True)` final decomposition | 2, deterministic-bounded | as amended E2: max abs err (after per-component sign alignment) ≤ 2 × the largest error between three reference runs with global seeds 1, 2, 3 (`norm_sig=True`), and every component's \|r\| ≥ 0.9999 |
+
+## Results (E, rerun with E3), 2026-10-21
+
+Raw numbers in `results/embedding_E.json` (overwrites the first E results; E1 and E2 rerun in
+the same driver).
+
+| Gate | Measured | Threshold | Pass |
+|---|---|---|---|
+| E1 band matrices | identical; imputation of the test cell identical | exact | ✅ |
+| E2 `norm_sig=False` | max abs err 8.7e-5 × max value (first run: 3.2e-5); reference vs itself 5.2e-5; min \|r\| 0.99999995 | ≤ 2 × reference self-error, \|r\| ≥ 0.9999 | ✅ |
+| E3 `norm_sig=True` | max abs err 1.5e-4 × max value; reference vs itself 1.1e-4; min \|r\| 0.99999995 | ≤ 2 × reference self-error, \|r\| ≥ 0.9999 | ✅ |
+
+E2 moves between runs because the reference's ARPACK start vector is random (`random_state=None`);
+both runs are inside the bound.

@@ -15,14 +15,31 @@
       200,
       50
     ],
-    "max_abs_err": 51.125,
-    "max_abs_value": 1581683.75,
-    "rel": 3.232314930212819e-05,
+    "max_abs_err": 137.03125,
+    "max_abs_value": 1581684.125,
+    "rel": 8.66362934508178e-05,
     "reference_self_max_abs_err": 82.08203125,
-    "reference_self_rel": 5.1895349655074856e-05,
-    "min_component_abs_corr": 0.9999999918825976,
-    "seconds_ref": 15.8,
-    "seconds_epi": 70.5,
+    "reference_self_rel": 5.1895337351255265e-05,
+    "min_component_abs_corr": 0.9999999454486068,
+    "seconds_ref": 15.6,
+    "seconds_epi": 61.1,
+    "pass": true
+  },
+  "E3": {
+    "shape": [
+      200,
+      50
+    ],
+    "ref_shape": [
+      200,
+      50
+    ],
+    "max_abs_err": 0.00013339519500732422,
+    "max_abs_value": 0.9055364727973938,
+    "rel": 0.00014731068158440735,
+    "reference_self_max_abs_err": 9.992346167564392e-05,
+    "reference_self_rel": 0.00011034725234971398,
+    "min_component_abs_corr": 0.9999999540708605,
     "pass": true
   }
 }
