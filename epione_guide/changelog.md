@@ -15,9 +15,10 @@ The format roughly follows Keep a Changelog.
   exactly and HCEA's published model and 35 major-type scores to ≤ 1e-13
   (`tests/parity/schicluster_compartment`).
 - `epi.bulk.hic.differential_compartments` / `dchic_analyze`: dcHiC's `dchicf.r --pcatype analyze` in
-  Python, with `robust::covRob` (OGK and Donoho–Stahel branches), `limma::normalizeQuantiles` and R's
-  rounding; matches R on HCEA's 35 types and on three types (p-values ≤ 1e-8 relative, identical
-  padj < 0.1 sets). IHW (replicates) and covRob's MCD branch raise `NotImplementedError`.
+  Python, with `robust::covRob` (OGK, Donoho–Stahel and MCD branches, drawing from an emulation of R's
+  random-number stream), `limma::normalizeQuantiles` and R's rounding; matches R on HCEA's 35 types,
+  on three types and on six types (p-values ≤ 1e-8 relative, identical padj < 0.1 sets). IHW (used
+  with replicates) raises `NotImplementedError`.
 - Contact decay (`epi.single.hic`): `contact_decay` (scHiCluster `contact-distance`), `decay_ratio`
   (short/long ratio), `compartment_contact_hist`, `quantile_normalize`; identical to HCEA's published
   decay histograms (`tests/parity/schicluster_decay`).
