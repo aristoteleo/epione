@@ -241,19 +241,34 @@ md(r"""
 ## 7 · Fig 1d — cell embedding from imputed 100 kb contacts
 
 `impute_cells` runs scHiCluster's imputation on every cell and chromosome at
-100 kb: convolution with a 3 × 3 kernel (`pad=1`), random walk with restart
-(`rp=0.5`, `tol=0.01`) and square-root vanilla-coverage normalisation,
-keeping imputed contacts up to 10 Mb (`output_dist`). `embedding(method=
-"schicluster")` is scHiCluster's `hicluster embedding`: per chromosome, the
-imputed contacts within 1 Mb of the diagonal are reduced by a 50-component
-truncated SVD, and the chromosome reductions are reduced again. Only contacts
-go into the embedding; the labels only colour it.
+100 kb, from each cell's raw pairs file, as `hicluster impute-cell` does with a
+contact file: scHiCluster bins the contacts itself (`resolution`, pairs
+columns 1–4), convolves with a 3 × 3 kernel (`pad=1`), runs a random walk with
+restart (`rp=0.5`, `tol=0.01`) over whole chromosomes (`window_size` larger
+than any chromosome) and normalises by square-root vanilla coverage. It keeps
+imputed contacts up to 10 Mb (`output_dist`); the cut comes after the
+normalisation, so the values kept are the same as with a longer
+`output_dist`. `load_contact_tables` indexes the raw files without binning
+them.
+
+`embedding(method="schicluster")` is scHiCluster's `hicluster embedding`: per
+chromosome, the imputed contacts within 1 Mb of the diagonal are reduced by a
+50-component truncated SVD, and the chromosome reductions are reduced again.
+The settings are those of `hicluster embedding --dim 50 --dist 1000000
+--resolution 100000 --scale_factor 100000 --norm_sig`: with `norm_sig=True`
+every component is divided by its singular value, at both steps. Only
+contacts go into the embedding; the labels only colour it.
 """)
 code(r"""
-IMPUTED = OUT / 'imputed_100kb'
-hic.impute_cells(adata, out_dir=IMPUTED, pad=1, std=1.0, rp=0.5, tol=0.01,
-                 output_dist=10_000_000, compress=True, nproc=NPROC, progress=False)
-emb = hic.embedding(adata, method='schicluster', dim=50, dist=1_000_000)
+raw = hic.load_contact_tables([cell_files[c] for c in cells], chrom_sizes=sizes, resolution=RES,
+                              cell_ids=cells, obs=adata.obs[['rnatype', 'major', 'total']],
+                              columns={'chrom1': 1, 'pos1': 2, 'chrom2': 3, 'pos2': 4},
+                              chromosomes=CHROMS)
+IMPUTED = OUT / 'imputed_100kb_contacts'
+hic.impute_cells(raw, out_dir=IMPUTED, resolution=RES, pad=1, std=1.0, rp=0.5, tol=0.01,
+                 window_size=500_000_000, step_size=500_000_000, output_dist=10_000_000,
+                 compress=True, nproc=NPROC, progress=False)
+emb = hic.embedding(raw, method='schicluster', dim=50, dist=1_000_000, scale_factor=100_000, norm_sig=True)
 emb.obs['major'] = emb.obs['major'].astype('category')
 emb.obs['rnatype'] = pd.Categorical(emb.obs['rnatype'], categories=TYPES)
 sc.pp.neighbors(emb, n_neighbors=15, use_rep='X_schicluster')
@@ -270,11 +285,11 @@ print('correlation of components 1-3 with log10 contacts:', np.round(r, 2))
 """)
 
 md(r"""
-The embedding separates glia from neurons: oligodendrocytes (OGC), OPC,
-astrocytes (ASC) and microglia (MGL) each form an arm of their own. Glu and
-GABA neurons, and the neuronal subtypes, share one band. Along that band the
-main gradient is sequencing depth: the first two components correlate with
-log10 contacts at r = 0.78 and 0.76.
+The embedding separates glia from neurons: oligodendrocytes (OGC), OPC and
+microglia (MGL) each form a group of their own, and astrocytes (ASC) sit at the
+edge of the neurons. Glu and GABA neurons, and the neuronal subtypes, share one
+large group. Within it the main gradient is sequencing depth: components 1 and
+3 correlate with log10 contacts at r = 0.60 and 0.72.
 """)
 
 md(r"""
@@ -300,17 +315,20 @@ pd.DataFrame(rows).T.round(3)
 """)
 
 md(r"""
-The 15-NN classifier gets the major class right for 73 % of cells, against
-63 % for always guessing Glu, and the cell type for 28 %, against 17 %. The
-Leiden clusters hardly match the labels (ARI 0.06). Removing depth (regressing
-log10 contacts out of the components, `norm_sig=True`, or keeping the deepest
-half of the cells) or widening `dist` to 5 Mb raised the major-class ARI to
-0.28 at most and left the 15-NN accuracy between 0.70 and 0.79.
+The 15-NN classifier gets the major class right for 71 % of cells, against
+63 % for always guessing Glu, and the cell type for 26 %, against 17 %. The
+Leiden clusters hardly match the labels (ARI 0.03 and 0.06). On the
+scool-binned contacts, removing depth (regressing log10 contacts out of the
+components, or keeping the deepest half of the cells) or widening `dist` to
+5 Mb left the 15-NN accuracy between 0.70 and 0.79.
 
-So with contacts alone, the 100 kb scHiCluster embedding of LC462 resolves
-glial types from neurons but not the neuronal types. The paper's Fig 1d labels
-come from co-embedding with snRNA-seq (Droplet Paired-Tag), not from contacts
-alone.
+So with contacts alone, the 100 kb scHiCluster embedding of LC462 separates
+glia from neurons but not the neuronal types. One reason is depth: a median
+LC462 cell has 22,000 cis contacts longer than 1 kb (most of its 167,000
+contacts are shorter), against about 200,000 long-range cis contacts in an
+HCEA cell, where the same embedding separates six blood types (see the HCEA
+embedding case study). The paper's Fig 1d labels come from co-embedding with
+snRNA-seq (Droplet Paired-Tag), not from contacts alone.
 """)
 
 md(r"""

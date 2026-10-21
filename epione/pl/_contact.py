@@ -932,8 +932,9 @@ def plot_correlation_heatmap(
                 v = M[i, j]
                 if not np.isfinite(v):
                     continue
-                rel = (v - vmin) / max(vmax - vmin, 1e-9)
-                color = "white" if (rel < 0.2 or rel > 0.8) else "black"
+                # dark text on light cells, white text on dark cells
+                r, g, b, _ = img.cmap(img.norm(v))
+                color = "white" if (0.299 * r + 0.587 * g + 0.114 * b) < 0.5 else "black"
                 ax.text(j, i, format(v, annot_fmt),
                         ha="center", va="center",
                         color=color, fontsize=annot_fontsize)
