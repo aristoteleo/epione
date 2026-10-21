@@ -13,7 +13,7 @@
         "rng_state_identical": true,
         "draws": 4018,
         "seconds_epione": 0.059,
-        "seconds_R": 0.05
+        "seconds_R": 0.051
       },
       "rand_1000x5_s21": {
         "n": 1000,
@@ -24,7 +24,7 @@
         "center_identical": true,
         "rng_state_identical": true,
         "draws": 4010,
-        "seconds_epione": 0.035,
+        "seconds_epione": 0.037,
         "seconds_R": 0.046
       },
       "rand_1500x6_s123": {
@@ -49,7 +49,7 @@
         "rng_state_identical": true,
         "draws": 5051,
         "seconds_epione": 0.051,
-        "seconds_R": 0.0629999999999999
+        "seconds_R": 0.0620000000000001
       },
       "rand_2500x8_s123": {
         "n": 2500,
@@ -61,7 +61,7 @@
         "rng_state_identical": true,
         "draws": 6071,
         "seconds_epione": 0.07,
-        "seconds_R": 0.099
+        "seconds_R": 0.0990000000000001
       },
       "rand_2500x8_s21": {
         "n": 2500,
@@ -73,7 +73,7 @@
         "rng_state_identical": true,
         "draws": 6071,
         "seconds_epione": 0.073,
-        "seconds_R": 0.104
+        "seconds_R": 0.102
       },
       "rand_3000x12_s123": {
         "n": 3000,
@@ -84,7 +84,7 @@
         "center_identical": true,
         "rng_state_identical": true,
         "draws": 8158,
-        "seconds_epione": 0.13,
+        "seconds_epione": 0.128,
         "seconds_R": 0.169
       },
       "rand_3000x12_s21": {
@@ -96,8 +96,8 @@
         "center_identical": true,
         "rng_state_identical": true,
         "draws": 8141,
-        "seconds_epione": 0.133,
-        "seconds_R": 0.171
+        "seconds_epione": 0.131,
+        "seconds_R": 0.169
       },
       "rand_4000x15_s123": {
         "n": 4000,
@@ -109,7 +109,7 @@
         "rng_state_identical": true,
         "draws": 9741,
         "seconds_epione": 0.223,
-        "seconds_R": 0.282
+        "seconds_R": 0.283
       },
       "rand_4000x15_s21": {
         "n": 4000,
@@ -120,8 +120,8 @@
         "center_identical": true,
         "rng_state_identical": true,
         "draws": 9693,
-        "seconds_epione": 0.217,
-        "seconds_R": 0.274
+        "seconds_epione": 0.214,
+        "seconds_R": 0.268
       },
       "rand_5000x19_s123": {
         "n": 5000,
@@ -133,7 +133,7 @@
         "rng_state_identical": true,
         "draws": 11860,
         "seconds_epione": 0.37,
-        "seconds_R": 0.458
+        "seconds_R": 0.459
       },
       "rand_5000x19_s21": {
         "n": 5000,
@@ -144,8 +144,8 @@
         "center_identical": true,
         "rng_state_identical": true,
         "draws": 11819,
-        "seconds_epione": 0.364,
-        "seconds_R": 0.448
+        "seconds_epione": 0.365,
+        "seconds_R": 0.446
       },
       "hema6_chr1_s123": {
         "n": 2079,
@@ -156,8 +156,8 @@
         "center_identical": true,
         "rng_state_identical": true,
         "draws": 5051,
-        "seconds_epione": 0.045,
-        "seconds_R": 0.0569999999999999
+        "seconds_epione": 0.044,
+        "seconds_R": 0.0570000000000004
       },
       "hema6_chr1_s21": {
         "n": 2079,
@@ -169,7 +169,7 @@
         "rng_state_identical": true,
         "draws": 5051,
         "seconds_epione": 0.046,
-        "seconds_R": 0.0580000000000003
+        "seconds_R": 0.0579999999999998
       },
       "hema6_chr2_s123": {
         "n": 2235,
@@ -181,7 +181,7 @@
         "rng_state_identical": true,
         "draws": 5051,
         "seconds_epione": 0.052,
-        "seconds_R": 0.0639999999999996
+        "seconds_R": 0.0640000000000001
       },
       "hema6_chr2_s21": {
         "n": 2235,

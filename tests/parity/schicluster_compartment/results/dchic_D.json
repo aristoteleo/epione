@@ -1,6 +1,6 @@
 {
   "date": "2026-10-20",
-  "fixture": "/large_storage/zhoulab/shengmao/epione_hic_dev/dchic_ref_hcea",
+  "fixture": "dchic_ref_hcea: HCEA analysis/diff_comp/all inputs (35 major types) with a fresh dchicf.r analyze run",
   "speed": {
     "epione_s": 31.4,
     "R_s": 38.44,
