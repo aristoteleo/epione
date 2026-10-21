@@ -25,7 +25,7 @@ def code(src):
 
 
 md(r"""
-# Compartments and differential compartments from single-cell Hi-C
+# Case study: HCEA compartments
 
 This tutorial reproduces the compartment analysis of the Human Cell
 Epigenome Atlas (HCEA; Zhou, Wu, Liu *et al.*) with `epione`, from raw
