@@ -15,6 +15,7 @@ from scipy.sparse import load_npz  # noqa: E402
 
 from epione.single import hic  # noqa: E402
 from epione.single.hic import _impute_fast  # noqa: E402
+from epione.single.hic._imputed_io import ImputedCell  # noqa: E402
 
 RES = 10_000
 SIZES = pd.Series({"chrA": 4_003_000, "chrB": 2_501_000})
@@ -109,6 +110,6 @@ def test_impute_cells_accelerate(data, tmp_path):
         a = hic.load_contact_tables([contacts], chrom_sizes=SIZES, resolution=RES, columns=COLS,
                                     cell_ids=["c"])
         hic.impute_cells(a, tmp_path / str(acc), pad=1, accelerate=acc, progress=False, **WINDOWED)
-        out[acc] = np.load(tmp_path / str(acc) / "c.npz")
+        out[acc] = ImputedCell(tmp_path / str(acc) / "c.cool")
     for chrom in SIZES.index:
         np.testing.assert_allclose(out[True][chrom], out[False][chrom], rtol=1e-4, atol=1e-6)

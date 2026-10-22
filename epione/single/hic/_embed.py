@@ -1,6 +1,6 @@
 """Cell embedding from imputed sc-Hi-C matrices.
 
-Concatenates the upper triangle of every ``<cell>.npz`` written by
+Concatenates the upper triangle of every imputed ``<cell>.cool`` / ``<cell>.npz`` written by
 :func:`impute_cells`, runs PCA on the resulting cell × feature matrix,
 and stores the result on the input ``AnnData``. Standard scanpy
 ``sc.pp.neighbors`` / ``sc.tl.umap`` / ``sc.tl.leiden`` work directly on
@@ -142,7 +142,8 @@ def embedding(
     cell_ids = list(adata.obs_names)
     feats = []
     for cid in cell_ids:
-        npz_path = imputed_dir / f"{cid}.npz"
+        from ._imputed_io import imputed_path
+        npz_path = imputed_path(imputed_dir, cid)
         if not npz_path.exists():
             raise FileNotFoundError(
                 f"missing imputed file for cell {cid}: {npz_path}. "
@@ -211,7 +212,7 @@ def _truncated_svd(M: np.ndarray, dim: int, norm_sig: bool, random_state):
 
 def _schicluster_embedding(adata, *, chromosomes, dim, dist, scale_factor, norm_sig,
                            random_state):
-    """scHiCluster ``hicluster embedding`` on the imputed ``.npz`` of every cell.
+    """scHiCluster ``hicluster embedding`` on the imputed file of every cell.
 
     Per chromosome: the imputed contacts within ``dist`` of the diagonal
     (cells × pixels), multiplied by ``scale_factor``, reduced by a
@@ -219,7 +220,7 @@ def _schicluster_embedding(adata, *, chromosomes, dim, dist, scale_factor, norm_
     concatenated and reduced again to ``dim`` components.
     """
     import anndata as ad
-    from ._imputed_io import ImputedCell
+    from ._imputed_io import ImputedCell, imputed_path
 
     info = adata.uns.get("hic", {})
     imputed_dir = info.get("imputed_dir")
@@ -235,7 +236,7 @@ def _schicluster_embedding(adata, *, chromosomes, dim, dist, scale_factor, norm_
     cells = list(adata.obs_names)
     mats = {c: np.zeros((len(cells), idx[c][0].size), dtype=np.float32) for c in chromosomes}
     for i, cid in enumerate(cells):
-        npz_path = imputed_dir / f"{cid}.npz"
+        npz_path = imputed_path(imputed_dir, cid)
         if not npz_path.exists():
             raise FileNotFoundError(f"missing imputed file for cell {cid}: {npz_path}")
         z = ImputedCell(npz_path)

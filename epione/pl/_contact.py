@@ -313,7 +313,7 @@ def plot_cell_contacts(
             (or :func:`load_scool_cells`).
         cell_id: row in ``adata.obs_names``.
         chromosome: e.g. ``'chr1'``.
-        use_imputed: read the imputed ``.npz`` (requires
+        use_imputed: read the imputed ``.cool`` / ``.npz`` (requires
             :func:`epione.single.hic.impute_cells` to have run).
             ``False`` reads raw counts from the original ``.cool``
             for comparison.
@@ -338,7 +338,8 @@ def plot_cell_contacts(
                 "first"
             )
         from epione.single.hic._imputed_io import ImputedCell
-        z = ImputedCell(Path(imputed_dir) / f"{cell_id}.npz")
+        from epione.single.hic._imputed_io import imputed_path
+        z = ImputedCell(imputed_path(imputed_dir, cell_id))
         if chromosome not in z.files:
             raise KeyError(
                 f"chromosome {chromosome!r} not in imputed file for "
