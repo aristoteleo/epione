@@ -27,6 +27,10 @@ The format roughly follows Keep a Changelog.
   embedding within scHiCluster's own run-to-run variation (`tests/parity/schicluster_embedding`).
 - `impute_cells(resolution=, window_size=, step_size=)`: cells loaded with `load_contact_tables` are
   imputed straight from raw contacts at any resolution, as `hicluster impute-cell` with a contact file.
+- `impute_cells(accelerate=True)`: windowed random walks (`window_size` smaller than a chromosome, the
+  10 kb recipe) run a faster implementation of scHiCluster's `impute_chromosome` (numba Gaussian, direct
+  sparse kernels, one dense window accumulator); equal to scHiCluster up to float32 rounding. Whole-
+  chromosome settings run scHiCluster unchanged.
 - `epi.single.hic.gene_score`: scHiCluster's `hicluster gene-score --mode raw` (contacts inside each gene
   body) from contact tables, with `min_pos_dist=` to drop short contacts; identical to scHiCluster's
   `gene_score_raw`.

@@ -141,6 +141,7 @@ def _impute_one_cell(
     cool_path = source.get("scool_url")
     kwargs = dict(kwargs)
     compress = bool(kwargs.pop("_compress", False))
+    accelerate = bool(kwargs.pop("_accelerate", True))
     out_npz = Path(out_dir) / f"{cell_id}.npz"
     if out_npz.exists() and not overwrite:
         return cell_id, "skip"
@@ -152,7 +153,10 @@ def _impute_one_cell(
         pass
 
     try:
-        from schicluster.impute.impute_chromosome import impute_chromosome
+        if accelerate:
+            from ._impute_fast import impute_chromosome
+        else:
+            from schicluster.impute.impute_chromosome import impute_chromosome
         import h5py
         from scipy.sparse import csr_matrix
         import tempfile, os
@@ -228,6 +232,7 @@ def impute_cells(
     nproc: int = 1,
     compress: bool = False,
     resolution: Optional[int] = None,
+    accelerate: bool = True,
     # v0.4 backward-compat aliases — deprecated
     rwr_alpha: Optional[float] = None,
     top_pct: Optional[float] = None,
@@ -288,6 +293,12 @@ def impute_cells(
             filter, as upstream. Cells from cools are already binned:
             leave it ``None`` (the cools' bin size is used); any other value
             raises ``ValueError``.
+        accelerate: when the random walk runs in windows (``window_size``
+            smaller than a chromosome, as in the 10 kb recipe), use epione's
+            faster implementation (numba Gaussian, direct sparse kernels):
+            about 3x faster with 50-85 % less memory, equal to scHiCluster up to
+            float32 rounding. Other settings run scHiCluster unchanged.
+            ``False`` always runs scHiCluster's own code.
         rwr_alpha, top_pct, n_iter, use_sparse, sparse_keep_pct:
             deprecated v0.4 parameters. ``rwr_alpha`` is silently
             mapped to ``rp`` if ``rp`` is at its default.
@@ -379,6 +390,7 @@ def impute_cells(
         if value is not None:
             impute_kwargs[name] = int(value)
     impute_kwargs["_compress"] = bool(compress)
+    impute_kwargs["_accelerate"] = bool(accelerate)
 
     args_list = [
         (cid, src, chromosomes, resolution, str(out_dir), impute_kwargs, overwrite)
