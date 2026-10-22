@@ -83,6 +83,9 @@ meta = pd.read_csv(DATA / 'metadata/5kCG100k3C_summary.csv.gz', index_col=0).loc
 L1_meta = pd.read_csv(DATA / 'metadata/L1color.tsv', sep='\t', index_col=0)
 L1_annot = L1_meta['L1_abbr'].to_dict()
 L1_color = L1_meta['color'].to_dict()
+# the atlas colours of the six blood types are close shades; use distinct hues here
+L1_color.update({'c7': '#1f77b4', 'c24': '#ff7f0e', 'c0': '#2ca02c', 'c27': '#d62728',
+                 'c1': '#9467bd', 'c15': '#17becf'})      # B, Mast, Myeloid, NK, Tmem, Tnaive
 adata = hic.load_contact_tables(files, cell_ids=cell_ids, chrom_sizes=sizes,
                                 obs=meta[['majortype', 'Tissue', 'mCGFrac', 'mCHFrac', 'Cis/Trans']])
 adata
