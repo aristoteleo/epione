@@ -116,6 +116,9 @@ L1_meta = pd.read_csv(DATA / 'metadata/L1color.tsv', sep='\t', index_col=0)
 TYPES = meta['majortype'].value_counts().index.tolist()          # L1 codes, largest first
 L1_annot = L1_meta['L1_abbr'].to_dict()
 L1_color = L1_meta['color'].to_dict()
+# the atlas colours of the six blood types are close shades; use distinct hues here
+L1_color.update({'c7': '#1f77b4', 'c24': '#ff7f0e', 'c0': '#2ca02c', 'c27': '#d62728',
+                 'c1': '#9467bd', 'c15': '#17becf'})      # B, Mast, Myeloid, NK, Tmem, Tnaive
 tab = pd.crosstab(meta['Tissue'], meta['majortype'].map(L1_annot), margins=True)
 tab
 """)
@@ -572,7 +575,7 @@ sc.tl.umap(emb, random_state=0)
 fig, axes = plt.subplots(1, 2, figsize=(10.5, 4.2))
 sc.pl.umap(emb, color='major type', palette={L1_annot[c]: L1_color[c] for c in TYPES},
            ax=axes[0], show=False, title='single-cell compartment scores')
-sc.pl.umap(emb, color='Tissue', ax=axes[1], show=False, title='tissue')
+sc.pl.umap(emb, color='Tissue', ax=axes[1], show=False, title='tissue', palette=sc.pl.palettes.default_20)
 plt.tight_layout(); plt.show()
 
 acc = cross_val_score(KNeighborsClassifier(15), emb.obsm['X_pca'], emb.obs['major type'],
