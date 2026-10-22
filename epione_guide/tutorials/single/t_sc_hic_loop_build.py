@@ -286,7 +286,7 @@ each type's T around it: red pixels contact each other more than their
 neighbourhood, and loops appear as red dots.
 """)
 code(r"""
-gtf = epi.io.read_gtf(GTF, required_attrs=('gene_name', 'gene_type'), feature_whitelist=['gene'],
+gtf = epi.io.read_gtf(GTF, required_attrs=('gene_id', 'gene_name', 'gene_type'), feature_whitelist=['gene'],
                       keep_attribute=False)
 gene = gtf[gtf['gene_name'] == 'MS4A1'].iloc[0]
 near = lambda pos: (pos >= gene['start'] - 20_000) & (pos <= gene['end'] + 20_000)
@@ -321,6 +321,212 @@ cells). The T maps also show loops shared by several types nearby.
 """)
 
 md(r"""
+## 9 · Differential loops and gene expression
+
+Do the loops that differ between the types sit at genes that are expressed
+differently? Following the atlas (Fig. 4F, G), we take blood single-cell
+RNA-seq, find the genes that differ between the types, and pair each
+differential loop with the differentially expressed genes (DEGs) whose
+transcription start site (TSS, ± 2 kb) lies in one of its two anchors.
+
+**RNA data.** Hao *et al.* 2021 (PBMC CITE-seq, 161,764 cells, 8 donors at 3
+time points; `Blood_Hao2021.h5ad`). Its cell types (`celltype.l2`) are mapped
+to the HCEA types as in the atlas's RNA summary. PBMC have no mast cells, so
+this part uses the five other types.
+""")
+code(r"""
+import anndata as ad
+from scipy.sparse import csr_matrix
+
+RNA = DATA / 'scRNA_blood/Hao2021/Blood_Hao2021.h5ad'
+L2_TO_TYPE = {
+    'Myeloid': ['CD14 Mono', 'CD16 Mono', 'ASDC', 'cDC1', 'cDC2', 'pDC'],
+    'B': ['B intermediate', 'B memory', 'B naive', 'Plasmablast'],
+    'Tnaive': ['CD4 Naive', 'CD8 Naive'],
+    'Tmem': ['CD4 CTL', 'CD4 Proliferating', 'CD4 TCM', 'CD4 TEM', 'CD8 Proliferating', 'CD8 TCM',
+             'CD8 TEM', 'Treg', 'dnT', 'gdT', 'MAIT'],
+    'NK': ['NK', 'NK Proliferating', 'NK_CD56bright', 'ILC'],
+}
+RNA_TYPES = [t for t in TYPES if t in L2_TO_TYPE]          # B, Myeloid, NK, Tmem, Tnaive
+PB = OUT / 'rna_pseudobulk.parquet'
+if PB.exists():
+    pb = pd.read_parquet(PB)
+else:
+    rna = ad.read_h5ad(RNA)
+    l2 = {v: t for t, vs in L2_TO_TYPE.items() for v in vs}
+    group = (rna.obs['donor_id'].astype(str) + '|' + rna.obs['celltype.l2'].map(l2).astype(str)).to_numpy()
+    keep = ~pd.Series(group).str.endswith('|nan').to_numpy()
+    labels, idx = np.unique(group[keep], return_inverse=True)
+    onehot = csr_matrix((np.ones(keep.sum()), (idx, np.arange(keep.sum()))), shape=(len(labels), keep.sum()))
+    counts = onehot @ csr_matrix(rna.raw.X)[np.flatnonzero(keep)]            # donor x type pseudobulk
+    pb = pd.DataFrame(counts.toarray(), index=labels, columns=rna.raw.var_names.astype(str))
+    pb['n_cells'] = np.bincount(idx)
+    pb.to_parquet(PB)
+n_cells = pb.pop('n_cells')
+pb = pb.loc[n_cells > 100]                                    # as the atlas: groups of > 100 cells
+design = pd.DataFrame([i.split('|') for i in pb.index], index=pb.index, columns=['donor_id', 'celltype'])
+print(f'{len(pb)} pseudobulk samples (donor x type), {pb.shape[1]:,} genes')
+pd.crosstab(design['donor_id'], design['celltype'])
+""")
+
+md(r"""
+Every pair of types is compared with DESeq2 (`epi.tl.differential_peaks`,
+which runs PyDESeq2 on any count matrix), with the donor in the design so
+that donors act as replicates. As in the atlas, a gene is a DEG when it
+differs more than 4-fold (|log2 fold change| > 2) at FDR < 1e-10 in at least
+one pair.
+""")
+code(r"""
+from itertools import combinations
+from statsmodels.stats.multitest import multipletests
+
+DEG = OUT / 'rna_deg.parquet'
+if DEG.exists():
+    deg = pd.read_parquet(DEG)
+else:
+    rows = []
+    for a, b in combinations(RNA_TYPES, 2):
+        r = epi.tl.differential_peaks(counts=pb, metadata=design, design='~donor_id + celltype',
+                                      contrast=('celltype', a, b), n_cpus=NPROC)
+        r['fdr'] = multipletests(r['pvalue'].fillna(1), method='fdr_bh')[1]
+        rows.append(r.assign(a=a, b=b))
+    deg = pd.concat(rows).rename_axis('gene_id').reset_index()
+    deg.to_parquet(DEG)
+sig = deg[(deg['log2FoldChange'].abs() > 2) & (deg['fdr'] < 1e-10)]
+deg_genes = pd.Index(sig['gene_id'].unique())
+print(f'{len(deg_genes):,} DEGs; per pair:')
+sig.groupby(['a', 'b']).size().unstack(fill_value=0)
+""")
+
+md(r"""
+Next, each differential loop is paired with the DEGs whose TSS (± 2 kb) falls
+in its 10 kb anchor bins. For every pair we z-score the loop's Q across the
+five types and the gene's expression (counts per million) across the
+pseudobulk samples, then cluster the pairs on both together (k-means), as in
+the atlas.
+""")
+code(r"""
+from sklearn.cluster import KMeans
+
+genes = gtf.copy()                                   # GENCODE genes, read in section 8
+genes['gene_id'] = genes['gene_id'].str.split('.').str[0]
+genes = genes[genes['gene_id'].isin(deg_genes) & genes['seqname'].isin(CHROMS)]
+tss = np.where(genes['strand'] == '+', genes['start'], genes['end'])
+RES = 10_000
+bin2gene = {}
+for c, t0, g in zip(genes['seqname'], tss, genes['gene_id']):
+    for b in range((t0 - 2000) // RES, (t0 + 2000) // RES + 1):     # bins within 2 kb of the TSS
+        bin2gene.setdefault((c, b), []).append(g)
+
+pairs = []
+for i, (c, x, y) in enumerate(zip(dl['chrom1'], dl['start1'] // RES, dl['start2'] // RES)):
+    for g in sorted(set(bin2gene.get((c, x), []) + bin2gene.get((c, y), []))):
+        pairs.append((i, g))
+pairs = pd.DataFrame(pairs, columns=['loop', 'gene_id'])
+print(f"{pairs['loop'].nunique():,} differential loops at {pairs['gene_id'].nunique():,} DEGs ({len(pairs):,} pairs)")
+
+cpm = pb / pb.sum(axis=1).to_numpy()[:, None] * 1e6
+order = design.sort_values(['celltype', 'donor_id']).index
+z_loop = zscore(q.loc[pairs['loop'], RNA_TYPES].to_numpy(), axis=1)
+z_rna = zscore(cpm.loc[order, pairs['gene_id']].to_numpy().T, axis=1)
+K = 5
+km = KMeans(n_clusters=K, n_init=10, random_state=0).fit(np.nan_to_num(np.hstack([z_loop, z_rna])))
+# label and order clusters by the type where their genes are most expressed
+rna_type = design.loc[order, 'celltype'].to_numpy()
+by_type = pd.DataFrame({t: z_rna[:, rna_type == t].mean(axis=1) for t in RNA_TYPES})
+peak = by_type.groupby(km.labels_).mean().idxmax(axis=1)
+peak = peak.iloc[np.argsort([RNA_TYPES.index(t) for t in peak], kind='stable')]
+rows_ = np.concatenate([np.flatnonzero(km.labels_ == k) for k in peak.index])
+
+fig, axes = plt.subplots(1, 3, figsize=(8, 6), sharey=True, gridspec_kw={'width_ratios': [5, 10, 0.6]})
+axes[0].imshow(z_loop[rows_], cmap='Oranges', vmin=0, vmax=2, aspect='auto', interpolation='none')
+axes[0].set_xticks(range(len(RNA_TYPES))); axes[0].set_xticklabels(RNA_TYPES, rotation=90)
+axes[0].set_title('loop strength (Q)'); axes[0].set_ylabel(f'{len(pairs):,} loop-gene pairs'); axes[0].set_yticks([])
+im = axes[1].imshow(z_rna[rows_], cmap='Reds', vmin=0, vmax=2, aspect='auto', interpolation='none')
+centers = design.loc[order, 'celltype'].reset_index(drop=True).reset_index().groupby('celltype')['index'].mean()
+axes[1].set_xticks(centers.loc[RNA_TYPES]); axes[1].set_xticklabels(RNA_TYPES, rotation=90)
+axes[1].set_title('expression (donor x type)')
+bounds = np.r_[0, np.cumsum([np.sum(km.labels_ == k) for k in peak.index])]
+for k in range(K):
+    axes[2].add_patch(plt.Rectangle((0, bounds[k] - 0.5), 1, bounds[k + 1] - bounds[k],
+                                    color=COLORS[peak.iloc[k]]))
+axes[2].set_xlim(0, 1); axes[2].axis('off')
+axes[2].legend(handles=[plt.Rectangle((0, 0), 1, 1, color=COLORS[t]) for t in RNA_TYPES], labels=RNA_TYPES,
+               title='cluster: genes\nhighest in', loc='upper left', bbox_to_anchor=(1.3, 1), frameon=False)
+fig.colorbar(im, ax=axes, shrink=0.35, label='z-score', location='bottom', pad=0.2)
+plt.show()
+""")
+
+md(r"""
+Are a loop's strength and its gene's expression higher in the same types?
+For every pair we correlate the loop's Q with the gene's mean expression
+across the five types, and compare with pairs whose genes were shuffled.
+""")
+code(r"""
+mean_cpm = cpm.groupby(design['celltype']).mean().loc[RNA_TYPES]
+a = q.loc[pairs['loop'], RNA_TYPES].to_numpy()
+b = mean_cpm[pairs['gene_id']].to_numpy().T
+def rowcorr(x, y):
+    x, y = zscore(x, axis=1), zscore(y, axis=1)
+    return np.nanmean(x * y, axis=1)
+r_real = rowcorr(a, b)
+r_null = rowcorr(a, b[np.random.default_rng(0).permutation(len(b))])
+print(f'median r: loop-gene pairs {np.nanmedian(r_real):.2f}, shuffled {np.nanmedian(r_null):.2f}; '
+      f'r > 0.5: {np.nanmean(r_real > 0.5):.0%} vs {np.nanmean(r_null > 0.5):.0%}')
+fig, ax = plt.subplots(figsize=(4.5, 3))
+ax.hist(r_null, bins=40, range=(-1, 1), color='0.75', label='shuffled genes')
+ax.hist(r_real, bins=40, range=(-1, 1), histtype='step', color=COLORS['B'], lw=1.5, label='loop-gene pairs')
+ax.set_xlabel('Pearson r, loop Q vs expression (5 types)'); ax.set_ylabel('pairs'); ax.legend(frameon=False)
+plt.tight_layout(); plt.show()
+""")
+
+md(r"""
+Loop strength and gene expression go together. The k-means clusters are
+blocks of genes expressed in one type (bar on the right), and their loops are
+strongest in the same type; myeloid genes form the largest block. Myeloid
+loops are strong in most rows because Q is not normalised between types (as
+in the atlas); the correlation below is computed per pair and is not affected
+by that. Across all pairs the
+median correlation between a loop's Q and its gene's expression over the five
+types is 0.79, against 0.08 when the genes are shuffled, and 69 % of pairs
+have r > 0.5 (37 % shuffled).
+""")
+
+md(r"""
+### Loops around one gene
+
+The atlas shows the differential loops around a gene on each type's contact
+map (Fig. 4F, *OXTR* in breast). Here: among protein-coding DEGs expressed in
+at least one type (mean ≥ 50 counts per million), the one with the most
+differential loops, with each type's imputed contacts (Q) over 2 Mb around its
+TSS and the differential loops marked.
+""")
+code(r"""
+expressed = mean_cpm.columns[mean_cpm.max() >= 50]          # expressed in at least one type
+coding = genes.loc[genes['gene_type'] == 'protein_coding', 'gene_id']
+cand = pairs[pairs['gene_id'].isin(expressed) & pairs['gene_id'].isin(coding)]
+top = cand['gene_id'].value_counts().index[0]
+gname = genes.loc[genes['gene_id'] == top, 'gene_name'].iloc[0]
+g = genes[genes['gene_id'] == top].iloc[0]
+c, t0 = g['seqname'], int(g['start'] if g['strand'] == '+' else g['end'])
+lo, hi = (t0 - 1_000_000) // RES * RES, (t0 + 1_000_000) // RES * RES
+print(f"{gname}: {cand['gene_id'].value_counts().iloc[0]} differential loops; mean CPM by type:",
+      mean_cpm[top].round(0).to_dict())
+d = dl[(dl['chrom1'] == c) & (dl['start1'] >= lo) & (dl['start2'] < hi)]
+fig, axes = plt.subplots(1, len(TYPES), figsize=(18, 3.4), sharey=True)
+mats = {t: cooler.Cooler(f'{PREFIX[t]}.Q.cool').matrix(balance=False).fetch(f'{c}:{lo}-{hi}') for t in TYPES}
+vmax = np.nanpercentile(np.concatenate([np.triu(m, 3).ravel() for m in mats.values()]), 99)
+for ax, t in zip(axes, TYPES):
+    ax.imshow(mats[t], cmap='Reds', vmin=0, vmax=vmax, extent=(lo / 1e6, hi / 1e6, hi / 1e6, lo / 1e6))
+    ax.scatter((d['start2'] + 5000) / 1e6, (d['start1'] + 5000) / 1e6, s=6, color='#2a78d6', lw=0)
+    ax.axvline(t0 / 1e6, color='0.3', lw=0.6, ls=':')
+    ax.set_title(t); ax.set_xlabel(f'{c} (Mb)')
+axes[0].set_ylabel(f'{c} (Mb)')
+fig.suptitle(f'{gname}: differential loops (blue) on each type\'s contacts')
+plt.tight_layout(); plt.show()
+""")
+
+md(r"""
 ## Summary
 
 | Step | epione |
@@ -330,6 +536,7 @@ md(r"""
 | ANOVA across groups | `loop_anova` |
 | differential loops | `loop_values`, `differential_loops` |
 | type-specific loops, APA | `specific_loops`, `loop_apa` |
+| loops and gene expression | pseudobulk RNA, `epi.tl.differential_peaks` (PyDESeq2), loop-TSS pairs |
 
 `loop_anova`, `merge_loops`, `loop_values` and the FDR reproduce the atlas's
 differential-loop analysis of all 35 major types
