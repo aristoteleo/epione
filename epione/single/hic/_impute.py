@@ -301,12 +301,12 @@ def impute_cells(
             filter, as upstream. Cells from cools are already binned:
             leave it ``None`` (the cools' bin size is used); any other value
             raises ``ValueError``.
-        accelerate: when the random walk runs in windows (``window_size``
-            smaller than a chromosome, as in the 10 kb recipe), use epione's
-            faster implementation (numba Gaussian, direct sparse kernels):
-            about 3x faster with 50-85 % less memory, equal to scHiCluster up to
-            float32 rounding. Other settings run scHiCluster unchanged.
-            ``False`` always runs scHiCluster's own code.
+        accelerate: use epione's faster implementation of scHiCluster's
+            imputation (numba Gaussian, direct sparse kernels, one window
+            accumulator): per cell about 3x faster at 10 kb (30 Mb windows,
+            with 50-85 % less memory), 2.2x at 25 kb and 1.3-1.6x at 100 kb
+            (whole-chromosome windows). Equal to scHiCluster up to float32
+            rounding. ``False`` runs scHiCluster's own code.
         sparse: store scHiCluster's sparse upper triangle (within
             ``output_dist``) instead of dense symmetric matrices. Memory per
             worker and file size then scale with the band, not with

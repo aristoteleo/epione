@@ -1,9 +1,10 @@
-"""Faster scHiCluster imputation for windowed random walks (``window_size`` < chromosome).
+"""Faster scHiCluster imputation (``impute_chromosome``).
 
 Same signature and output as
-:func:`schicluster.impute.impute_chromosome.impute_chromosome`. When the
-random walk runs in windows (the 10 kb recipe: ``window_size=30 Mb``,
-``step_size=10 Mb``), it replaces upstream's slow steps:
+:func:`schicluster.impute.impute_chromosome.impute_chromosome`, for random
+walks in windows (10 kb recipe: ``window_size=30 Mb``, ``step_size=10 Mb``)
+and over whole chromosomes (25 kb and 100 kb recipes). It replaces
+upstream's slow steps:
 
 * the Gaussian convolution scatters the nonzero contacts with numba instead
   of filtering a dense ``n_bins x n_bins`` copy;
@@ -13,12 +14,13 @@ random walk runs in windows (the 10 kb recipe: ``window_size=30 Mb``,
   assignments, and the distance band is cut in one pass over the nonzeros
   (no ``np.triu_indices`` over the whole chromosome).
 
-About 3x faster and 50-85 % less memory per chromosome at 10 kb; results
-differ from upstream only by float32 rounding (max absolute difference
-~1e-7). A window whose random-walk residual lands within rounding of ``tol``
-can stop one iteration earlier or later than upstream; that window then
-differs more. Every other setting (window covering the chromosome, ``rp=1``,
-``chrom='all'``) runs upstream unchanged. Adapted from an optimisation of
+Single-threaded, per cell: about 3x faster with 50-85 % less memory at 10 kb,
+2.2x at 25 kb and 1.3-1.6x at 100 kb (whole-chromosome windows use somewhat
+more memory than upstream). Results differ from upstream only by float32
+rounding (max absolute difference ~1e-7). A window whose random-walk
+residual lands within rounding of ``tol`` can stop one iteration earlier or
+later than upstream; that window then differs more. ``rp=1`` and
+``chrom='all'`` run upstream unchanged. Adapted from an optimisation of
 scHiCluster's ``impute_chromosome`` (``scHiCluster_impute_chromosome``).
 """
 from __future__ import annotations
@@ -140,8 +142,6 @@ def impute_chromosome(chrom, resolution, output_path, scool_url=None, contact_pa
         return upstream(chrom, resolution, output_path, **kw)
     n_bins = _n_bins(chrom, resolution, scool_url, chrom_size_path)
     ws, ss = int(window_size // resolution), int(step_size // resolution)
-    if ws >= n_bins:
-        return upstream(chrom, resolution, output_path, **kw)
     try:
         _impute_windowed(chrom, resolution, output_path, n_bins, ws, ss, **kw)
     except Exception as e:  # unexpected scipy internals: fall back, never fail silently
@@ -170,6 +170,13 @@ def _impute_windowed(chrom, resolution, output_path, n_bins, ws, ss, *, scool_ur
         A = _gaussian(A, std=std, truncate=pad)
     A = A - diags(A.diagonal())
 
+    if ws >= n_bins:   # one window over the whole chromosome, as upstream
+        B = A + diags((A.sum(axis=0).A.ravel() == 0).astype(int))
+        P = diags(1 / B.sum(axis=0).A.ravel()).dot(B).astype(np.float32).tocsr()
+        E = random_walk(P, rp, tol)
+        del P, B
+        return _finish(E, n_bins, resolution, output_dist, min_cutoff, output_path)
+
     # window masks, as upstream
     idx = (np.repeat(np.arange(ws), ws), np.tile(np.arange(ws), ws))
     keep = np.abs(idx[1] - idx[0]) < (output_dist // resolution + 1)
@@ -196,7 +203,11 @@ def _impute_windowed(chrom, resolution, output_path, n_bins, ws, ss, *, scool_ur
         k.dense_add_sparse_block(E_dense, ll, ll, part.indptr, part.indices, part.data)
     E = _dense_to_csr(E_dense)
     del E_dense
+    _finish(E, n_bins, resolution, output_dist, min_cutoff, output_path)
 
+
+def _finish(E, n_bins, resolution, output_dist, min_cutoff, output_path):
+    """Symmetrise, square-root vanilla coverage, keep the upper band, prune, save."""
     E += E.T
     d = E.sum(axis=0).A.ravel()
     d[d == 0] = 1

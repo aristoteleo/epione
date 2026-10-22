@@ -27,10 +27,10 @@ The format roughly follows Keep a Changelog.
   embedding within scHiCluster's own run-to-run variation (`tests/parity/schicluster_embedding`).
 - `impute_cells(resolution=, window_size=, step_size=)`: cells loaded with `load_contact_tables` are
   imputed straight from raw contacts at any resolution, as `hicluster impute-cell` with a contact file.
-- `impute_cells(accelerate=True)`: windowed random walks (`window_size` smaller than a chromosome, the
-  10 kb recipe) run a faster implementation of scHiCluster's `impute_chromosome` (numba Gaussian, direct
-  sparse kernels, one dense window accumulator); equal to scHiCluster up to float32 rounding. Whole-
-  chromosome settings run scHiCluster unchanged.
+- `impute_cells(accelerate=True)`: a faster implementation of scHiCluster's `impute_chromosome` (numba
+  Gaussian, direct sparse kernels, one dense window accumulator). Per cell, single-threaded: about 3x at
+  10 kb (30 Mb windows), 2.2x at 25 kb and 1.3-1.6x at 100 kb (whole chromosomes); equal to scHiCluster
+  up to float32 rounding.
 - `impute_cells(sparse=True)`: stores scHiCluster's upper-triangle band instead of dense symmetric
   matrices, so memory and files scale with `output_dist` (10 kb: about 1.2 GB per worker instead of
   about 9 GB per cell). `embedding`, `scgad_score`, `cell_celltype_correlation` and the contact plots
