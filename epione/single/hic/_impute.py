@@ -131,8 +131,8 @@ def impute_cell_chromosome(
 def _impute_one_cell(
     args: Tuple[str, dict, Sequence[str], int, str, dict, bool],
 ) -> Tuple[str, str]:
-    """Worker — call schicluster.impute_chromosome on every chrom of one
-    cell, then collate results into a single ``.npz``.
+    """Worker — impute every chromosome of one cell, then write one
+    ``<cell>.cool`` (default) or ``<cell>.npz``.
 
     ``source`` is ``{"scool_url": <cool>}`` or the contact-table arguments of
     ``impute_chromosome`` (``contact_path``, ``chrom_size_path``, ``chrom1``,
@@ -142,9 +142,10 @@ def _impute_one_cell(
     kwargs = dict(kwargs)
     compress = bool(kwargs.pop("_compress", False))
     accelerate = bool(kwargs.pop("_accelerate", True))
-    sparse = bool(kwargs.pop("_sparse", False))
-    out_npz = Path(out_dir) / f"{cell_id}.npz"
-    if out_npz.exists() and not overwrite:
+    output = kwargs.pop("_output", "cool")
+    chrom_sizes = kwargs.pop("_chrom_sizes", None)
+    out_file = Path(out_dir) / f"{cell_id}.{output}"
+    if out_file.exists() and not overwrite:
         return cell_id, "skip"
     # Cap BLAS threads — env vars don't help under fork, threadpoolctl does.
     try:
@@ -196,26 +197,24 @@ def _impute_one_cell(
                     df = parts[0] if len(parts) == 1 else pd.concat(parts, ignore_index=True)
                     ext = cooler.Cooler(str(cool_path)).extent(chrom)
                     n_bins = ext[1] - ext[0]
-                    arr = np.zeros((n_bins, n_bins), dtype=np.float32)
                     bin1 = df['bin1_id'].to_numpy() - ext[0]
                     bin2 = df['bin2_id'].to_numpy() - ext[0]
                     vals = df['count'].to_numpy(dtype=np.float32)
                     m = (bin1 >= 0) & (bin1 < n_bins) & (bin2 >= 0) & (bin2 < n_bins)
                     from scipy.sparse import coo_matrix
                     E = coo_matrix((vals[m], (bin1[m], bin2[m])), shape=(n_bins, n_bins))
-                if sparse:
-                    # keep scHiCluster's upper triangle
-                    per_chrom[chrom] = E.astype(np.float32).tocsr()
-                else:
-                    # dense symmetric matrix (both formats store the upper triangle)
-                    arr = np.zeros(E.shape, dtype=np.float32)
-                    arr[E.row, E.col] = E.data
-                    arr = arr + arr.T - np.diag(np.diag(arr))
-                    per_chrom[chrom] = arr
+                # both scHiCluster formats store the upper triangle
+                per_chrom[chrom] = E.astype(np.float32).tocsr()
             except Exception as e:
                 failed.append(f"{chrom}: {type(e).__name__}: {e}")
-    from ._imputed_io import save_imputed
-    save_imputed(out_npz, per_chrom, sparse=sparse, compress=compress)
+    from ._imputed_io import write_cool, write_npz
+    if output == "cool":
+        meta = {"imputed_chromosomes": [c for c in chromosomes if c in per_chrom],
+                "generated_by": "epione.single.hic.impute_cells",
+                "params": {k: v for k, v in kwargs.items()}}
+        write_cool(out_file, per_chrom, chrom_sizes, int(resolution), metadata=meta)
+    else:
+        write_npz(out_file, per_chrom, compress=compress)
     if failed:
         return cell_id, "fail:" + "; ".join(failed[:3])
     return cell_id, "ok"
@@ -240,7 +239,7 @@ def impute_cells(
     compress: bool = False,
     resolution: Optional[int] = None,
     accelerate: bool = True,
-    sparse: bool = False,
+    output: str = "cool",
     # v0.4 backward-compat aliases — deprecated
     rwr_alpha: Optional[float] = None,
     top_pct: Optional[float] = None,
@@ -307,12 +306,15 @@ def impute_cells(
             with 50-85 % less memory), 2.2x at 25 kb and 1.3-1.6x at 100 kb
             (whole-chromosome windows). Equal to scHiCluster up to float32
             rounding. ``False`` runs scHiCluster's own code.
-        sparse: store scHiCluster's sparse upper triangle (within
-            ``output_dist``) instead of dense symmetric matrices. Memory per
-            worker and file size then scale with the band, not with
-            ``n_bins^2``; use it at 25 kb and finer (at 10 kb chr1 is 2.5 GB
-            dense). :func:`embedding` reads the band directly; other readers
-            rebuild one dense chromosome at a time.
+        output: ``"cool"`` (default) writes one ``<cell>.cool`` per cell in
+            scHiCluster's imputed-cool format (upper triangle within
+            ``output_dist``, float32 ``count``, bins over all chromosomes),
+            readable by cooler, cooltools, HiGlass and scHiCluster's own
+            commands (``hicluster gene-score --mode impute``, ``loop``,
+            ``domain``). Memory and size scale with the stored band. ``"npz"``
+            writes one ``<cell>.npz`` with a dense symmetric matrix per
+            chromosome (``compress=`` applies); at 10 kb that is 2.5 GB for
+            chr1 alone.
         rwr_alpha, top_pct, n_iter, use_sparse, sparse_keep_pct:
             deprecated v0.4 parameters. ``rwr_alpha`` is silently
             mapped to ``rp`` if ``rp`` is at its default.
@@ -378,6 +380,7 @@ def impute_cells(
                 "binned at that size (contacts_to_scool) or raw contacts (load_contact_tables)")
         resolution = binsize
         sources = [{"scool_url": cp} for cp in cool_paths]
+        chrom_sizes = {str(k): int(v) for k, v in cooler.Cooler(cool_paths[0]).chromsizes.items()}
     elif "contact_path" in adata.obs:
         # raw contact tables (load_contact_tables): scHiCluster bins them at `resolution`
         if "chrom_sizes" not in info:
@@ -391,6 +394,7 @@ def impute_cells(
         cols = {k: int(v) for k, v in info.get("contact_columns", {}).items()}
         sources = [{"contact_path": cp, "chrom_size_path": sizes_file, **cols}
                    for cp in adata.obs["contact_path"].astype(str)]
+        chrom_sizes = {str(k): int(v) for k, v in info["chrom_sizes"].items()}
     else:
         raise ValueError("adata.obs needs 'cool_path' (load_cool_collection / load_scool_cells) "
                          "or 'contact_path' (load_contact_tables)")
@@ -405,7 +409,10 @@ def impute_cells(
             impute_kwargs[name] = int(value)
     impute_kwargs["_compress"] = bool(compress)
     impute_kwargs["_accelerate"] = bool(accelerate)
-    impute_kwargs["_sparse"] = bool(sparse)
+    if output not in ("cool", "npz"):
+        raise ValueError(f"output must be 'cool' or 'npz', got {output!r}")
+    impute_kwargs["_output"] = output
+    impute_kwargs["_chrom_sizes"] = chrom_sizes
 
     args_list = [
         (cid, src, chromosomes, resolution, str(out_dir), impute_kwargs, overwrite)
@@ -445,6 +452,7 @@ def impute_cells(
 
     adata.uns.setdefault("hic", {})
     adata.uns["hic"]["imputed_dir"] = str(out_dir)
+    adata.uns["hic"]["imputed_format"] = output
     if "contact_path" in adata.obs and "cool_path" not in adata.obs:
         # record the resolution the raw contacts were imputed at (embedding reads it)
         sizes = info["chrom_sizes"]

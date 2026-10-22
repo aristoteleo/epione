@@ -46,7 +46,8 @@ def test_impute_fills_every_chromosome(cells):
     d, paths = cells
     ad = hic.load_cool_collection(paths)
     hic.impute_cells(ad, out_dir=d / "imp", output_dist=1_000_000, compress=True, progress=False)
-    z = np.load(d / "imp" / "cell0.npz")
+    from epione.single.hic._imputed_io import ImputedCell
+    z = ImputedCell(d / "imp" / "cell0.cool")
     assert sorted(z.files) == ["chrA", "chrB"]
     for c in z.files:
         assert z[c].shape == (int(np.ceil(SIZES[c] / RES)),) * 2
@@ -99,10 +100,11 @@ def test_impute_raw_contacts_at_any_resolution(contact_tables):
     hic.impute_cells(ad, out_dir=d / "imp", resolution=res, output_dist=1_000_000, progress=False,
                      accelerate=False)
     assert ad.uns["hic"]["resolution"] == res
-    z = np.load(d / "imp" / "cell0.npz")
+    from epione.single.hic._imputed_io import ImputedCell
+    z = ImputedCell(d / "imp" / "cell0.cool")
     ad_fast = hic.load_contact_tables(paths, chrom_sizes=SIZES)
     hic.impute_cells(ad_fast, out_dir=d / "imp_fast", resolution=res, output_dist=1_000_000, progress=False)
-    zf = np.load(d / "imp_fast" / "cell0.npz")
+    zf = ImputedCell(d / "imp_fast" / "cell0.cool")
     for c in SIZES.index:
         out = d / f"ref_{c}.hdf"
         impute_chromosome(chrom=c, resolution=res, output_path=str(out), contact_path=str(paths[0]),
@@ -124,28 +126,57 @@ def test_impute_cool_rejects_other_resolution(cells):
         hic.impute_cells(ad, out_dir=d / "imp_bad", resolution=1_000_000, progress=False)
 
 
-def test_sparse_layout_matches_dense(cells):
-    """impute_cells(sparse=True): same matrices, same embeddings, smaller files."""
-    from epione.single.hic._imputed_io import ImputedCell
+def test_cool_output_matches_npz(cells, tmp_path):
+    """impute_cells(output='cool') (default) vs 'npz': same matrices and embeddings;
+    the .cool equals scHiCluster's aggregate-chromosomes output and scHiCluster reads it."""
+    import cooler
+    from scipy.sparse import load_npz
+    from schicluster.cool.utilities import aggregate_chromosomes
+    from schicluster.draft.gene_score import gene_score_impute
+    from schicluster.impute.impute_chromosome import impute_chromosome
+    from epione.single.hic._imputed_io import ImputedCell, imputed_path
     d, paths = cells
     out = {}
-    for sp in (False, True):
+    for fmt in ("cool", "npz"):
         ad = hic.load_cool_collection(paths)
-        hic.impute_cells(ad, out_dir=d / f"imp_sp{sp}", output_dist=1_000_000, compress=True,
-                         sparse=sp, progress=False)
-        out[sp] = ad
+        kw = {} if fmt == "cool" else {"output": "npz"}
+        hic.impute_cells(ad, out_dir=d / f"imp_{fmt}", output_dist=1_000_000, compress=True,
+                         accelerate=False, progress=False, **kw)
+        out[fmt] = ad
+    assert out["cool"].uns["hic"]["imputed_format"] == "cool"
     for k in range(12):
-        dense = np.load(d / "imp_spFalse" / f"cell{k}.npz")
-        cell = ImputedCell(d / "imp_spTrue" / f"cell{k}.npz")
-        assert cell.sparse and sorted(cell.files) == sorted(dense.files)
+        dense = np.load(d / "imp_npz" / f"cell{k}.npz")
+        assert imputed_path(d / "imp_cool", f"cell{k}").suffix == ".cool"
+        cell = ImputedCell(d / "imp_cool" / f"cell{k}.cool")
+        assert sorted(cell.files) == sorted(dense.files)
         for c in dense.files:
             np.testing.assert_array_equal(cell[c], dense[c])
             iu, ju = _band_indices(dense[c].shape[0], 500_000, RES)
             np.testing.assert_array_equal(cell.values(c, iu, ju), dense[c][iu, ju])
-            U = cell.upper(c)
-            assert U.nnz == np.count_nonzero(np.triu(dense[c]))   # only the upper band is stored
-    e = {sp: hic.embedding(out[sp], method="schicluster", dim=5, dist=300_000).obsm["X_schicluster"]
-         for sp in (False, True)}
-    np.testing.assert_array_equal(e[True], e[False])
-    p = {sp: hic.embedding(out[sp], n_components=4).obsm["X_pca"] for sp in (False, True)}
-    np.testing.assert_allclose(p[True], p[False], rtol=1e-5, atol=1e-6)
+    e = {f: hic.embedding(out[f], method="schicluster", dim=5, dist=300_000).obsm["X_schicluster"]
+         for f in ("cool", "npz")}
+    np.testing.assert_array_equal(e["cool"], e["npz"])
+    p = {f: hic.embedding(out[f], n_components=4).obsm["X_pca"] for f in ("cool", "npz")}
+    np.testing.assert_allclose(p["cool"], p["npz"], rtol=1e-5, atol=1e-6)
+
+    # identical to scHiCluster: impute_chromosome per chromosome + aggregate-chromosomes
+    ref_dir = tmp_path / "ref"
+    ref_dir.mkdir()
+    sizes_file = tmp_path / "sizes.tsv"
+    SIZES.to_csv(sizes_file, sep="\t", header=False)
+    for c in SIZES.index:
+        impute_chromosome(chrom=c, resolution=RES, output_path=str(ref_dir / c), scool_url=str(paths[0]),
+                          output_dist=1_000_000)
+    aggregate_chromosomes(str(sizes_file), RES, str(ref_dir), str(tmp_path / "ref.cool"),
+                          chrom_wildcard="{chrom}.npz")
+    mine = cooler.Cooler(str(d / "imp_cool" / "cell0.cool"))
+    ref = cooler.Cooler(str(tmp_path / "ref.cool"))
+    pd.testing.assert_frame_equal(mine.bins()[:], ref.bins()[:])
+    a = mine.pixels()[:].sort_values(["bin1_id", "bin2_id"]).reset_index(drop=True)
+    b = ref.pixels()[:]
+    b = b[b["count"] != 0].sort_values(["bin1_id", "bin2_id"]).reset_index(drop=True)
+    pd.testing.assert_frame_equal(a, b, check_dtype=False)
+
+    # scHiCluster's impute-mode gene score reads it
+    meta = pd.DataFrame({0: ["chrA", "chrB"], 1: [3, 2], 2: [9, 6]}, index=["g1", "g2"])
+    assert np.isfinite(gene_score_impute(str(d / "imp_cool" / "cell0.cool"), SIZES, meta)).all()

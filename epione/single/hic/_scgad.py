@@ -160,6 +160,7 @@ def scgad_score(
         ``DataFrame`` indexed by cell barcode, columns = gene names,
         values = scGAD score (sum of imputed contacts in gene-body block).
     """
+    from ._imputed_io import imputed_path
     info = adata.uns.get("hic", {})
     imputed_dir = Path(info["imputed_dir"])
     chromosomes = list(chromosomes) if chromosomes is not None else list(
@@ -176,7 +177,7 @@ def scgad_score(
 
     cell_ids = list(adata.obs_names)
     args_list = [
-        (cid, imputed_dir / f"{cid}.npz", gene_to_bins, gene_order)
+        (cid, imputed_path(imputed_dir, cid), gene_to_bins, gene_order)
         for cid in cell_ids
     ]
 

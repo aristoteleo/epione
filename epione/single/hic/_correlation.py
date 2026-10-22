@@ -223,7 +223,8 @@ def cell_celltype_correlation(
     cell_ids = list(adata.obs_names)
     feats = np.zeros((len(cell_ids), len(celltypes)), dtype=np.float32)
     for ci, cid in enumerate(cell_ids):
-        npz_path = imputed_dir / f"{cid}.npz"
+        from ._imputed_io import imputed_path
+        npz_path = imputed_path(imputed_dir, cid)
         if not npz_path.exists():
             continue
         from ._imputed_io import ImputedCell

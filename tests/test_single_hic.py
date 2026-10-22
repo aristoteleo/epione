@@ -152,12 +152,21 @@ def test_impute_cells_writes_per_cell_npz(tmp_path):
         progress=False,
     )
     assert adata.uns["hic"]["imputed_dir"] == str(out_dir)
+    from epione.single.hic._imputed_io import ImputedCell
     for cid in cell_ids:
-        npz = out_dir / f"{cid}.npz"
-        assert npz.exists()
-        z = np.load(npz)
+        cool = out_dir / f"{cid}.cool"          # default output
+        assert cool.exists()
+        z = ImputedCell(cool)
         assert set(z.files) == {"chr_a", "chr_b"}
         assert z["chr_a"].shape == (30, 30)
+    out_npz = tmp_path / "imputed_npz"
+    epi.single.hic.impute_cells(adata, out_dir=out_npz, pad=1, rwr_alpha=0.05, top_pct=0.1, output="npz",
+                                progress=False)
+    for cid in cell_ids:
+        z = np.load(out_npz / f"{cid}.npz")
+        assert set(z.files) == {"chr_a", "chr_b"}
+        assert z["chr_a"].shape == (30, 30)
+        np.testing.assert_array_equal(z["chr_a"], ImputedCell(out_dir / f"{cid}.cool")["chr_a"])
 
 
 def test_impute_cells_skips_existing(tmp_path):
@@ -169,9 +178,9 @@ def test_impute_cells_skips_existing(tmp_path):
     )
     out_dir = tmp_path / "imputed"
     epi.single.hic.impute_cells(adata, out_dir=out_dir, progress=False)
-    # Touch an .npz with junk content; if overwrite=False it must not
+    # Overwrite a cell's .cool with junk; with overwrite=False it must not
     # be touched.
-    junk = out_dir / f"{cell_ids[0]}.npz"
+    junk = out_dir / f"{cell_ids[0]}.cool"
     junk.write_bytes(b"")
     epi.single.hic.impute_cells(
         adata, out_dir=out_dir, overwrite=False, progress=False,

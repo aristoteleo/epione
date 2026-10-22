@@ -126,7 +126,7 @@ IMPUTED = OUT / 'imputed_100kb'
 hic.impute_cells(raw, out_dir=IMPUTED, resolution=RES, pad=1, std=1.0, rp=0.5, tol=0.01,
                  window_size=500_000_000, step_size=500_000_000, output_dist=1_000_000,
                  compress=True, nproc=NPROC, progress=False)
-print(f"{len(list(IMPUTED.glob('*.npz'))):,} imputed cells")
+print(f"{len(list(IMPUTED.glob('*.cool'))):,} imputed cells (one .cool each)")
 """)
 
 md(r"""

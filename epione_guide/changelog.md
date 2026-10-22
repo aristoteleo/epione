@@ -31,10 +31,12 @@ The format roughly follows Keep a Changelog.
   Gaussian, direct sparse kernels, one dense window accumulator). Per cell, single-threaded: about 3x at
   10 kb (30 Mb windows), 2.2x at 25 kb and 1.3-1.6x at 100 kb (whole chromosomes); equal to scHiCluster
   up to float32 rounding.
-- `impute_cells(sparse=True)`: stores scHiCluster's upper-triangle band instead of dense symmetric
-  matrices, so memory and files scale with `output_dist` (10 kb: about 1.2 GB per worker instead of
-  about 9 GB per cell). `embedding`, `scgad_score`, `cell_celltype_correlation` and the contact plots
-  read both layouts; `embedding`'s band indices no longer enumerate the whole upper triangle.
+- `impute_cells(output='cool')` (new default): one imputed `<cell>.cool` per cell in scHiCluster's format
+  (upper triangle within `output_dist`, float32 `count`), identical to `hicluster` `aggregate-chromosomes`
+  output and readable by cooler, HiGlass and scHiCluster's commands. Memory and size scale with the
+  stored band (10 kb: about 1.2 GB per worker instead of about 9 GB per cell). `output='npz'` keeps the
+  dense per-chromosome arrays. `embedding`, `scgad_score`, `cell_celltype_correlation` and the contact
+  plots read both.
 - `epi.single.hic.gene_score`: scHiCluster's `hicluster gene-score --mode raw` (contacts inside each gene
   body) from contact tables, with `min_pos_dist=` to drop short contacts; identical to scHiCluster's
   `gene_score_raw`.
