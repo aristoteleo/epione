@@ -3,7 +3,7 @@
 Execute with ``jupyter nbconvert --to notebook --execute --inplace``; needs
 ``pip install 'epione[hic]'``, scHiCluster, the HCEA contact tables of the six
 blood major types and the hg38 FASTA index. The imputation of 6,000 cells
-takes about 35 min on 128 cores and the embedding about 20 min; later runs
+takes about 25 min on 128 cores and the embedding about 20 min; later runs
 read the cached imputation.
 """
 import pathlib
@@ -147,9 +147,12 @@ emb.obs['celltype'] = pd.Categorical(emb.obs['celltype'], categories=TYPES)
 emb.obs['log10 contacts'] = np.log10(emb.obs['CisLongContact'].astype(float))
 sc.pp.neighbors(emb, n_neighbors=15, use_rep='X_schicluster')
 sc.tl.umap(emb, random_state=0)
+# distinct hues: six types, then up to 20 tissues / donors
+palettes = {'celltype': ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#17becf'],
+            'Tissue': sc.pl.palettes.default_20, 'Donor': sc.pl.palettes.default_20}
 fig, axes = plt.subplots(1, 4, figsize=(24, 5))
 for ax, key in zip(axes, ['celltype', 'Tissue', 'Donor', 'log10 contacts']):
-    sc.pl.umap(emb, color=key, ax=ax, show=False, title=key, size=8)
+    sc.pl.umap(emb, color=key, ax=ax, show=False, title=key, size=8, palette=palettes.get(key))
 plt.tight_layout(); plt.show()
 X = emb.obsm['X_schicluster']
 r = [np.corrcoef(X[:, k], emb.obs['log10 contacts'])[0, 1] for k in range(3)]
