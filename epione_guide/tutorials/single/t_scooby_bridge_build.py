@@ -57,10 +57,10 @@ the forked `snapatac2-scooby` (for the genome-wide insertion matrix),
 `enformer_pytorch`'s data loader, `pybigtools` (a Rust build), and a
 second conda environment because of a numpy pin. Reading windows on
 demand removes the first two; the last two were only ever needed by the
-parts removed. That is why this notebook does not call `epi.pl.plot_set()`
-as the other tutorials do — it runs in a lean torch environment where
-Epione's full analysis stack (pyranges, MOODS, …) is not installed, and
-the bridge is designed to work there.
+parts removed. The bridge itself imports only numpy, pandas, pysam and
+torch, so it also runs in a lean torch environment without Epione's full
+analysis stack. This notebook additionally calls `epi.pl.plot_set()` for
+the figure style shared by all tutorials, which needs the full install.
 """)
 
 md("## Part 1 · Setup")
@@ -146,26 +146,17 @@ print('geometry: input', sb.INPUT_LENGTH, 'bp -> target', sb.TARGET_LENGTH,
 
 code(r"""
 %matplotlib inline
-# --- figure style ----------------------------------------------------------
-# Validated categorical palette (see the dataviz reference); slots are
-# assigned in fixed order and never cycled.
-C = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100']
-INK, INK2, MUTED, GRID = '#0b0b0b', '#52514e', '#898781', '#e1e0d9'
+import epione as epi
+
+epi.pl.plot_set()
+
+# Categorical colours: distinct hues from epione's palette, in a fixed
+# order. Bands use the first four, folds all eight.
+FOLD_C = [epi.pl.sc_color[i] for i in (7, 6, 13, 11, 5, 1, 15, 18)]
+C = FOLD_C[:4]   # blue, coral, purple, green
+# Magnitude: a single-hue light-to-dark ramp.
 SEQ = LinearSegmentedColormap.from_list(
     'blues', ['#cde2fb', '#86b6ef', '#3987e5', '#1c5cab', '#0d366b'])
-
-plt.rcParams.update({
-    'figure.facecolor': '#fcfcfb', 'axes.facecolor': '#fcfcfb',
-    'savefig.facecolor': '#fcfcfb',
-    'axes.edgecolor': '#c3c2b7', 'axes.linewidth': 0.8,
-    'axes.labelcolor': INK2, 'axes.titlesize': 11, 'axes.titleweight': 'bold',
-    'axes.titlecolor': INK, 'axes.spines.top': False, 'axes.spines.right': False,
-    'xtick.color': MUTED, 'ytick.color': MUTED,
-    'xtick.labelsize': 9, 'ytick.labelsize': 9,
-    'grid.color': GRID, 'grid.linewidth': 0.6,
-    'legend.frameon': False, 'legend.fontsize': 9,
-    'font.size': 10, 'lines.linewidth': 2.0, 'figure.dpi': 110,
-})
 """)
 
 md(r"""
@@ -217,32 +208,32 @@ print(f'per-spot chr19 depth: median {np.median(depth):,.0f}  '
 """)
 
 code(r"""
-fig, (ax, ax2) = plt.subplots(1, 2, figsize=(10.5, 4.3),
+fig, (ax, ax2) = plt.subplots(1, 2, figsize=(11, 4.6),
                               gridspec_kw={'width_ratios': [1.15, 1]})
 
+# Cap the colour scale at the 99th percentile so a few very deep spots do
+# not wash out the rest of the section; the arrow on the bar marks the cap.
+vmax = float(np.percentile(depth, 99))
 sc = ax.scatter(in_tissue['array_col'], in_tissue['array_row'],
-                c=depth, s=7, cmap=SEQ, linewidths=0)
+                c=depth, s=7, cmap=SEQ, vmin=0, vmax=vmax, linewidths=0)
 ax.set_aspect('equal'); ax.invert_yaxis()
-ax.set_title('chr19 fragments per spot')
+ax.set_title('Spatial map')
 ax.set_xlabel('array column'); ax.set_ylabel('array row')
-ax.spines['left'].set_visible(False); ax.spines['bottom'].set_visible(False)
 ax.set_xticks([]); ax.set_yticks([])
-cb = fig.colorbar(sc, ax=ax, fraction=0.046, pad=0.03)
-cb.outline.set_visible(False)
-cb.ax.tick_params(color=MUTED, labelcolor=MUTED, labelsize=8)
+cb = fig.colorbar(sc, ax=ax, fraction=0.046, pad=0.03, extend='max')
+cb.set_label('chr19 fragments per spot')
 
 ax2.hist(depth, bins=60, color=C[0], edgecolor='none')
-ax2.axvline(np.median(depth), color=INK2, lw=1.2, ls='--')
+ax2.axvline(np.median(depth), color='k', lw=1.0, ls='--')
 ax2.annotate(f'median {np.median(depth):,.0f}',
-             xy=(np.median(depth), ax2.get_ylim()[1] * 0.92),
-             xytext=(6, 0), textcoords='offset points',
-             color=INK2, fontsize=9, va='top')
+             xy=(np.median(depth), ax2.get_ylim()[1] * 0.97),
+             xytext=(6, 0), textcoords='offset points', fontsize=12, va='top')
 ax2.set_title('Depth distribution')
 ax2.set_xlabel('chr19 fragments per spot'); ax2.set_ylabel('spots')
-ax2.grid(axis='y', alpha=0.7); ax2.set_axisbelow(True)
+ax2.set_xlim(0, None)
+ax2.spines[['top', 'right']].set_visible(False)
 
-fig.suptitle('P2S1 spatial ATAC — coverage is even across the section',
-             y=1.02, fontsize=12, fontweight='bold', color=INK)
+fig.suptitle('P2S1 spatial ATAC: coverage is even across the section')
 plt.tight_layout(); plt.show()
 """)
 
@@ -274,33 +265,44 @@ sizes = np.unique(np.clip(np.round(np.logspace(0, np.log10(len(in_tissue)), 60))
 exp = np.array([sb.expected_fragments_per_window(per_cell_genome, genome_len, n)
                 for n in sizes])
 
-fig, ax = plt.subplots(figsize=(7.2, 4.4))
-ax.fill_between(sizes, 1e-2, 1, color='#e34948', alpha=0.08, lw=0)
-ax.fill_between(sizes, 1e3, exp.max() * 3, color='#1baf7a', alpha=0.08, lw=0)
-ax.loglog(sizes, exp, color=C[0])
+from matplotlib.ticker import FuncFormatter
 
-for y, txt, col in [(1, 'one fragment — pure noise', '#e34948'),
-                    (1e3, 'usable profile', '#1baf7a')]:
-    ax.axhline(y, color=col, lw=1.1, ls='--')
-    ax.annotate(txt, xy=(sizes[-1], y), xytext=(-4, 5),
-                textcoords='offset points', ha='right',
-                color=INK2, fontsize=9)
+fig, ax = plt.subplots(figsize=(8.5, 5))
+ylo, yhi = 0.1, exp.max() * 4
+# Shaded zones span the whole frame; their labels sit inside them.
+ax.axhspan(ylo, 1, color=C[1], alpha=0.15, lw=0)
+ax.axhspan(1e3, yhi, color=C[0], alpha=0.15, lw=0)
+ax.axhline(1, color=C[1], lw=1, ls='--')
+ax.axhline(1e3, color=C[0], lw=1, ls='--')
+ax.annotate('below 1 fragment per window: noise', xy=(0.98, 0.45),
+            xycoords=('axes fraction', 'data'), ha='right', va='center',
+            fontsize=12)
+ax.annotate('above 1,000 fragments: usable profile', xy=(0.02, 3.5e3),
+            xycoords=('axes fraction', 'data'), ha='left', va='center',
+            fontsize=12)
+
+# The curve is drawn dark so it stands apart from the light blue zone.
+ax.loglog(sizes, exp, color='k', lw=2)
 
 one = sb.expected_fragments_per_window(per_cell_genome, genome_len, 1)
-ax.plot([1], [one], 'o', ms=8, color=C[1], zorder=5)
-ax.annotate(f'a single spot: {one:.1f}', xy=(1, one), xytext=(14, -4),
-            textcoords='offset points', color=INK, fontsize=9.5,
-            fontweight='bold')
+ax.plot([1], [one], 'o', ms=7, color='k', zorder=5)
+ax.annotate(f'one spot: {one:.1f} fragments', xy=(1, one), xytext=(10, 6),
+            textcoords='offset points', fontsize=12)
 n_need = int(sizes[np.searchsorted(exp, 1e3)])
-ax.annotate(f'~{n_need:,} spots needed', xy=(n_need, 1e3), xytext=(10, -22),
-            textcoords='offset points', color=INK, fontsize=9.5,
-            fontweight='bold')
+ax.plot([n_need], [1e3], 'o', ms=7, color='k', zorder=5)
+ax.vlines(n_need, ylo, 1e3, color='k', lw=0.8, ls=':')
+ax.annotate(f'~{n_need:,} spots needed', xy=(n_need, 1e3), xytext=(-10, 8),
+            textcoords='offset points', ha='right', fontsize=12)
 
+# Plain numbers read faster than powers of ten at this range.
+fmt = FuncFormatter(lambda v, _: f'{v:,.0f}' if v >= 1 else f'{v:g}')
+ax.xaxis.set_major_formatter(fmt); ax.yaxis.set_major_formatter(fmt)
 ax.set_xlabel('spots aggregated into one group')
 ax.set_ylabel('expected fragments per 196 kb window')
 ax.set_title('Per-spot targets are not viable on this data')
-ax.grid(alpha=0.6, which='major'); ax.set_axisbelow(True)
-ax.set_ylim(1e-2, exp.max() * 3)
+ax.spines[['top', 'right']].set_visible(False)
+ax.set_xlim(0.7, sizes[-1] * 1.4)
+ax.set_ylim(ylo, yhi)
 plt.tight_layout(); plt.show()
 """)
 
@@ -318,6 +320,9 @@ md(r"""
 Groups are arbitrary sets of cell indices. Here: four dorsal→ventral
 bands of the section, which is the crudest possible spatial grouping and
 still enough to show the reader working.
+
+Profiles are on upstream's ATAC scale: Tn5 insertion counts per 32 bp bin,
+multiplied by 0.05.
 """)
 
 code(r"""
@@ -350,20 +355,21 @@ print('profile matrix:', prof.shape, '(groups x 32 bp bins)')
 """)
 
 code(r"""
-x = (W0 + np.arange(prof.shape[1]) * 32) / 1e6
-fig, axes = plt.subplots(4, 1, figsize=(9.5, 5.6), sharex=True, sharey=True)
+x = (W0 + np.arange(prof.shape[1]) * 32) / 1e6   # left edge of each bin, Mb
+fig, axes = plt.subplots(4, 1, figsize=(11, 6.4), sharex=True, sharey=True)
 for ax, p, nm, col, g in zip(axes, prof, names, C, groups):
-    ax.fill_between(x, 0, p, color=col, lw=0, alpha=0.85)
+    ax.fill_between(x, 0, p, step='post', color=col, lw=0)
+    ax.step(x, p, where='post', color=col, lw=0.6)
     # Direct label: identity is never carried by colour alone.
-    ax.annotate(f'{nm}  ({len(g):,} spots)', xy=(0.012, 0.82),
-                xycoords='axes fraction', color=INK, fontsize=9.5,
-                fontweight='bold')
-    ax.grid(axis='y', alpha=0.6); ax.set_axisbelow(True)
-    ax.spines['left'].set_color('#c3c2b7')
+    ax.annotate(f'{nm} · {len(g):,} spots', xy=(0.006, 0.95),
+                xycoords='axes fraction', va='top', fontsize=12)
+    ax.spines[['top', 'right']].set_visible(False)
+axes[0].set_ylim(0, prof.max() * 1.05)
+# The x axis spans exactly the 196 kb window, nothing more.
+axes[-1].set_xlim(W0 / 1e6, (W0 + T) / 1e6)
 axes[-1].set_xlabel(f'{CHROM} position (Mb)')
-axes[2].set_ylabel('Tn5 insertions per 32 bp bin  (×0.05, upstream scale)')
-fig.suptitle('Part 4 · Insertion profiles over one 196 kb training window',
-             y=0.98, fontsize=12, fontweight='bold', color=INK)
+fig.supylabel('insertions per 32 bp bin (×0.05)', fontsize=14)
+fig.suptitle('Insertion profiles over one 196 kb training window')
 plt.tight_layout(); plt.show()
 """)
 
@@ -482,33 +488,34 @@ if HAVE_UPSTREAM:
     z0 = int(roll.argmax()); z1 = z0 + k
     xz = x[z0:z1]
 
-    fig, (a1, a2) = plt.subplots(2, 1, figsize=(9.8, 5.2),
+    fig, (a1, a2) = plt.subplots(2, 1, figsize=(11, 6.4),
                                  gridspec_kw={'height_ratios': [2.4, 1]})
 
-    a1.fill_between(xz, 0, up[g][z0:z1], color=C[0], alpha=0.35, lw=0,
-                    label='upstream scooby')
-    a1.plot(xz, mine[g][z0:z1], color=C[1], lw=1.4, ls=(0, (3, 3)),
+    a1.fill_between(xz, 0, up[g][z0:z1], step='post', color=C[0], alpha=0.35,
+                    lw=0, label='upstream scooby')
+    a1.step(xz, mine[g][z0:z1], where='post', color=C[1], lw=1.0,
             label='epione bridge')
-    a1.legend(loc='upper left', ncol=2)
-    a1.set_ylabel('insertions / bin')
-    a1.set_xlim(xz[0], xz[-1])
-    a1.set_ylim(0, up[g][z0:z1].max() * 1.32)  # headroom for the legend
-    a1.set_title(f'Same code path, same numbers — {names[g]}, '
-                 f'densest {k} bins ({k * 32 / 1e3:.1f} kb) of the window')
+    a1.legend(loc='upper right', ncol=2, frameon=False, handlelength=1.5)
+    a1.set_ylabel('insertions per\n32 bp bin (×0.05)')
+    a1.set_xlim(xz[0], xz[-1] + 32 / 1e6)
+    a1.set_ylim(0, up[g][z0:z1].max() * 1.18)
+    a1.set_title(f'{names[g]}: the densest {k * 32 / 1e3:.1f} kb of the window')
     a1.set_xlabel(f'{CHROM} position (Mb)')
-    a1.grid(axis='y', alpha=0.6); a1.set_axisbelow(True)
+    a1.spines[['top', 'right']].set_visible(False)
 
-    a2.plot(x, (up - mine)[g], color=INK2, lw=1.2)
-    a2.axhline(0, color='#c3c2b7', lw=0.8)
-    a2.set_ylim(-1, 1)
-    a2.set_ylabel('difference')
-    a2.set_xlabel(f'{CHROM} position (Mb) — all {up.shape[1]:,} bins')
-    a2.set_xlim(x[0], x[-1])
-    a2.annotate(f'max|diff| over all {up.shape[0]} groups '
-                f'x {up.shape[1]:,} bins = {np.abs(up - mine).max():.0f}',
-                xy=(0.012, 0.78), xycoords='axes fraction',
-                color=INK, fontsize=9.5, fontweight='bold')
-    a2.grid(axis='y', alpha=0.6); a2.set_axisbelow(True)
+    # Residual over every bin of the window; the shaded strip is the zoom above.
+    a2.axvspan(xz[0], xz[-1] + 32 / 1e6, color=C[0], alpha=0.15, lw=0)
+    a2.plot(x, (up - mine)[g], color='k', lw=1.0)
+    a2.set_ylim(-1, 1); a2.set_yticks([-1, 0, 1])
+    a2.set_ylabel('upstream\n− epione')
+    a2.set_xlabel(f'{CHROM} position (Mb), whole window (shaded: zoom above)')
+    a2.set_xlim(W0 / 1e6, (W0 + T) / 1e6)
+    a2.annotate(f'max |difference| over {up.shape[0]} groups '
+                f'× {up.shape[1]:,} bins = {np.abs(up - mine).max():.0f}',
+                xy=(0.006, 0.95), xycoords='axes fraction', va='top',
+                fontsize=12)
+    a2.spines[['top', 'right']].set_visible(False)
+    fig.suptitle('Same code path, same numbers')
     plt.tight_layout(); plt.show()
 """)
 
@@ -562,17 +569,34 @@ print(f'cross-fold input/target overlaps: {leaks}')
 code(r"""
 sub = folds[folds['chrom'] == CHROM].sort_values('start')
 fold_ids = sorted(folds['fold'].unique())
-cmap8 = (C + ['#e87ba4', '#008300', '#4a3aa7', '#e34948'])
+# One fixed colour per fold, in fold order (FOLD_C from the setup cell).
+fold_col = {f: FOLD_C[i] for i, f in enumerate(fold_ids)}
+MB = 1e6
 
-fig, (a1, a2) = plt.subplots(2, 1, figsize=(9.8, 4.0),
-                             gridspec_kw={'height_ratios': [1, 1.5]})
+fig, (a1, a2) = plt.subplots(2, 1, figsize=(11, 6.2),
+                             gridspec_kw={'height_ratios': [1, 1.7]})
 
+# Merge consecutive windows of one fold into a block, so each block is one
+# bar with its fold number written above it (colour alone is not enough
+# for eight categories).
+blocks, cur = [], None
 for _, r in sub.iterrows():
-    a1.barh(0, (r['end'] - r['start']) / 1e6, left=r['start'] / 1e6, height=0.6,
-            color=cmap8[fold_ids.index(r['fold'])], edgecolor='none')
-a1.set_yticks([]); a1.set_xlim(0, chrom_sizes[CHROM] / 1e6)
-a1.set_title(f'{CHROM} windows, coloured by fold (blocks, not single windows)')
-a1.spines['left'].set_visible(False)
+    if cur and r['fold'] == cur[2] and r['start'] - cur[1] <= sb.TARGET_LENGTH:
+        cur[1] = r['end']
+    else:
+        cur = [r['start'], r['end'], r['fold']]
+        blocks.append(cur)
+for s, e, f in blocks:
+    a1.barh(0, (e - s) / MB, left=s / MB, height=0.6,
+            color=fold_col[f], edgecolor='none')
+    a1.annotate(str(f).replace('fold', ''), xy=((s + e) / 2 / MB, 0.3),
+                xytext=(0, 2), textcoords='offset points',
+                ha='center', va='bottom', fontsize=11)
+a1.set_yticks([]); a1.set_ylim(-0.4, 0.85)
+a1.set_xlim(0, chrom_sizes[CHROM] / MB)
+a1.set_xlabel(f'{CHROM} position (Mb)')
+a1.set_title(f'{CHROM} windows coloured by fold (fold number above each block)')
+a1.spines[['left', 'top', 'right']].set_visible(False)
 
 # Zoom on one block boundary: a few windows either side, each drawn as
 # its own row (target bar + the input span it actually reads) so the
@@ -582,38 +606,38 @@ b = np.flatnonzero(np.diff(cut) > sb.TARGET_LENGTH)
 bi = int(b[0]) if len(b) else len(sub) // 2
 sel = sub.iloc[max(0, bi - 2): bi + 3]
 
-MB = 1e6
 gap0, gap1 = cut[bi] / MB + sb.TARGET_LENGTH / MB, cut[bi + 1] / MB
-a2.axvspan(gap0, gap1, color=GRID, alpha=0.8, lw=0)
-a2.annotate('dropped by the flank buffer', xy=((gap0 + gap1) / 2, len(sel) - 0.3),
-            ha='center', color=INK2, fontsize=8.5)
+a2.axvspan(gap0, gap1, color='0.9', lw=0)
+a2.annotate('dropped by the\nflank buffer', xy=((gap0 + gap1) / 2, len(sel) - 0.45),
+            ha='center', va='top', fontsize=11)
 
 for row, (_, r) in enumerate(sel.iloc[::-1].iterrows()):
     s, e = r['start'] / MB, r['end'] / MB
-    col = cmap8[fold_ids.index(r['fold'])]
+    col = fold_col[r['fold']]
     # Input span: what this window's 524 kb context actually covers.
     a2.plot([s - sb.FLANK / MB, e + sb.FLANK / MB], [row, row],
-            color=col, lw=1.4, alpha=0.55, solid_capstyle='butt')
+            color=col, lw=1.4, alpha=0.6, solid_capstyle='butt')
     # Target: the 196 kb it predicts.
     a2.plot([s, e], [row, row], color=col, lw=8, solid_capstyle='butt')
     a2.annotate(r['fold'], xy=(e + sb.FLANK / MB, row), xytext=(5, 0),
-                textcoords='offset points', va='center', color=INK2,
-                fontsize=8.5)
+                textcoords='offset points', va='center', fontsize=11)
 
-a2.set_ylim(-0.8, len(sel) - 0.1)
+a2.set_ylim(-0.9, len(sel) - 0.3)
 a2.set_yticks([])
 # Room for the fold labels sitting past the right-hand input spans.
 _lo = (sel['start'].min() - sb.FLANK) / MB
 _hi = (sel['end'].max() + sb.FLANK) / MB
-a2.set_xlim(_lo - (_hi - _lo) * 0.03, _hi + (_hi - _lo) * 0.10)
+z0, z1 = _lo - (_hi - _lo) * 0.03, _hi + (_hi - _lo) * 0.12
+a2.set_xlim(z0, z1)
 a2.set_xlabel(f'{CHROM} position (Mb)')
-a2.annotate('thick = 196 kb target   ·   thin = 524 kb input it reads',
-            xy=(0.012, 0.04), xycoords='axes fraction', color=INK2,
-            fontsize=8.5)
-a2.spines['left'].set_visible(False)
+a2.set_title('Zoom on one block boundary (grey band above)')
+a2.annotate('thick = 196 kb target  ·  thin = 524 kb input it reads',
+            xy=(0.006, 0.03), xycoords='axes fraction', fontsize=11)
+a2.spines[['left', 'top', 'right']].set_visible(False)
+# Mark the zoomed stretch on the chromosome overview.
+a1.axvspan(z0, z1, color='0.85', lw=0, zorder=0)
 
-fig.suptitle(f'Part 6 · {leaks} cross-fold leaks across {len(folds):,} windows',
-             y=1.03, fontsize=12, fontweight='bold', color=INK)
+fig.suptitle(f'{leaks} cross-fold leaks across {len(folds):,} windows')
 plt.tight_layout(); plt.show()
 """)
 
@@ -717,18 +741,20 @@ if HAVE_MODEL:
 
 code(r"""
 if HAVE_MODEL:
-    fig, (a1, a2) = plt.subplots(1, 2, figsize=(10.6, 4.1),
-                                 gridspec_kw={'width_ratios': [1, 1.5]})
+    fig, (a1, a2) = plt.subplots(1, 2, figsize=(12, 4.8),
+                                 gridspec_kw={'width_ratios': [1, 1.7]})
 
-    a1.plot(np.arange(1, len(losses) + 1), losses, color=C[0])
+    steps = np.arange(1, len(losses) + 1)
+    a1.plot(steps, losses, color=C[0], marker='o', ms=3)
     a1.set_xlabel('optimiser step'); a1.set_ylabel('Poisson-multinomial loss')
     a1.set_title('Overfitting one window')
-    a1.grid(alpha=0.6); a1.set_axisbelow(True)
-    a1.annotate(f'{losses[0]:.3f}', xy=(1, losses[0]), xytext=(6, 2),
-                textcoords='offset points', color=INK2, fontsize=9)
+    a1.set_xlim(0, len(losses) + 1)
+    a1.annotate(f'{losses[0]:.3f}', xy=(1, losses[0]), xytext=(6, 0),
+                textcoords='offset points', va='center', fontsize=12)
     a1.annotate(f'{losses[-1]:.3f}', xy=(len(losses), losses[-1]),
-                xytext=(-4, 8), textcoords='offset points', ha='right',
-                color=INK, fontsize=9, fontweight='bold')
+                xytext=(0, 8), textcoords='offset points', ha='right',
+                fontsize=12)
+    a1.spines[['top', 'right']].set_visible(False)
 
     # Same zoom treatment as Part 5: 6,144 bins do not fit on a page.
     g, k = 0, 300
@@ -737,21 +763,22 @@ if HAVE_MODEL:
     sl = slice(zz, zz + k)
     xm = (W0 + np.arange(obs.shape[0]) * 32) / 1e6
 
-    a2.fill_between(xm[sl], 0, obs[sl], color='#c3c2b7', alpha=0.55, lw=0,
-                    label='observed')
-    a2.plot(xm[sl], pred0[sl, g], color=MUTED, lw=1.1, ls=':',
-            label='at init')
-    a2.plot(xm[sl], pred[sl, g], color=C[1], lw=1.5,
-            label='predicted (30 steps)')
-    a2.legend(loc='upper left', ncol=3)
-    a2.set_xlim(xm[sl][0], xm[sl][-1])
+    a2.fill_between(xm[sl], 0, obs[sl], step='post', color='0.75',
+                    lw=0, label='observed')
+    a2.step(xm[sl], pred0[sl, g], where='post', color='k', lw=1.0,
+            ls=(0, (1, 1.5)), label='at initialisation')
+    a2.step(xm[sl], pred[sl, g], where='post', color=C[1], lw=1.3,
+            label=f'after {len(losses)} steps')
+    a2.legend(loc='upper right', ncol=1, frameon=False, handlelength=1.5)
+    a2.set_xlim(xm[sl][0], xm[sl][-1] + 32 / 1e6)
+    a2.set_ylim(0, None)
     a2.set_xlabel(f'{CHROM} position (Mb)')
-    a2.set_ylabel('insertions / bin')
-    a2.set_title(f'{names[g]} — predicted vs observed (densest {k} bins)')
-    a2.grid(axis='y', alpha=0.6); a2.set_axisbelow(True)
+    a2.set_ylabel('insertions per\n32 bp bin (×0.05)')
+    a2.set_title(f'{names[g]}: predicted vs observed, '
+                 f'densest {k * 32 / 1e3:.1f} kb')
+    a2.spines[['top', 'right']].set_visible(False)
 
-    fig.suptitle('Part 7 · Upstream Scooby driven by the Epione data path',
-                 y=1.02, fontsize=12, fontweight='bold', color=INK)
+    fig.suptitle('Upstream Scooby driven by the Epione data path')
     plt.tight_layout(); plt.show()
 """)
 
