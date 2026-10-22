@@ -68,6 +68,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import pysam
+import scanpy as sc
 import torch
 
 
@@ -100,17 +101,8 @@ for p in (FRAG, POS, FASTA):
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 print('device:', DEVICE, torch.cuda.get_device_name(0) if DEVICE == 'cuda' else '')
 
-C = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100']
-INK, INK2, MUTED, GRID = '#0b0b0b', '#52514e', '#898781', '#e1e0d9'
-plt.rcParams.update({
-    'figure.facecolor': '#fcfcfb', 'axes.facecolor': '#fcfcfb', 'savefig.facecolor': '#fcfcfb',
-    'axes.edgecolor': '#c3c2b7', 'axes.linewidth': 0.8, 'axes.labelcolor': INK2,
-    'axes.titlesize': 11, 'axes.titleweight': 'bold', 'axes.titlecolor': INK,
-    'axes.spines.top': False, 'axes.spines.right': False,
-    'xtick.color': MUTED, 'ytick.color': MUTED, 'xtick.labelsize': 9, 'ytick.labelsize': 9,
-    'grid.color': GRID, 'grid.linewidth': 0.6, 'legend.frameon': False,
-    'legend.fontsize': 9, 'font.size': 10, 'lines.linewidth': 2.0, 'figure.dpi': 110,
-})
+epi.pl.plot_set()
+C = sc.pl.palettes.default_20                      # scanpy's categorical colours, in order
 """)
 
 md(r"""
@@ -248,20 +240,25 @@ print(f'best epoch {best_epoch} of {len(hist)}')
 """)
 
 code(r"""
-fig, (a1, a2) = plt.subplots(1, 2, figsize=(10.5, 3.6))
-a1.plot(hist.epoch, hist.train_loss, color=C[1], lw=1.6, label='train (augmented, 30 scales)')
-a1.plot(hist.epoch, hist.valid_loss, color=C[0], lw=1.8, label='valid (centred, 99 scales)')
-a1.axvline(best_epoch, color=MUTED, lw=0.8, ls=':')
-a1.set_xlabel('epoch'); a1.set_ylabel('loss'); a1.legend(); a1.grid(alpha=0.6)
+fig, (a1, a2) = plt.subplots(1, 2, figsize=(12, 4.2))
+a1.plot(hist.epoch, hist.train_loss, color=C[0], label='train (augmented, 30 scales)')
+a1.plot(hist.epoch, hist.valid_loss, color=C[1], label='valid (centred, 99 scales)')
+a1.set_yscale('log')                              # epoch 0's train loss would flatten the rest
+a1.set_yticks([0.5, 1, 2, 5, 10], ['0.5', '1', '2', '5', '10']); a1.minorticks_off()
+a1.axvline(best_epoch, color='k', lw=0.8, ls=':', label=f'best epoch ({best_epoch}), weights kept')
+a1.set_xlabel('epoch'); a1.set_ylabel('loss (log scale)'); a1.legend(loc='upper right', fontsize=11)
 a1.set_title('Loss')
-for col, c, lab in (('valid_profile_pearson', C[0], 'footprint profile r'),
-                    ('valid_coverage_pearson', C[2], 'coverage r')):
-    a2.plot(hist.epoch, hist[col], color=c, lw=1.8, label=lab)
-    a2.annotate(f'{hist[col].iloc[best_epoch]:.2f}', xy=(best_epoch, hist[col].iloc[best_epoch]),
-                xytext=(5, 5), textcoords='offset points', color=INK, fontsize=9, fontweight='bold')
-a2.axvline(best_epoch, color=MUTED, lw=0.8, ls=':')
-a2.set_xlabel('epoch'); a2.set_ylabel('Pearson r (validation chromosomes)'); a2.legend()
-a2.grid(alpha=0.6); a2.set_title('Validation metrics')
+for col, c, lab in (('valid_profile_pearson', C[2], 'footprint profile r'),
+                    ('valid_coverage_pearson', C[3], 'coverage r')):
+    v = hist[col].iloc[best_epoch]
+    a2.plot(hist.epoch, hist[col], color=c, label=lab)
+    a2.plot(best_epoch, v, 'o', ms=5, color=c, zorder=3)
+    a2.annotate(f'{v:.2f}', xy=(best_epoch, v), xytext=(-6, 6), textcoords='offset points',
+                ha='right', fontsize=11)
+a2.axvline(best_epoch, color='k', lw=0.8, ls=':')
+a2.set_xlabel('epoch'); a2.set_ylabel('Pearson r')
+a2.set_ylim(0, 1.15 * hist.valid_profile_pearson.max())
+a2.legend(loc='center right', fontsize=11); a2.set_title('Validation chromosomes')
 plt.tight_layout(); plt.show()
 """)
 
@@ -292,17 +289,18 @@ pred = pred[0].float().cpu().numpy(); obs = obs.cpu().numpy()
 r = np.corrcoef(np.nan_to_num(obs).ravel(), pred.ravel())[0, 1]
 chrom, summit = test.peaks.chrom[i], int(test.peaks.summit[i])
 
-fig, axes = plt.subplots(1, 2, figsize=(11, 3.6), sharey=True)
-ext = [-400, 400, 4, 200]
-vm = np.nanpercentile(np.abs(obs), 99)
-for ax, M, t in ((axes[0], obs, 'observed (PRINT z, from cuts)'), (axes[1], pred, 'predicted from sequence')):
+fig, axes = plt.subplots(1, 2, figsize=(12, 4.4), sharey=True, layout='constrained')
+ext = [-400, 400, 4, 200]                            # 800 bp around the summit; scales 2-100 = 4-200 bp
+vm = np.nanpercentile(np.abs(obs), 99)               # one colour scale for both panels
+for ax, M, t in ((axes[0], obs, 'Observed (from Tn5 cuts)'), (axes[1], pred, 'Predicted (from sequence)')):
     im = ax.imshow(M, aspect='auto', origin='lower', cmap='RdBu_r', vmin=-vm, vmax=vm,
                    extent=ext, interpolation='nearest')
     ax.set_title(t); ax.set_xlabel('position from summit (bp)')
+    ax.set_xticks(np.arange(-400, 401, 200))
 axes[0].set_ylabel('footprint size (bp)')
-cb = fig.colorbar(im, ax=axes, shrink=0.85, label='footprint z'); cb.outline.set_visible(False)
-fig.suptitle(f'{chrom}:{summit:,} (test chromosome) — Pearson r = {r:.2f}',
-             fontsize=11, fontweight='bold', color=INK, y=1.02)
+cb = fig.colorbar(im, ax=axes, shrink=0.9, pad=0.02, extend='both')
+cb.set_label('footprint z-score')
+fig.suptitle(f'{chrom}:{summit:,} on a test chromosome, Pearson r = {r:.2f}')
 plt.show()
 """)
 
@@ -314,14 +312,19 @@ with torch.no_grad():
     for Xb, yb in loader:
         pc.append(model(Xb.to(DEVICE))[1].float().cpu()); oc.append(torch.log1p(yb[:, 0].sum(-1)))
 pc, oc = torch.cat(pc).numpy(), torch.cat(oc).numpy()
-fig, ax = plt.subplots(figsize=(4.8, 4.5))
-ax.scatter(oc, pc, s=3, color=C[0], alpha=0.3, lw=0)
+fig, ax = plt.subplots(figsize=(5.2, 5))
+ax.scatter(oc, pc, s=5, color=C[0], alpha=0.35, lw=0)
 lo, hi = np.percentile(np.r_[oc, pc], [0.5, 99.5])
-ax.plot([lo, hi], [lo, hi], color=INK2, lw=0.8, ls=':')
-ax.set_xlim(lo, hi); ax.set_ylim(lo, hi)
-ax.set_xlabel('observed log1p(cuts in 1 kb)'); ax.set_ylabel('predicted')
-ax.set_title(f'Coverage, {len(oc):,} test windows — r = {np.corrcoef(oc, pc)[0, 1]:.2f}')
-ax.grid(alpha=0.6); plt.tight_layout(); plt.show()
+ax.plot([lo, hi], [lo, hi], color='k', lw=0.8, ls=':')
+q = lo + 0.9 * (hi - lo)
+ax.annotate('y = x', xy=(q, q), xytext=(-6, 2), textcoords='offset points',
+            ha='right', va='bottom', fontsize=11)
+ax.set_xlim(lo, hi); ax.set_ylim(lo, hi); ax.set_aspect('equal')
+ax.set_xlabel('observed log1p(cuts in 1 kb)'); ax.set_ylabel('predicted log1p(cuts in 1 kb)')
+ax.set_title(f'Coverage head, {len(oc):,} test windows')
+ax.text(0.04, 0.96, f'r = {np.corrcoef(oc, pc)[0, 1]:.2f}', transform=ax.transAxes,
+        ha='left', va='top')
+plt.tight_layout(); plt.show()
 """)
 
 md(r"""
@@ -421,22 +424,24 @@ per_band_metrics.pivot(index='band', columns='model',
 """)
 
 code(r"""
-fig, axes = plt.subplots(1, 2, figsize=(11, 3.8), sharey=False)
+fig, axes = plt.subplots(1, 2, figsize=(12, 4.6))
 w = 0.27
 xb = np.arange(4)
-for ax, col, t in ((axes[0], 'profile_pearson', 'Footprint profile r'),
-                   (axes[1], 'coverage_pearson', 'Coverage r')):
-    for k, (label, colr) in enumerate((('bulk', MUTED), ('LoRA', C[0]),
-                                        ('LoRA, wrong band', C[1]))):
+series = (('bulk', C[0]), ('LoRA', C[1]), ('LoRA, wrong band', C[2]))
+for ax, col, t in ((axes[0], 'profile_pearson', 'Footprint profile'),
+                   (axes[1], 'coverage_pearson', 'Coverage')):
+    for k, (label, colr) in enumerate(series):
         v = per_band_metrics.query('model == @label')[col].to_numpy()
-        bars = ax.bar(xb + (k - 1) * w, v, width=w - 0.03, color=colr, label=label)
+        ax.bar(xb + (k - 1) * w, v, width=w - 0.03, color=colr, label=label)
         for xx, vv in zip(xb + (k - 1) * w, v):
-            ax.annotate(f'{vv:.2f}', xy=(xx, vv), xytext=(0, 3), textcoords='offset points',
-                        ha='center', fontsize=8, color=INK2)
+            ax.annotate(f'{vv:.2f}', xy=(xx, vv), xytext=(0, 2), textcoords='offset points',
+                        ha='center', fontsize=9)
     ax.set_xticks(xb); ax.set_xticklabels(bands)
-    ax.set_title(t + ' — test chromosomes'); ax.grid(axis='y', alpha=0.6); ax.set_axisbelow(True)
-axes[0].legend(loc='lower right')
-plt.tight_layout(); plt.show()
+    ax.set_ylabel('Pearson r, test chromosomes'); ax.set_title(t); ax.margins(y=0.12)
+plt.tight_layout(rect=(0, 0, 1, 0.92))
+fig.legend(*axes[0].get_legend_handles_labels(), loc='upper center', ncol=3,
+           bbox_to_anchor=(0.5, 1.0), frameon=False, handlelength=1.2)
+plt.show()
 """)
 
 md(r"""
