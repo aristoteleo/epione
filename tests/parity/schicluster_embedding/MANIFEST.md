@@ -78,3 +78,10 @@ the same driver).
 
 E2 moves between runs because the reference's ARPACK start vector is random (`random_state=None`);
 both runs are inside the bound.
+
+## Amendment E-3 (2026-10-22): `accelerate=` in `impute_cells`
+
+`impute_cells` gained `accelerate=True` (default), a faster implementation of `impute_chromosome`
+that equals scHiCluster up to float32 rounding (max |diff| ~1e-7, `tests/test_single_hic_impute_fast.py`).
+E1 checks that `impute_cells` writes scHiCluster's own output, so `e_gates.py` now passes
+`accelerate=False`; the gates and recorded results are otherwise unchanged.

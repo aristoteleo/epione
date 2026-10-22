@@ -89,14 +89,17 @@ def test_windowed_path_is_used(data, tmp_path, monkeypatch):
     src = dict(contact_path=str(contacts), chrom_size_path=str(sizes_file), **COLS)
     _impute_fast.impute_chromosome("chrA", RES, str(tmp_path / "w"), **src, pad=1, **WINDOWED)
     _impute_fast.impute_chromosome("chrA", RES, str(tmp_path / "f"), **src, pad=1, window_size=500_000_000)
-    assert calls == [1]
+    _impute_fast.impute_chromosome("chrA", RES, str(tmp_path / "r"), **src, pad=1, rp=1, **WINDOWED)
+    assert calls == [1, 1]          # rp=1 runs upstream
 
 
-def test_whole_chromosome_runs_upstream(data, tmp_path):
-    _, contacts, sizes_file, _ = data
+@pytest.mark.parametrize("pad,od", [(1, 500_000_000), (2, 505_000)])
+def test_whole_chromosome_matches(data, tmp_path, pad, od):
+    _, contacts, sizes_file, cool = data
     src = dict(contact_path=str(contacts), chrom_size_path=str(sizes_file), **COLS)
-    u, f = _both(tmp_path, "chrA", src, pad=1, window_size=500_000_000, output_dist=505_000)
-    assert (u != f).nnz == 0
+    for chrom in SIZES.index:
+        _close(*_both(tmp_path, chrom, src, pad=pad, window_size=500_000_000, output_dist=od))
+    _close(*_both(tmp_path, "chrA", {"scool_url": str(cool)}, pad=pad, window_size=500_000_000, output_dist=od))
 
 
 def test_impute_cells_accelerate(data, tmp_path):

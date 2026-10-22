@@ -96,9 +96,13 @@ def test_impute_raw_contacts_at_any_resolution(contact_tables):
     SIZES.to_csv(sizes_file, sep="\t", header=False)
     ad = hic.load_contact_tables(paths, chrom_sizes=SIZES)  # loader default: 100 kb
     res = 200_000
-    hic.impute_cells(ad, out_dir=d / "imp", resolution=res, output_dist=1_000_000, progress=False)
+    hic.impute_cells(ad, out_dir=d / "imp", resolution=res, output_dist=1_000_000, progress=False,
+                     accelerate=False)
     assert ad.uns["hic"]["resolution"] == res
     z = np.load(d / "imp" / "cell0.npz")
+    ad_fast = hic.load_contact_tables(paths, chrom_sizes=SIZES)
+    hic.impute_cells(ad_fast, out_dir=d / "imp_fast", resolution=res, output_dist=1_000_000, progress=False)
+    zf = np.load(d / "imp_fast" / "cell0.npz")
     for c in SIZES.index:
         out = d / f"ref_{c}.hdf"
         impute_chromosome(chrom=c, resolution=res, output_path=str(out), contact_path=str(paths[0]),
@@ -106,6 +110,7 @@ def test_impute_raw_contacts_at_any_resolution(contact_tables):
                           chrom1=1, pos1=2, chrom2=5, pos2=6)
         E = load_npz(f"{out}.npz").toarray()
         np.testing.assert_array_equal(z[c], (E + E.T - np.diag(np.diag(E))).astype(np.float32))
+        np.testing.assert_allclose(zf[c], z[c], rtol=1e-5, atol=1e-7)   # accelerate=True (default)
         assert z[c].shape[0] == ad.uns["hic"]["n_chrom_bins"][c] == SIZES[c] // res + 1
     assert not list((d / "imp").glob("*.chrom.sizes"))
     emb = hic.embedding(ad, method="schicluster", dim=3, dist=400_000)

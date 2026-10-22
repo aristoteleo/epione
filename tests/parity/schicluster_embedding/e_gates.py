@@ -39,7 +39,7 @@ def main(scool, work, results_path, nproc=8):
 
     t = time.time()
     hic.impute_cells(ad, out_dir=work / "imputed", output_dist=10_000_000, compress=True,
-                     nproc=nproc, progress=False)
+                     nproc=nproc, progress=False, accelerate=False)   # E1 checks scHiCluster's own code
     results["seconds_impute"] = round(time.time() - t, 1)
 
     # imputation check: one cell, every chromosome, vs impute_chromosome directly
