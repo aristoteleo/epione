@@ -37,11 +37,17 @@ The format roughly follows Keep a Changelog.
   stored band (10 kb: about 1.2 GB per worker instead of about 9 GB per cell). `output='npz'` keeps the
   dense per-chromosome arrays. `embedding`, `scgad_score`, `cell_celltype_correlation` and the contact
   plots read both.
+- Chromatin loops (`epi.single.hic`): `call_loops` (scHiCluster loop calling from imputed `.cool` cells),
+  and the Human Cell Epigenome Atlas differential-loop analysis: `merge_loops`, `loop_anova` (per-pixel
+  ANOVA of Q / E / T across groups), `loop_values`, `differential_loops` (F-test p / FDR, atlas
+  selection), `specific_loops`, `loop_apa`. They reproduce the atlas's analysis of its 35 major types
+  (`tests/parity/schicluster_loop`).
 - `epi.single.hic.gene_score`: scHiCluster's `hicluster gene-score --mode raw` (contacts inside each gene
   body) from contact tables, with `min_pos_dist=` to drop short contacts; identical to scHiCluster's
   `gene_score_raw`.
 - Tutorials `t_sc_hic_compartment` and `t_sc_hic_decay` (13,166 HCEA snm3C-seq cells, six haematopoietic
-  major types), `t_sc_hic_embedding` (6,000 of them), and a rebuilt Droplet Hi-C case study (Fig 1d
+  major types), `t_sc_hic_embedding` (6,000 of them), `t_sc_hic_loop` (differential loops of the
+  six types), and a rebuilt Droplet Hi-C case study (Fig 1d
   by gene scores co-embedded with snRNA-seq through `epi.tl.integrate(method='cca')`).
 
 ### Fixed
