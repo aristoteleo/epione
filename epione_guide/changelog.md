@@ -31,6 +31,10 @@ The format roughly follows Keep a Changelog.
   10 kb recipe) run a faster implementation of scHiCluster's `impute_chromosome` (numba Gaussian, direct
   sparse kernels, one dense window accumulator); equal to scHiCluster up to float32 rounding. Whole-
   chromosome settings run scHiCluster unchanged.
+- `impute_cells(sparse=True)`: stores scHiCluster's upper-triangle band instead of dense symmetric
+  matrices, so memory and files scale with `output_dist` (10 kb: about 1.2 GB per worker instead of
+  about 9 GB per cell). `embedding`, `scgad_score`, `cell_celltype_correlation` and the contact plots
+  read both layouts; `embedding`'s band indices no longer enumerate the whole upper triangle.
 - `epi.single.hic.gene_score`: scHiCluster's `hicluster gene-score --mode raw` (contacts inside each gene
   body) from contact tables, with `min_pos_dist=` to drop short contacts; identical to scHiCluster's
   `gene_score_raw`.

@@ -226,7 +226,8 @@ def cell_celltype_correlation(
         npz_path = imputed_dir / f"{cid}.npz"
         if not npz_path.exists():
             continue
-        z = np.load(npz_path)
+        from ._imputed_io import ImputedCell
+        z = ImputedCell(npz_path)
         parts = []
         for ch in chromosomes:
             if ch in z.files:

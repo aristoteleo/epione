@@ -337,7 +337,8 @@ def plot_cell_contacts(
                 "use_imputed=False or run epione.single.hic.impute_cells "
                 "first"
             )
-        z = np.load(Path(imputed_dir) / f"{cell_id}.npz")
+        from epione.single.hic._imputed_io import ImputedCell
+        z = ImputedCell(Path(imputed_dir) / f"{cell_id}.npz")
         if chromosome not in z.files:
             raise KeyError(
                 f"chromosome {chromosome!r} not in imputed file for "

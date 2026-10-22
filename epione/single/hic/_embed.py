@@ -29,7 +29,8 @@ def _features_from_npz(npz_path: Path, chromosomes: Sequence[str],
     ``.npz``, concatenate in ``chromosomes`` order, and return a 1-D
     feature vector. ``layout`` is the cached upper-tri indices per chrom.
     """
-    z = np.load(npz_path)
+    from ._imputed_io import ImputedCell
+    z = ImputedCell(npz_path)
     chunks = []
     for ch in chromosomes:
         if ch not in z.files:
@@ -38,9 +39,8 @@ def _features_from_npz(npz_path: Path, chromosomes: Sequence[str],
             # stays uniform across cells.
             chunks.append(np.zeros(layout[ch][3], dtype=np.float32))
             continue
-        P = z[ch]
         iu, ju = layout[ch][0], layout[ch][1]
-        chunks.append(P[iu, ju].astype(np.float32))
+        chunks.append(z.values(ch, iu, ju))
     return np.concatenate(chunks)
 
 
@@ -184,10 +184,16 @@ def embedding(
 
 
 def _band_indices(n: int, dist: int, resolution: int):
-    """Upper-triangle pixels within ``dist`` of the diagonal (scHiCluster ``make_idx``)."""
-    iu, ju = np.triu_indices(n, k=1)
-    keep = (ju - iu) < (dist / resolution + 1)
-    return iu[keep], ju[keep]
+    """Upper-triangle pixels within ``dist`` of the diagonal (scHiCluster ``make_idx``),
+    in row-major order, without enumerating the whole upper triangle."""
+    k = min(int(np.ceil(dist / resolution + 1)) - 1, n - 1)   # offsets d with 1 <= d < dist/res + 1
+    if k < 1:
+        return np.zeros(0, dtype=np.int64), np.zeros(0, dtype=np.int64)
+    lengths = np.minimum(k, n - 1 - np.arange(n))
+    iu = np.repeat(np.arange(n, dtype=np.int64), lengths)
+    starts = np.repeat(np.cumsum(lengths) - lengths, lengths)
+    ju = iu + 1 + (np.arange(iu.size, dtype=np.int64) - starts)
+    return iu, ju
 
 
 def _truncated_svd(M: np.ndarray, dim: int, norm_sig: bool, random_state):
@@ -213,6 +219,7 @@ def _schicluster_embedding(adata, *, chromosomes, dim, dist, scale_factor, norm_
     concatenated and reduced again to ``dim`` components.
     """
     import anndata as ad
+    from ._imputed_io import ImputedCell
 
     info = adata.uns.get("hic", {})
     imputed_dir = info.get("imputed_dir")
@@ -231,10 +238,10 @@ def _schicluster_embedding(adata, *, chromosomes, dim, dist, scale_factor, norm_
         npz_path = imputed_dir / f"{cid}.npz"
         if not npz_path.exists():
             raise FileNotFoundError(f"missing imputed file for cell {cid}: {npz_path}")
-        z = np.load(npz_path)
+        z = ImputedCell(npz_path)
         for c in chromosomes:
             if c in z.files:
-                mats[c][i] = z[c][idx[c]]
+                mats[c][i] = z.values(c, *idx[c])
     parts = []
     for c in chromosomes:
         M = mats.pop(c)
