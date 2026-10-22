@@ -36,6 +36,15 @@ Compartments from raw contacts (scHiCluster + Human Cell Epigenome Atlas):
     * :func:`contacts_to_scool`        — per-cell contact tables → raw ``.scool``
     * :func:`load_contact_tables`      — index contact tables without binning
     * :func:`gene_score`               — contacts inside each gene body (``hicluster gene-score``)
+
+Loops (scHiCluster calling + Human Cell Epigenome Atlas differential loops):
+    * :func:`call_loops`               — scHiCluster loop calling per cell group
+    * :func:`merge_loops`              — union of several groups' loops
+    * :func:`loop_anova`               — per-pixel ANOVA of Q / E / T across groups
+    * :func:`loop_values`              — cool values at each loop
+    * :func:`differential_loops`       — ANOVA p / FDR at loops + HCEA selection
+    * :func:`specific_loops`           — group-specific loops by fold change
+    * :func:`loop_apa`                 — aggregate peak analysis
     * :func:`compartment_scores`       — scHiCluster single-cell score
     * :func:`merge_cells`              — raw pseudobulk ``.cool`` per group
     * :func:`compartment_model`        — fit the HCEA PCA model on merged contacts
@@ -58,6 +67,9 @@ from ._demux import demux_pairs_by_barcode, pseudobulk_by_celltype
 from ._correlation import cluster_correlation, cell_celltype_correlation
 from ._scgad import scgad_score, load_refflat_genes
 from ._gene_score import gene_score
+from ._loop import (
+    call_loops, loop_anova, merge_loops, loop_values, differential_loops, specific_loops, loop_apa,
+)
 from ._compartment import (
     cpg_ratio,
     contacts_to_scool,
@@ -94,6 +106,13 @@ __all__ = [
     "cell_celltype_correlation",
     "scgad_score",
     "gene_score",
+    "call_loops",
+    "loop_anova",
+    "merge_loops",
+    "loop_values",
+    "differential_loops",
+    "specific_loops",
+    "loop_apa",
     "load_refflat_genes",
     "cpg_ratio",
     "contacts_to_scool",

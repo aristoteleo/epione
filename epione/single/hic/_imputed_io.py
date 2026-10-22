@@ -30,7 +30,7 @@ def imputed_path(imputed_dir: PathLike, cell_id: str) -> Path:
 
 
 def write_cool(path: PathLike, uppers: Mapping[str, object], chrom_sizes: Mapping[str, int],
-               resolution: int, metadata: dict | None = None) -> None:
+               resolution: int, metadata: dict | None = None, keep_zeros: bool = False) -> None:
     """Write upper-triangle chromosome matrices (chromosome-relative bins) as one ``.cool``.
 
     Bins come from ``cooler.binnify(chrom_sizes, resolution)``; chromosomes in
@@ -52,7 +52,9 @@ def write_cool(path: PathLike, uppers: Mapping[str, object], chrom_sizes: Mappin
             if chrom not in uppers:
                 continue
             U = uppers[chrom].tocoo()
-            m = (U.row <= U.col) & (U.col < n_per[chrom]) & (U.data != 0)
+            m = (U.row <= U.col) & (U.col < n_per[chrom])
+            if not keep_zeros:
+                m &= U.data != 0
             r, c, v = U.row[m].astype(np.int64), U.col[m].astype(np.int64), U.data[m].astype(np.float32)
             o = np.lexsort((c, r))
             off = offsets[chrom]
