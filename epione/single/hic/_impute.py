@@ -142,6 +142,7 @@ def _impute_one_cell(
     kwargs = dict(kwargs)
     compress = bool(kwargs.pop("_compress", False))
     accelerate = bool(kwargs.pop("_accelerate", True))
+    sparse = bool(kwargs.pop("_sparse", False))
     out_npz = Path(out_dir) / f"{cell_id}.npz"
     if out_npz.exists() and not overwrite:
         return cell_id, "skip"
@@ -163,7 +164,7 @@ def _impute_one_cell(
     except ImportError as e:
         return cell_id, f"fail:missing-schicluster:{e}"
 
-    per_chrom: Dict[str, np.ndarray] = {}
+    per_chrom: Dict[str, object] = {}
     failed = []
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
@@ -182,8 +183,6 @@ def _impute_one_cell(
                     # scHiCluster >= 1.3: scipy sparse upper triangle, chromosome-relative
                     from scipy.sparse import load_npz
                     E = load_npz(sparse_path).tocoo()
-                    arr = np.zeros(E.shape, dtype=np.float32)
-                    arr[E.row, E.col] = E.data
                 elif cool_path is None:
                     raise FileNotFoundError(f"no imputation output at {sparse_path}")
                 else:
@@ -202,13 +201,21 @@ def _impute_one_cell(
                     bin2 = df['bin2_id'].to_numpy() - ext[0]
                     vals = df['count'].to_numpy(dtype=np.float32)
                     m = (bin1 >= 0) & (bin1 < n_bins) & (bin2 >= 0) & (bin2 < n_bins)
-                    arr[bin1[m], bin2[m]] = vals[m]
-                # symmetrise (both formats store the upper triangle)
-                arr = arr + arr.T - np.diag(np.diag(arr))
-                per_chrom[chrom] = arr
+                    from scipy.sparse import coo_matrix
+                    E = coo_matrix((vals[m], (bin1[m], bin2[m])), shape=(n_bins, n_bins))
+                if sparse:
+                    # keep scHiCluster's upper triangle
+                    per_chrom[chrom] = E.astype(np.float32).tocsr()
+                else:
+                    # dense symmetric matrix (both formats store the upper triangle)
+                    arr = np.zeros(E.shape, dtype=np.float32)
+                    arr[E.row, E.col] = E.data
+                    arr = arr + arr.T - np.diag(np.diag(arr))
+                    per_chrom[chrom] = arr
             except Exception as e:
                 failed.append(f"{chrom}: {type(e).__name__}: {e}")
-    (np.savez_compressed if compress else np.savez)(out_npz, **per_chrom)
+    from ._imputed_io import save_imputed
+    save_imputed(out_npz, per_chrom, sparse=sparse, compress=compress)
     if failed:
         return cell_id, "fail:" + "; ".join(failed[:3])
     return cell_id, "ok"
@@ -233,6 +240,7 @@ def impute_cells(
     compress: bool = False,
     resolution: Optional[int] = None,
     accelerate: bool = True,
+    sparse: bool = False,
     # v0.4 backward-compat aliases — deprecated
     rwr_alpha: Optional[float] = None,
     top_pct: Optional[float] = None,
@@ -299,6 +307,12 @@ def impute_cells(
             about 3x faster with 50-85 % less memory, equal to scHiCluster up to
             float32 rounding. Other settings run scHiCluster unchanged.
             ``False`` always runs scHiCluster's own code.
+        sparse: store scHiCluster's sparse upper triangle (within
+            ``output_dist``) instead of dense symmetric matrices. Memory per
+            worker and file size then scale with the band, not with
+            ``n_bins^2``; use it at 25 kb and finer (at 10 kb chr1 is 2.5 GB
+            dense). :func:`embedding` reads the band directly; other readers
+            rebuild one dense chromosome at a time.
         rwr_alpha, top_pct, n_iter, use_sparse, sparse_keep_pct:
             deprecated v0.4 parameters. ``rwr_alpha`` is silently
             mapped to ``rp`` if ``rp`` is at its default.
@@ -391,6 +405,7 @@ def impute_cells(
             impute_kwargs[name] = int(value)
     impute_kwargs["_compress"] = bool(compress)
     impute_kwargs["_accelerate"] = bool(accelerate)
+    impute_kwargs["_sparse"] = bool(sparse)
 
     args_list = [
         (cid, src, chromosomes, resolution, str(out_dir), impute_kwargs, overwrite)

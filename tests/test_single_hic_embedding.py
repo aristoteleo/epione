@@ -117,3 +117,30 @@ def test_impute_cool_rejects_other_resolution(cells):
     ad = hic.load_cool_collection(paths)
     with pytest.raises(ValueError, match="binned at 100,000"):
         hic.impute_cells(ad, out_dir=d / "imp_bad", resolution=1_000_000, progress=False)
+
+
+def test_sparse_layout_matches_dense(cells):
+    """impute_cells(sparse=True): same matrices, same embeddings, smaller files."""
+    from epione.single.hic._imputed_io import ImputedCell
+    d, paths = cells
+    out = {}
+    for sp in (False, True):
+        ad = hic.load_cool_collection(paths)
+        hic.impute_cells(ad, out_dir=d / f"imp_sp{sp}", output_dist=1_000_000, compress=True,
+                         sparse=sp, progress=False)
+        out[sp] = ad
+    for k in range(12):
+        dense = np.load(d / "imp_spFalse" / f"cell{k}.npz")
+        cell = ImputedCell(d / "imp_spTrue" / f"cell{k}.npz")
+        assert cell.sparse and sorted(cell.files) == sorted(dense.files)
+        for c in dense.files:
+            np.testing.assert_array_equal(cell[c], dense[c])
+            iu, ju = _band_indices(dense[c].shape[0], 500_000, RES)
+            np.testing.assert_array_equal(cell.values(c, iu, ju), dense[c][iu, ju])
+            U = cell.upper(c)
+            assert U.nnz == np.count_nonzero(np.triu(dense[c]))   # only the upper band is stored
+    e = {sp: hic.embedding(out[sp], method="schicluster", dim=5, dist=300_000).obsm["X_schicluster"]
+         for sp in (False, True)}
+    np.testing.assert_array_equal(e[True], e[False])
+    p = {sp: hic.embedding(out[sp], n_components=4).obsm["X_pca"] for sp in (False, True)}
+    np.testing.assert_allclose(p[True], p[False], rtol=1e-5, atol=1e-6)

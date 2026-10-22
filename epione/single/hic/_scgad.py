@@ -103,7 +103,8 @@ def _scgad_one_cell(args):
     """Worker: compute scGAD vector for a single cell from its npz."""
     cell_id, npz_path, gene_to_bins, gene_order = args
     try:
-        z = np.load(npz_path)
+        from ._imputed_io import ImputedCell
+        z = ImputedCell(npz_path)
     except Exception:
         return cell_id, None
     cache: dict = {}
