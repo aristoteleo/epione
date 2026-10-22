@@ -67,6 +67,7 @@ import os, sys, pathlib, time
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from matplotlib.ticker import FuncFormatter
 import anndata as ad
 import pysam
 import warnings
@@ -97,18 +98,32 @@ for p in (FRAG, POS, FASTA):
     if not p.exists():
         raise FileNotFoundError(f'{p} — see "Getting the inputs" in t_scooby_bridge')
 
-# Same validated palette as the other tutorials.
-C = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100']
-INK, INK2, MUTED, GRID = '#0b0b0b', '#52514e', '#898781', '#e1e0d9'
-plt.rcParams.update({
-    'figure.facecolor': '#fcfcfb', 'axes.facecolor': '#fcfcfb', 'savefig.facecolor': '#fcfcfb',
-    'axes.edgecolor': '#c3c2b7', 'axes.linewidth': 0.8, 'axes.labelcolor': INK2,
-    'axes.titlesize': 11, 'axes.titleweight': 'bold', 'axes.titlecolor': INK,
-    'axes.spines.top': False, 'axes.spines.right': False,
-    'xtick.color': MUTED, 'ytick.color': MUTED, 'xtick.labelsize': 9, 'ytick.labelsize': 9,
-    'grid.color': GRID, 'grid.linewidth': 0.6, 'legend.frameon': False,
-    'legend.fontsize': 9, 'font.size': 10, 'lines.linewidth': 2.0, 'figure.dpi': 110,
-})
+epi.pl.plot_set()
+BP = FuncFormatter(lambda v, _: f'{v:,.0f}')       # 61,266,400 rather than 61266400
+# Four hues from epi.pl.sc_color, colour-blind safe, in a fixed order: bands 1-4,
+# and first / second series wherever two are compared.
+GROUP = ['#279AD7', '#EF7B77', '#5E4D9A', '#368650']
+assert all(c in epi.pl.sc_color for c in GROUP)
+
+
+def restyle(fig, tracks=(), fontsize=12):
+    # epi.pl's two PRINT plots draw in a light theme of their own (grey
+    # ticks, open frames, their own group colours). This puts them back in
+    # the plot_set() look: black frames and text, groups in GROUP order.
+    for ax in fig.axes:
+        if ax.get_label() != '<colorbar>':
+            for sp in ax.spines.values():
+                sp.set_visible(True); sp.set_color('k')
+            ax.grid(False)
+        ax.tick_params(colors='k', labelsize=fontsize - 1)
+        for lab in (ax.xaxis.label, ax.yaxis.label):
+            lab.set_color('k'); lab.set_fontsize(fontsize)
+        for t in ax.texts:
+            t.set(color='k', fontsize=fontsize - 1, fontweight='normal')
+    for k, ax in enumerate(tracks):
+        ax.collections[0].set_facecolor(GROUP[k])            # the filled cut track
+    if fig._suptitle is not None:
+        fig._suptitle.set(color='k', fontweight='normal', fontsize=fontsize + 2)
 """)
 
 md(r"""
@@ -190,15 +205,18 @@ pb, kb = bias.track(CHROM, s0, s0 + 200), kmer.track(CHROM, s0, s0 + 200)
 z = lambda v: (v - v.mean()) / v.std()
 r = np.corrcoef(pb, kb)[0, 1]
 
-fig, ax = plt.subplots(figsize=(9.5, 3.0))
-ax.plot(x, z(pb), color=C[0], lw=1.4, label='PRINT CNN')
-ax.plot(x, z(kb), color=C[1], lw=1.1, ls=(0, (3, 2)), label='hexamer table')
-ax.legend(loc='upper left', ncol=2)
-ax.set_ylabel('bias (z-score)')
+fig, ax = plt.subplots(figsize=(11, 3.6))
+ax.plot(x, z(pb), color=GROUP[0], lw=1.3, label='PRINT CNN')
+ax.plot(x, z(kb), color=GROUP[1], lw=1.2, ls=(0, (3, 2)), label='hexamer table')
+ax.legend(loc='lower right', bbox_to_anchor=(1, 1.0), ncol=2, borderaxespad=0.2,
+          frameon=False, handlelength=1.8)
+ax.axhline(0, color='0.8', lw=0.8, zorder=0)
+ax.grid(False)
+ax.set_ylabel('Tn5 bias (z-score)')
 ax.set_xlabel(f'{CHROM} position (bp)')
-ax.ticklabel_format(axis='x', style='plain', useOffset=False)
-ax.grid(axis='y'); ax.set_axisbelow(True)
-ax.set_title(f'Two bias models over 200 bp — Pearson r = {r:.2f}')
+ax.xaxis.set_major_formatter(BP)
+ax.set_xlim(x[0], x[-1])
+ax.set_title(f'Two bias models, r = {r:.2f}', loc='left')
 plt.tight_layout(); plt.show()
 """)
 
@@ -234,7 +252,20 @@ print(fp.score.shape, '(groups, scales, positions);',
 
 code(r"""
 # Scores near the window edge have truncated flanks: read ±600, show ±400.
-fig, axes = epi.pl.plot_multi_scale_footprint_region(fp, ncols=4, zoom=400, vpercentile=99.5)
+fig, axes = epi.pl.plot_multi_scale_footprint_region(
+    fp, ncols=2, zoom=400, vpercentile=99.5, show=False, figsize=(10, 8.4),
+    title=f'Multi-scale footprint around {CHROM}:{summit:,}')
+restyle(fig, tracks=fig.track_axes)
+axes[0].get_gridspec().update(wspace=0.22, hspace=0.3)
+for ax in axes:
+    if ax.get_xlabel():
+        ax.set_xlabel('distance to peak centre (bp)')
+for ax in fig.track_axes[::2]:
+    ax.set_ylabel('cuts', fontsize=12)
+fig.track_axes[1].text(1, 1.06, 'filled: observed cuts   dashed: bias-expected',
+                       transform=fig.track_axes[1].transAxes, ha='right', va='bottom', fontsize=11)
+fig.axes[-1].set_ylabel('footprint score (−log10 p)', fontsize=12)   # the colorbar
+plt.show()
 """)
 
 md(r"""
@@ -254,26 +285,37 @@ fp_bin = epi.tl.multi_scale_footprint_region(
 g = 0
 inner = np.abs(fp.positions) <= 400           # drop the edge-truncated flanks
 S_disp, S_bin = fp.score[g][:, inner], fp_bin.score[g][:, inner]
-vmax = np.nanpercentile(np.stack([S_disp, S_bin]), 99.5)
-fig, axes = plt.subplots(1, 3, figsize=(12, 3.4),
-                         gridspec_kw={'width_ratios': [1, 1, 0.9]})
-for ax, S, name in ((axes[0], S_bin, 'binomial null'), (axes[1], S_disp, 'PRINT dispersion null')):
+vmax = np.nanpercentile(np.stack([S_disp, S_bin]), 99.5)    # one colour scale for both
+
+fig = plt.figure(figsize=(13, 5))
+gs = fig.add_gridspec(2, 4, height_ratios=[1, 0.05], width_ratios=[1, 1, 0.1, 0.95],
+                      hspace=0.75, wspace=0.22, left=0.07, right=0.985, top=0.85, bottom=0.1)
+h0 = fig.add_subplot(gs[0, 0]); h1 = fig.add_subplot(gs[0, 1], sharey=h0)
+lax = fig.add_subplot(gs[:, 3])
+for ax, S, name in ((h0, S_bin, 'Binomial null'), (h1, S_disp, 'PRINT dispersion null')):
     im = ax.imshow(S, aspect='auto', origin='lower', cmap='Blues',
                    vmin=0, vmax=vmax, interpolation='nearest',
                    extent=[-400, 400, 2 * fp.scales[0], 2 * fp.scales[-1]])
-    ax.set_title(f'{fp.groups[g]} · {name}')
-    ax.set_xlabel('position (bp)')
-axes[0].set_ylabel('footprint size (bp)')
-fig.colorbar(im, ax=axes[:2], shrink=0.85, label='-log10 p').outline.set_visible(False)
+    ax.axvline(0, color='k', lw=0.5, ls=':')
+    ax.grid(False)
+    ax.set_title(name)
+    ax.set_xlabel('distance to peak centre (bp)')
+h0.set_ylabel('footprint size (bp)')
+h1.tick_params(labelleft=False)
+cb = fig.colorbar(im, cax=fig.add_subplot(gs[1, :2]), orientation='horizontal', extend='max')
+cb.set_label('footprint score (−log10 p), same scale for both heatmaps')
 
 thr = np.linspace(0, vmax, 200)
-for S, col, name in ((S_bin, C[1], 'binomial'), (S_disp, C[0], 'dispersion')):
-    axes[2].plot(thr, [(S > t).mean() for t in thr], color=col, lw=1.6, label=name)
-axes[2].axvline(2, color=MUTED, lw=0.8, ls=':')
-axes[2].set_yscale('log'); axes[2].set_xlabel('score threshold (-log10 p)')
-axes[2].set_ylabel('fraction of (scale, position) above'); axes[2].legend()
-axes[2].grid(alpha=0.6); axes[2].set_axisbelow(True)
-axes[2].set_title('How much gets called')
+for S, col, name in ((S_bin, GROUP[0], 'binomial'), (S_disp, GROUP[1], 'dispersion')):
+    lax.plot(thr, [(S > t).mean() for t in thr], color=col, lw=1.8, label=name)
+lax.axvline(2, color='0.5', lw=0.8, ls=':')
+lax.text(2.4, 1.2e-4, 'p = 0.01', fontsize=12)
+lax.set_yscale('log'); lax.set_xlabel('score threshold (−log10 p)')
+lax.set_ylabel('fraction of heatmap above')
+lax.legend(loc='upper right', frameon=False, handlelength=1.5)
+lax.grid(False)
+lax.set_title('Fraction called')
+fig.suptitle(f'{fp.groups[g].capitalize()}: same cuts, same bias, two nulls', x=0.07, ha='left')
 plt.show()
 print('fraction with p < 0.01 — binomial: {:.3f}   dispersion: {:.3f}'.format(
       (S_bin > 2).mean(), (S_disp > 2).mean()))
@@ -303,7 +345,16 @@ tfbs.to_frame().head()
 """)
 
 code(r"""
-fig, axes = epi.pl.plot_tf_binding_score(tfbs, region=f'{CHROM}:{peaks.start[0]}-{peaks.end[0]}')
+region = f'{CHROM}:{peaks.start[0]}-{peaks.end[0]}'
+fig, axes = epi.pl.plot_tf_binding_score(
+    tfbs, region=region, show=False, figsize=(11, 8.4),
+    title=f'PRINT binding probability, {CHROM}:{peaks.start[0]:,}-{peaks.end[0]:,}')
+restyle(fig, tracks=axes[:-1])
+axes[-1].xaxis.set_major_formatter(BP)
+fig.axes[-1].set_ylabel('binding probability', fontsize=12)     # the colorbar
+for ax in axes[:-1]:
+    ax.set_ylabel('cuts', fontsize=12)
+plt.show()
 """)
 
 md(r"""
@@ -318,16 +369,21 @@ view above is how to inspect any one of them.
 code(r"""
 i1, i4 = tfbs.groups.index('band 1'), tfbs.groups.index('band 4')
 d = tfbs.score[i1] - tfbs.score[i4]
-fig, ax = plt.subplots(figsize=(5.2, 5))
-ax.scatter(tfbs.score[i4], tfbs.score[i1], s=4, color=MUTED, alpha=0.35, lw=0)
 hi = np.abs(d) > 0.3
-ax.scatter(tfbs.score[i4][hi], tfbs.score[i1][hi], s=10, color=C[0], lw=0,
-           label=f'|Δ| > 0.3  ({hi.sum()} sites)')
-ax.plot([0, 1], [0, 1], color=INK2, lw=0.8, ls=':')
-ax.set_xlabel('binding probability — band 4'); ax.set_ylabel('binding probability — band 1')
-ax.set_xlim(0, 1); ax.set_ylim(0, 1); ax.set_aspect('equal'); ax.legend(loc='upper left')
-ax.grid(alpha=0.6); ax.set_axisbelow(True)
-ax.set_title(f'{tfbs.score.shape[1]:,} sites in 200 peaks — candidates, untested')
+fig, ax = plt.subplots(figsize=(6.4, 6.4))
+ax.scatter(tfbs.score[i4][~hi], tfbs.score[i1][~hi], s=4, color='0.65', alpha=0.4, lw=0,
+           rasterized=True, label=f'other sites ({(~hi).sum():,})')
+ax.scatter(tfbs.score[i4][hi], tfbs.score[i1][hi], s=10, color=GROUP[0], lw=0,
+           label=f'|band 1 − band 4| > 0.3 ({hi.sum()})')
+ax.plot([0, 1], [0, 1], color='k', lw=0.8, ls=':')
+for off in (0.3, -0.3):                                   # the |Δ| = 0.3 cut-off
+    ax.plot([max(0, -off), min(1, 1 - off)], [max(0, off), min(1, 1 + off)],
+            color='0.4', lw=0.8, ls=(0, (4, 3)), label='±0.3 cut-off' if off > 0 else None)
+ax.set_xlabel('binding probability, band 4'); ax.set_ylabel('binding probability, band 1')
+ax.set_xlim(0, 1); ax.set_ylim(0, 1); ax.set_aspect('equal')
+ax.legend(loc='upper left', markerscale=2.5, handlelength=1.5, fontsize=12, frameon=False)
+ax.grid(False)
+ax.set_title(f'Band 1 vs band 4, {tfbs.score.shape[1]:,} sites')
 plt.tight_layout(); plt.show()
 """)
 
