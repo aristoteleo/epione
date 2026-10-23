@@ -82,7 +82,11 @@ def _kind(model) -> str:
 #: seq2PRINT's ``footprint_tf`` is scPrinter's footprint attribution target
 #: (``JustSumWrapper(nth_output=0-29, threshold=0.301)``): the TF-sized
 #: footprints (scales 0-29, radius 2-31 bp) as -log10 p after removing each
-#: window's mean, minus 0.301, rectified and summed to one number.
+#: window's mean, minus 0.301, rectified and summed to one number. Its
+#: z-score -> p-value step (normal CDF, log, clamp) has no DeepLIFT rule and
+#: is treated as linear, as in scPrinter's own DeepSHAP; attributions of this
+#: head are therefore not additive, and tangermeme's convergence warnings for
+#: it are silenced.
 HEADS = {
     "bpnet": ("counts", "profile", "profile_logits", "expected_counts"),
     "chrombpnet": ("counts", "profile", "profile_logits", "expected_counts"),
@@ -355,7 +359,11 @@ def attributions(model, seqs, *, genome=None, head=None, method: str = "deepshap
         kw.setdefault("only_warn", True)
         warnings.filterwarnings("ignore", message=".*cannot have unknown characters.*")
     lm = wrap(model, head=head, **wrap_kwargs)
-    with _no_lightning_logs():
+    import warnings
+
+    with _no_lightning_logs(), warnings.catch_warnings():
+        if head == "footprint_tf":          # see HEADS: not additive by construction
+            warnings.filterwarnings("ignore", message="Convergence deltas", category=RuntimeWarning)
         return get_attributions(lm, seqs,
                                 genome=None if genome is None else _genome_arg(genome),
                                 device=device, method=method, n_shuffles=n_shuffles,
