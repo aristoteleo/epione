@@ -134,7 +134,7 @@ def tf_binding(
     regions: Optional[pd.DataFrame] = None,
     n_shuffles: int = 20,
     seed: int = 0,
-    batch_size: int = 64,
+    batch_size: int = 32,
     norm: Optional[Dict[str, Tuple[float, float, float]]] = None,
     keep_attributions: bool = False,
     device: Optional[str] = None,
