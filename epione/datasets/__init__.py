@@ -28,12 +28,12 @@ data anchored to specific tutorials.
 from __future__ import annotations
 
 from ._archr import archr_hematopoiesis
-from ._multiome import pbmc10k_multiome, pbmc10k_multiome_10x, pbmc3k_multiome_atac
+from ._multiome import pbmc10k_multiome, pbmc10k_multiome_10x, pbmc10k_multiome_atac, pbmc3k_multiome_atac
 from ._corces import corces2016_bulk_atac
 from ._cellline_mix import granja2021_cellline_mix
 from ._hic import drosophila_s2_hic, hicexplorer_test_matrices
 from ._spatial import zhang2023_hippocampus_atac_rna, spatialglue_mouse_brain
 
-__all__: list[str] = ["archr_hematopoiesis", "pbmc10k_multiome", "pbmc10k_multiome_10x", "pbmc3k_multiome_atac", "corces2016_bulk_atac",
+__all__: list[str] = ["archr_hematopoiesis", "pbmc10k_multiome", "pbmc10k_multiome_10x", "pbmc10k_multiome_atac", "pbmc3k_multiome_atac", "corces2016_bulk_atac",
                       "granja2021_cellline_mix", "drosophila_s2_hic", "hicexplorer_test_matrices",
                       "zhang2023_hippocampus_atac_rna", "spatialglue_mouse_brain"]
