@@ -167,3 +167,14 @@ def test_one_hot_regions(tmp_path):
     # summit 10 with length 20 starts at 0; a summit near the start pads with N
     Y = s2p.one_hot_regions(fa, pd.DataFrame({"chrom": ["chr1"], "summit": [3]}), length=20)
     assert Y[0][:, :7].sum() == 0 and Y[0][:, 7].argmax() == 0
+
+
+def test_tf_binding_accepts_unknown_bases():
+    pytest.importorskip("grelu")
+    _nets_or_skip()
+    m = small_model()
+    X = one_hot(2, m.dna_len, seed=3).numpy()
+    X[0, :, 100:140] = 0                                   # a run of N
+    res = s2p.tf_binding(m, X, n_shuffles=3, batch_size=8, keep_attributions=True, device="cpu")
+    assert np.isfinite(res.score).all()
+    assert res.score.shape == (1, 2, 800)

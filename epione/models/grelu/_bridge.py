@@ -303,6 +303,13 @@ def ism(model, seqs, *, genome=None, head=None, start_pos: int = 0,
                            devices=devices, batch_size=batch_size, return_df=return_df)
 
 
+def _has_n(seqs) -> bool:
+    import torch
+
+    return isinstance(seqs, torch.Tensor) and seqs.ndim in (2, 3) and seqs.shape[-2] == 4 \
+        and bool((seqs.sum(-2) == 0).any())
+
+
 def _seqs_arg(seqs):
     """gReLU reads a numpy array as index-encoded DNA; pass a one-hot
     ``(N, 4, L)`` / ``(4, L)`` float array as the float32 tensor it expects."""
@@ -324,7 +331,9 @@ def attributions(model, seqs, *, genome=None, head=None, method: str = "deepshap
 
     ``batch_size`` (sequence-reference pairs per pass) and
     ``deepshap_kwargs`` go to tangermeme's ``deep_lift_shap``
-    (``method='deepshap'`` only)."""
+    (``method='deepshap'`` only). One-hot input with unknown bases
+    (all-zero columns) is accepted: they are shuffled as a character of
+    their own and get zero attribution."""
     _grelu()
     from grelu.interpret.score import get_attributions
 
@@ -333,9 +342,21 @@ def attributions(model, seqs, *, genome=None, head=None, method: str = "deepshap
         kw["batch_size"] = int(batch_size)
     if kw and method != "deepshap":
         raise ValueError("batch_size / deepshap_kwargs apply to method='deepshap' only")
+    seqs = _seqs_arg(seqs)
+    if method == "deepshap" and "references" not in kw and _has_n(seqs):
+        # Unknown bases (all-zero columns, e.g. N near assembly gaps): shuffle
+        # them as a character of their own and let tangermeme accept them.
+        import functools
+        import warnings
+
+        from tangermeme.ersatz import dinucleotide_shuffle
+
+        kw["references"] = functools.partial(dinucleotide_shuffle, allow_N=True)
+        kw.setdefault("only_warn", True)
+        warnings.filterwarnings("ignore", message=".*cannot have unknown characters.*")
     lm = wrap(model, head=head, **wrap_kwargs)
     with _no_lightning_logs():
-        return get_attributions(lm, _seqs_arg(seqs),
+        return get_attributions(lm, seqs,
                                 genome=None if genome is None else _genome_arg(genome),
                                 device=device, method=method, n_shuffles=n_shuffles,
                                 seed=seed, hypothetical=hypothetical, **kw)
