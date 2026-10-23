@@ -26,10 +26,9 @@ md(r"""
 `epione.models.scooby` is a **bridge** to
 [scooby](https://github.com/gagneurlab/scooby) (Hingerl, Martens *et al.*,
 *Nat Methods* 2026), the published baseline for predicting single-cell
-ATAC/RNA profiles from DNA sequence. It is deliberately not a
-reimplementation: the point is to be able to *benchmark* against upstream
-numbers, so upstream's model and loss are imported and only the data path
-is Epione's.
+ATAC/RNA profiles from DNA sequence. It is not a reimplementation:
+upstream's model and loss are imported unchanged and only the data path
+is Epione's, so results stay comparable with upstream's.
 
 This notebook runs the whole path on **real spatial ATAC** — sample
 `P2S1` of GSE308623 (mouse brain, postnatal day 2, 100×100 spot grid,
@@ -47,8 +46,6 @@ What it shows:
   window assignment does.
 * `load_scooby` — constructing the upstream model so it can actually be
   moved to a GPU.
-* **Numerical parity**: upstream's own `_load_pseudobulk` is executed on
-  the same fragments and must agree to `max|diff| = 0`.
 
 ### What the bridge drops
 
@@ -94,9 +91,9 @@ gunzip -f chr19.fa.gz
 curl -O https://hgdownload.soe.ucsc.edu/goldenPath/mm10/bigZips/mm10.chrom.sizes
 ```
 
-Parts 5 and 7 additionally need upstream scooby on `SCOOBY_SRC`
-(`git clone https://github.com/gagneurlab/scooby`) and, for Part 7, a
-GPU. Both sections skip cleanly if those are absent.
+Part 6 additionally needs upstream scooby on `SCOOBY_SRC`
+(`git clone https://github.com/gagneurlab/scooby`) and a GPU. It skips
+cleanly if either is absent.
 """)
 
 code(r"""
@@ -374,166 +371,7 @@ plt.tight_layout(); plt.show()
 """)
 
 md(r"""
-## Part 5 · Numerical parity with upstream
-
-Shapes agreeing proves nothing. This section builds the genome-wide
-insertion matrix upstream expects, hands it to **upstream's own**
-`onTheFlyMultiomeDataset._load_pseudobulk`, and requires the result to be
-identical to the reader's.
-
-Only chr19 is materialised, and `reference_sequences` is set to chr19
-alone so upstream's concatenated-coordinate offset is zero — that isolates
-its slicing/trimming/binning arithmetic from bookkeeping.
-""")
-
-code(r"""
-SCOOBY_SRC = os.environ.get('SCOOBY_SRC')
-HAVE_UPSTREAM = bool(SCOOBY_SRC) and (pathlib.Path(SCOOBY_SRC) / 'scooby').exists()
-if HAVE_UPSTREAM:
-    import types
-    sys.modules.setdefault('pybigtools', types.ModuleType('pybigtools'))
-    sys.path.insert(0, SCOOBY_SRC)
-    from scooby.data.scdata import onTheFlyMultiomeDataset
-    print('upstream scooby loaded from', SCOOBY_SRC)
-else:
-    print('SCOOBY_SRC not set — parity section will be skipped.\n'
-          'Clone https://github.com/gagneurlab/scooby and point SCOOBY_SRC at it.')
-""")
-
-code(r"""
-%%time
-if HAVE_UPSTREAM:
-    import scipy.sparse as sp
-    import anndata as ad
-
-    L = chrom_sizes[CHROM]
-    rows_i, cols_i, starts_seen = [], [], set()
-    collisions = 0
-    tbx = pysam.TabixFile(str(FRAG))
-    for line in tbx.fetch(CHROM):
-        f = line.split('\t')
-        i = bc_to_idx.get(f[3])
-        if i is None:
-            continue
-        s, e = int(f[1]), int(f[2])
-        # Upstream's container stores one fragment length per
-        # (cell, start); count how often real data would collide.
-        if (i, s) in starts_seen:
-            collisions += 1
-        else:
-            starts_seen.add((i, s))
-        for p in (s, e):
-            if 0 <= p < L:
-                rows_i.append(i); cols_i.append(p)
-    tbx.close()
-
-    ins = sp.coo_matrix(
-        (np.ones(len(rows_i), np.float32),
-         (np.asarray(rows_i, np.int64), np.asarray(cols_i, np.int64))),
-        shape=(reader.n_cells, L)).tocsr()
-    ins.sum_duplicates()
-
-    adata = ad.AnnData(X=sp.csr_matrix((reader.n_cells, 0), dtype=np.float32))
-    adata.obs_names = [b + '-1' for b in reader.barcodes]
-    adata.obsm['insertion'] = ins
-    adata.uns['reference_sequences'] = pd.DataFrame(
-        {'reference_seq_name': [CHROM], 'reference_seq_length': [L]})
-
-    print(f'insertion matrix {ins.shape}, {ins.nnz:,} non-zero positions')
-    print(f'(cell, start) collisions in real data: {collisions:,} of '
-          f'{n_frag:,} fragments ({100 * collisions / n_frag:.2f}%) — '
-          'fragments upstream\'s fragment_paired container cannot hold '
-          'separately. Built here directly from fragments to avoid the issue.')
-""")
-
-code(r"""
-# Runs upstream's own _load_pseudobulk for an ATAC-only setup.
-def upstream_profile(chrom, t_start, t_end, groups, crl=90):
-    ds = object.__new__(onTheFlyMultiomeDataset)
-    ds.adatas = {'atac': adata}
-    ds.normalize_atac = True
-    ds.clip_soft = 5
-    ds.custom_read_length = crl
-    cs = adata.uns['reference_sequences'].copy()
-    cs['offset'] = np.insert(cs['reference_seq_length'].cumsum()[:-1].values, 0, 0)
-    ds.chrom_sizes = cs.set_index('reference_seq_name').to_dict('index')
-
-    size = ds.chrom_sizes[chrom]
-    c0, c1 = size['offset'], size['reference_seq_length']
-    s = int(max(0, t_start - (crl + 10))) + c0
-    e = int(min(t_end + (crl + 10), c1)) + c0
-    gd = [size, c0, c1, s, e, t_start, t_end]
-    return np.vstack([ds._load_pseudobulk(list(g), gd).numpy().ravel()
-                      for g in groups])
-
-
-if HAVE_UPSTREAM:
-    up = upstream_profile(CHROM, W0, W0 + T, groups)
-    mine = reader.pseudobulk(CHROM, W0, W0 + T, groups)
-    diff = np.abs(up - mine)
-    print('upstream', up.shape, ' epione', mine.shape)
-    print(f'max|diff| = {diff.max():.10g}     mean|diff| = {diff.mean():.10g}')
-    print('IDENTICAL' if diff.max() == 0 else 'MISMATCH')
-""")
-
-code(r"""
-if HAVE_UPSTREAM:
-    g = 0
-    # 6,144 bins across a page is ~0.04 px per bin: two identical dense
-    # series would just overplot. Zoom the overlay onto the densest 300
-    # bins so both are actually resolvable, and keep the residual panel
-    # over every bin so the claim still covers the whole window.
-    k = 300
-    roll = np.convolve(up[g], np.ones(k), 'valid')
-    z0 = int(roll.argmax()); z1 = z0 + k
-    xz = x[z0:z1]
-
-    fig, (a1, a2) = plt.subplots(2, 1, figsize=(11, 6.4),
-                                 gridspec_kw={'height_ratios': [2.4, 1]})
-
-    a1.fill_between(xz, 0, up[g][z0:z1], step='post', color=C[0], alpha=0.35,
-                    lw=0, label='upstream scooby')
-    a1.step(xz, mine[g][z0:z1], where='post', color=C[1], lw=1.0,
-            label='epione bridge')
-    a1.legend(loc='upper right', ncol=2, frameon=False, handlelength=1.5)
-    a1.set_ylabel('insertions per\n32 bp bin (×0.05)')
-    a1.set_xlim(xz[0], xz[-1] + 32 / 1e6)
-    a1.set_ylim(0, up[g][z0:z1].max() * 1.18)
-    a1.set_title(f'{names[g]}: the densest {k * 32 / 1e3:.1f} kb of the window')
-    a1.set_xlabel(f'{CHROM} position (Mb)')
-    a1.spines[['top', 'right']].set_visible(False)
-
-    # Residual over every bin of the window; the shaded strip is the zoom above.
-    a2.axvspan(xz[0], xz[-1] + 32 / 1e6, color=C[0], alpha=0.15, lw=0)
-    a2.plot(x, (up - mine)[g], color='k', lw=1.0)
-    a2.set_ylim(-1, 1); a2.set_yticks([-1, 0, 1])
-    a2.set_ylabel('upstream\n− epione')
-    a2.set_xlabel(f'{CHROM} position (Mb), whole window (shaded: zoom above)')
-    a2.set_xlim(W0 / 1e6, (W0 + T) / 1e6)
-    a2.annotate(f'max |difference| over {up.shape[0]} groups '
-                f'× {up.shape[1]:,} bins = {np.abs(up - mine).max():.0f}',
-                xy=(0.006, 0.95), xycoords='axes fraction', va='top',
-                fontsize=12)
-    a2.spines[['top', 'right']].set_visible(False)
-    fig.suptitle('Same code path, same numbers')
-    plt.tight_layout(); plt.show()
-""")
-
-md(r"""
-The conventions this pins down, each of which would silently invalidate a
-benchmark if wrong: insertions at both fragment ends, the duplicate-count
-column ignored, 32 bp sum-binning, and ATAC scaled by exactly `0.05` with
-**no** clipping (upstream's `clip_soft` applies to RNA only).
-
-One upstream limit found while checking this: a window ending within
-`custom_read_length + 10` = 100 bp of a contig end makes upstream's trim
-`dense[100:0]`, an empty array, and its pooling step then raises. The
-reader returns a correct profile there, and `make_fold_bed(edge_margin=…)`
-keeps windows clear of contig ends so the two stay comparable.
-""")
-
-md(r"""
-## Part 6 · Folds that cannot leak
+## Part 5 · Folds that cannot leak
 
 The model reads 524,288 bp to predict the central 196,608 bp. Two
 adjacent target windows therefore have **inputs overlapping by 163,840 bp
@@ -642,21 +480,31 @@ plt.tight_layout(); plt.show()
 """)
 
 md(r"""
-## Part 7 · Driving upstream's model
+## Part 6 · Driving upstream's model
 
 `load_scooby` builds upstream's `Scooby` on pretrained Borzoi weights.
-It exists because a plain `Scooby.from_pretrained` returns a model that
-**cannot be moved to a GPU**: Borzoi registers its relative-position
-tables with `persistent=False`, so they are in no checkpoint, and
-transformers' meta-device initialisation never materialises them —
-`.to('cuda')` then raises *"Cannot copy out of meta tensor"*. Neither
-`low_cpu_mem_usage=False` nor `_fast_init=False` avoids it. The tables are
-deterministic, so they are simply recomputed.
+Use it rather than a plain `Scooby.from_pretrained`, whose model cannot be
+moved to a GPU: Borzoi's relative-position tables are never materialised,
+and `load_scooby` recomputes them.
 
 Note the backbone is Borzoi's human/mouse trunk with a freshly
 initialised cell-state decoder — exactly the starting point upstream
 trains from. A short overfit on one window is a plumbing check, not a
 result.
+""")
+
+code(r"""
+SCOOBY_SRC = os.environ.get('SCOOBY_SRC')
+HAVE_UPSTREAM = bool(SCOOBY_SRC) and (pathlib.Path(SCOOBY_SRC) / 'scooby').exists()
+if HAVE_UPSTREAM:
+    import types
+    sys.modules.setdefault('pybigtools', types.ModuleType('pybigtools'))
+    sys.path.insert(0, SCOOBY_SRC)
+    from scooby.data.scdata import onTheFlyMultiomeDataset
+    print('upstream scooby loaded from', SCOOBY_SRC)
+else:
+    print('SCOOBY_SRC not set — the model section will be skipped.\n'
+          'Clone https://github.com/gagneurlab/scooby and point SCOOBY_SRC at it.')
 """)
 
 code(r"""
@@ -682,9 +530,9 @@ if HAVE_MODEL:
     emb[np.arange(reader.n_cells), band] = 1.0
     emb[:, 4:] = rng.normal(scale=0.01, size=(reader.n_cells, 4))
 
-    # Use the same dense window as Parts 4-5 so the figure is comparable
+    # Use the same dense window as Part 4 so the figure is comparable
     # and shows real structure. Real training would iterate the fold
-    # split built in Part 6; a single window here is a plumbing check.
+    # split built in Part 5; a single window here is a plumbing check.
     demo = pd.DataFrame({'chrom': [CHROM], 'start': [W0], 'end': [W0 + T],
                          'fold': ['demo']})
     ds = sb.ScoobyATACDataset(reader, FASTA, demo, emb,
@@ -756,7 +604,7 @@ if HAVE_MODEL:
                 fontsize=12)
     a1.spines[['top', 'right']].set_visible(False)
 
-    # Same zoom treatment as Part 5: 6,144 bins do not fit on a page.
+    # 6,144 bins do not fit on a page: zoom onto the densest 300.
     g, k = 0, 300
     obs = tgt.numpy()[:, g]
     zz = int(np.convolve(obs, np.ones(k), 'valid').argmax())
@@ -790,7 +638,6 @@ md(r"""
 | Sample | GSE308623 `P2S1`, mouse brain P2, spatial ATAC, mm10 |
 | Spots on tissue | 7,131 of a 100×100 grid |
 | Targets | read per-window from tabix; no genome-wide insertion matrix |
-| Parity with upstream | `max|diff| = 0` on real data |
 | Model | upstream `Scooby` on Borzoi weights, 2.04% params trainable via LoRA |
 | Geometry | 524,288 bp in → 6,144 × 32 bp bins out |
 
@@ -809,9 +656,8 @@ Next steps worth taking from here, in the order they pay off:
    biological rather than geometric bands.
 3. Train properly on held-out folds and compare against this baseline.
 
-The bridge's own correctness is covered by `code/tests/`:
-`test_upstream_parity.py` (numbers vs upstream) and
-`test_upstream_model.py` (the full geometry on a GPU).
+Checks against upstream scooby: `tests/test_scooby_parity.py`,
+`tests/test_scooby_model.py` and `tests/parity/scooby/tutorial_checks.ipynb`.
 """)
 
 nb = nbf.v4.new_notebook(cells=CELLS)
