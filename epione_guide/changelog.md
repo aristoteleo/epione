@@ -8,6 +8,15 @@ The format roughly follows Keep a Changelog.
 ## Unreleased
 
 ### Added
+- seq2PRINT motif effects: `epi.models.seq2print.delta_effects` (scPrinter's `seq2print_delta`: plant a
+  motif's consensus in background sequences and average the change in predicted footprints at every
+  size, in -log10 p, and in log coverage), `plant_motif`, `zscore2pval`, and `Seq2PRINT.collapse(state)`
+  (a LoRA model folded to one cell state, scPrinter's `collapse`).
+- `epi.pl.plot_seqlogo` / `pfm_information`: dependency-free sequence logos for attribution tracks and
+  motif PFMs.
+- `t_seq2print` reworked: spots clustered into chromatin domains, one LoRA state per domain evaluated on
+  between-domain differences (depth removed, Poisson ceiling, wrong-domain null), and motif delta
+  effects across footprint sizes.
 - Single-cell Hi-C compartments from raw contacts (`epi.single.hic`): `cpg_ratio`, `contacts_to_scool`,
   `load_contact_tables`, `compartment_scores` (scHiCluster single-cell score), `merge_cells` (raw
   pseudobulks, `cis_only=`), and the Human Cell Epigenome Atlas recipe `compartment_model` →
