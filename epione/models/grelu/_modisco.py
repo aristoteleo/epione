@@ -45,6 +45,20 @@ def read_meme(path) -> Dict[str, np.ndarray]:
     return {k: np.asarray(v, dtype=np.float64) for k, v in _read(str(path)).items()}
 
 
+def _import_tfmodisco():
+    """modiscolite's package import runs ``matplotlib.use('pdf')`` (in its
+    report module), which silently stops inline figures in a notebook;
+    put the caller's backend back."""
+    import matplotlib
+
+    backend = matplotlib.get_backend()
+    from modiscolite.tfmodisco import TFMoDISco
+
+    if matplotlib.get_backend() != backend:
+        matplotlib.use(backend, force=True)
+    return TFMoDISco
+
+
 def _trim(contrib: np.ndarray, threshold: float):
     s = np.abs(contrib).sum(1)
     keep = np.flatnonzero(s >= threshold * s.max())
@@ -87,7 +101,7 @@ def modisco(
         first). The defaults are chrombpnet's tutorial settings, lighter
         than modiscolite's (50 Leiden runs).
     """
-    from modiscolite.tfmodisco import TFMoDISco
+    TFMoDISco = _import_tfmodisco()
 
     H = np.asarray(hypothetical, dtype=np.float32)
     S = np.asarray(X, dtype=np.float32)

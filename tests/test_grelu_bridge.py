@@ -88,3 +88,14 @@ def test_modisco_recovers_planted_motif():
     assert "TGACTCA" in top["consensus"] or "TGAGTCA" in top["consensus"]   # either strand
     assert top["match"] == "AP1"
     assert res.contrib[top["pattern"]].shape[1] == 4
+
+
+def test_modisco_import_keeps_matplotlib_backend():
+    pytest.importorskip("modiscolite")
+    import matplotlib
+
+    from epione.models.grelu._modisco import _import_tfmodisco
+
+    before = matplotlib.get_backend()
+    _import_tfmodisco()
+    assert matplotlib.get_backend() == before
