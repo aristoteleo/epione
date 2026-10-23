@@ -1,7 +1,9 @@
-"""Generate t_seq2print.ipynb (seq2PRINT in Epione).
+"""Generate t_seq2print.ipynb (seq2PRINT on PBMC cell types).
 
 Execute with ``jupyter nbconvert --to notebook --execute --inplace`` on a
-GPU node (about 35 minutes on an H100, most of it LoRA fine-tuning).
+GPU node. From scratch it takes about 3 hours on an H100 (bulk model
+~50 min, LoRA ~30 min, TF binding scores at motif sites ~65 min); with the
+trained models and site scores cached in ``WORK`` it takes about 17 minutes.
 """
 import pathlib
 
@@ -19,52 +21,40 @@ def code(src):
 
 
 md(r"""
-# seq2PRINT: footprints from sequence, per tissue domain
+# seq2PRINT: TF binding from sequence, per cell type
 
-[PRINT](t_print_footprint.ipynb) reads footprints off measured Tn5 cuts.
-**seq2PRINT** (from [scPrinter](https://github.com/buenrostrolab/scPrinter))
-learns to predict them from DNA: a dilated CNN reads 1,840 bp and outputs
-PRINT's footprint z-score at 99 sizes (radius 2-100 bp) across the central
-800 bp, plus the window's log coverage. LoRA then adapts one trained model
-to each cell state.
+[PRINT](t_print_footprint.ipynb) reads footprints off measured Tn5 cuts,
+so it needs many cuts at every site. **seq2PRINT** (from
+[scPrinter](https://github.com/buenrostrolab/scPrinter)) learns to predict
+those footprints from DNA sequence. A dilated CNN reads 1,840 bp and
+predicts PRINT's footprint score at 99 sizes over the central 800 bp, plus
+the window's coverage. LoRA then adapts one trained model to each cell
+type, and the model's attributions give a TF binding score at every base,
+in every cell type, including sites with few cuts.
 
-This tutorial trains the model on a spatial ATAC section of mouse brain,
-splits the section into chromatin domains, fine-tunes one LoRA state per
-domain, and asks two questions:
+This tutorial follows scPrinter's PBMC tutorial on the 10x PBMC 10k
+Multiome sample:
 
-1. **Does the domain model predict how domains differ?** A single bulk model
-   gives every domain the same prediction, so between-domain differences are
-   the test that only state-specific models can pass. Scoring each domain with
-   every other domain's state checks that domain identity, not extra training,
-   explains any gain.
-2. **What does each motif do to the footprint?** Planting a motif into
-   background sequences and measuring the change in predicted footprints at
-   every size (scPrinter's *delta effects*) separates TF-sized footprints from
-   nucleosome-scale changes.
+1. group cells into seven cell types and call peaks in each;
+2. train one bulk model on all cells;
+3. fine-tune one LoRA state per cell type;
+4. score TF binding at marker-gene promoters in every cell type;
+5. compare binding of CEBPA, SPI1, PAX5, RUNX3 and other TFs between cell
+   types at their motif sites.
 
 ```python
-model = epi.models.seq2print.build_seq2print()                       # scPrinter's architecture
-data  = epi.models.seq2print.Seq2PRINTDataset(peaks, fasta=..., reader=..., bias=..., groups=...)
-res   = epi.models.seq2print.fit(model, data.split(train), data.split(valid))
-model.add_lora(domain_embeddings, coverages=...)                      # one state per domain
-foot, cov = epi.models.seq2print.delta_effects(model, motifs, backgrounds, state=0)
+model = s2p.build_seq2print()                                        # scPrinter's architecture
+data  = s2p.Seq2PRINTDataset(peaks, fasta=..., reader=..., bias=..., groups=...)
+model = s2p.fit(model, data.split(train), data.split(valid)).model
+model.add_lora(celltype_embeddings, coverages=...)                    # one state per cell type
+tfbs  = s2p.tf_binding(model, s2p.one_hot_regions(fasta, regions), states=[0, 1, ...])
 ```
 
-The network blocks and training targets are scPrinter's, vendored verbatim:
-the same weights give bit-identical predictions and checkpoints load either
-way (last section). The training path is Epione's: windows are read from the
-fragments file with an on-demand Tn5 bias, and training is one function
-call instead of scPrinter's JSON config, CLI and per-group bigWig export.
-
-Base-resolution attributions (DeepSHAP, ISM) work the same way for every
-sequence model in Epione and are not repeated here; see the gReLU bridge
-(`epi.models.grelu.attributions`), which accepts seq2PRINT models and LoRA
-states.
-
-**Data.** GSE308623 `P2S1`: mouse brain at postnatal day 2, spatial ATAC,
-7,131 spots, 106 M fragments (the same sample as the
-[scooby](t_scooby_bridge.ipynb) and [PRINT](t_print_footprint.ipynb)
-tutorials).
+`tf_binding` is scPrinter's sequence TF binding score: DeepLIFT/SHAP
+attributions of the model (computed through gReLU, `epi.models.grelu`)
+are fed to scPrinter's published TF-binding networks. The network blocks
+and training targets are scPrinter's, so trained weights load in either
+package.
 """)
 
 md("## Part 1 · Setup")
@@ -73,11 +63,11 @@ code(r"""
 %matplotlib inline
 import os, sys, pathlib, re, copy, warnings
 warnings.filterwarnings('ignore', module='tqdm')
+warnings.filterwarnings('ignore', message='.*torch.jit.load.*')
 import numpy as np
 import pandas as pd
-import scipy.sparse as sp
 import matplotlib.pyplot as plt
-import pysam
+import anndata as ad
 import scanpy as sc
 import torch
 
@@ -99,210 +89,99 @@ import epione as epi
 from epione._insertions import InsertionReader
 s2p = epi.models.seq2print
 
-DATA  = pathlib.Path(os.environ.get('SCOOBY_TUTORIAL_DATA', (CODE or pathlib.Path.cwd()).parent))
-FRAG  = DATA / 'scooby_bench' / 'P2S1.fragments.tsv.gz'
-POS   = DATA / 'scooby_bench' / 'P2S1.positions.csv'
-FASTA = DATA / 'genome' / 'mm10' / 'mm10.fa'          # whole genome: folds are by chromosome
-WORK  = DATA / 'seq2print_tutorial'; WORK.mkdir(exist_ok=True)
-for p in (FRAG, POS, FASTA):
-    if not p.exists():
-        raise FileNotFoundError(f'{p}: see "Getting the inputs" in t_scooby_bridge; '
-                                'mm10.fa is hgdownload.soe.ucsc.edu/goldenPath/mm10/bigZips/mm10.fa.gz')
+# EPIONE_TUTORIAL_DATA picks the folder; the default is epione's pooch cache.
+DATA = os.environ.get('EPIONE_TUTORIAL_DATA')
+files = epi.datasets.pbmc10k_multiome_atac(pathlib.Path(DATA) / 'pbmc10k_multiome' if DATA else None)
+FASTA = str(epi.data.hg38.fasta)                      # GENCODE GRCh38, downloaded once
+WORK = files['fragments'].parent / 'seq2print_work'; WORK.mkdir(exist_ok=True)
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 print('device:', DEVICE, torch.cuda.get_device_name(0) if DEVICE == 'cuda' else '')
 
 epi.pl.plot_set()
-C = sc.pl.palettes.default_20                      # scanpy's categorical colours, in order
 """)
 
 md(r"""
-## Part 2 · Chromatin domains of the section
+## Part 2 · Cell types
 
-The scATAC recipe applies to spots unchanged (as in the
-[spatial ATAC tutorial](t_spatial_atac.ipynb)): a 500 bp tile matrix, the
-50,000 most accessible tiles, the BiRMT-2 embedding. A spot here holds about
-15,000 fragments, so the embedding is smoothed over each spot's four grid
-neighbours before k-means splits it into six domains.
+scGLUE's copy of this sample carries Seurat-WNN cell types (from RNA and
+ATAC together). We merge them into seven groups, each with enough cells
+for a cell-type model, and drop the small T-cell subsets (MAIT, γδ T) and
+progenitors. The iterative LSI embedding of the peak matrix gives each
+cell type its LoRA embedding later.
 """)
 
 code(r"""
 %%time
-pos = (pd.read_csv(POS, header=None, names=['bc', 'in_tissue', 'row', 'col', 'pr', 'pc'])
-         .query('in_tissue == 1').reset_index(drop=True))
-barcodes = (pos['bc'] + '-1').tolist()
-fa = pysam.FastaFile(str(FASTA))
-CHROMS = [f'chr{i}' for i in range(1, 20)] + ['chrX']
-sizes = {c: fa.get_reference_length(c) for c in CHROMS}
+COARSE = {'CD14 Mono': 'CD14 Mono', 'CD16 Mono': 'CD16 Mono', 'cDC': 'DC', 'pDC': 'DC',
+          'Naive B': 'B', 'Intermediate B': 'B', 'Memory B': 'B', 'Plasma': 'B',
+          'CD4 Naive': 'CD4 T', 'CD4 TCM': 'CD4 T', 'CD4 TEM': 'CD4 T', 'Treg': 'CD4 T',
+          'CD8 Naive': 'CD8 T', 'CD8 TEM_1': 'CD8 T', 'CD8 TEM_2': 'CD8 T', 'NK': 'NK'}
+TYPES = ['CD14 Mono', 'CD16 Mono', 'DC', 'B', 'CD4 T', 'CD8 T', 'NK']
+# the same colour per cell type as t_print_footprint (from epi.pl.sc_color)
+TCOL = dict(zip(TYPES, ['#EF7B77', '#941456', '#FCBC10', '#279AD7', '#368650', '#7CBB5F', '#5E4D9A']))
 
-atac = epi.pp.import_fragments(str(FRAG), sizes, whitelist=barcodes, min_num_fragments=0)
-atac = atac[barcodes].copy()                                 # spot order = positions table
-atac.obs['array_row'], atac.obs['array_col'] = pos['row'].to_numpy(), pos['col'].to_numpy()
-atac.obsm['spatial'] = np.c_[pos['col'], -pos['row']].astype(float)
-epi.pp.add_tile_matrix(atac, bin_size=500)
-epi.pp.select_features(atac, n_features=50000)
-tiles = atac[:, atac.var['selected'].to_numpy(bool)].copy()
-epi.tl.birmt(tiles)
-# Richer embedding, used for the LoRA states. At ~15,000 fragments per spot its
-# inner Leiden step finds one cluster, so it keeps the most accessible tiles
-# (a plain LSI); the warnings that case raises are silenced here.
-sc.settings.verbosity = 0
-with warnings.catch_warnings():
-    warnings.simplefilter('ignore', RuntimeWarning)
-    epi.tl.iterative_lsi(tiles, n_components=30, verbose=False)
-sc.settings.verbosity = 3
-epi.tl.spatial_neighbors(tiles, coord_type='grid', n_neighs=4)
-epi.tl.spatial_smooth(tiles, use_rep='X_birmt', lam=0.5)
-epi.tl.spatial_domains(tiles, 6, use_rep='X_birmt_smooth', method='kmeans', use_pca=False,
-                       key_added='domain')
-tiles.obs['domain'] = ('D' + tiles.obs['domain'].astype(str)).astype('category')
-DOMAINS = sorted(tiles.obs['domain'].cat.categories, key=lambda d: int(d[1:]))
-DCOL = dict(zip(DOMAINS, C))
-tiles.obs.groupby('domain', observed=True)['n_fragment'].agg(spots='size', fragments='sum')
-""")
+atac = ad.read_h5ad(files['atac'])
+atac.obs['celltype'] = atac.obs['cell_type'].map(COARSE)
+atac = atac[atac.obs['celltype'].notna()].copy()
+atac.obs['celltype'] = pd.Categorical(atac.obs['celltype'], TYPES)
+atac.uns['files'] = {'fragments': str(files['fragments'])}
+sc.settings.verbosity = 0                              # keep scanpy's progress lines out
+epi.tl.iterative_lsi(atac, n_components=30, verbose=False)
+sc.pp.neighbors(atac, use_rep='X_iterative_lsi')
+sc.tl.umap(atac)
+barcodes = atac.obs_names.tolist()
+ct = atac.obs['celltype'].to_numpy()
 
-md(r"""
-Promoter accessibility of marker genes names most domains. Each value is the
-domain's share of cuts within 2.5 kb of the gene's TSS, z-scored across
-domains (GENCODE vM25 genes, downloaded once).
-""")
-
-code(r"""
-%%time
-GTF = WORK / 'gencode.vM25.basic.annotation.gtf.gz'
-if not GTF.exists():
-    import urllib.request
-    urllib.request.urlretrieve('https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_mouse/release_M25/'
-                               'gencode.vM25.basic.annotation.gtf.gz', GTF)
-genes = epi.io.read_gtf(str(GTF), feature_whitelist=['gene'], keep_attribute=False)
-genes = genes.drop_duplicates('gene_name').set_index('gene_name')
-tss = np.where(genes['strand'] == '+', genes['start'], genes['end'])
-genes['tss'] = tss
-
-# pseudobulk tile counts per domain: [domains x tiles]
-spot_domain = tiles.obs['domain'].to_numpy()
-G = sp.csr_matrix((np.ones(len(spot_domain)), ([DOMAINS.index(d) for d in spot_domain], np.arange(len(spot_domain)))),
-                  shape=(len(DOMAINS), len(spot_domain)))
-P = np.asarray((G @ sp.csr_matrix(atac.X)).todense(), dtype=np.float64)
-tile_chrom = atac.var_names.str.split(':').str[0].to_numpy()
-tile_start = atac.var_names.str.split(':').str[1].str.split('-').str[0].astype(int).to_numpy()
-tile_index = {(c, s // 500): i for i, (c, s) in enumerate(zip(tile_chrom, tile_start))}
-cpm = P / P.sum(1, keepdims=True) * 1e6
-
-MARKERS = {'progenitor / ependymal': ['Sox2', 'Hes5', 'Pax6', 'Foxj1', 'Ascl1', 'Olig2'],
-           'cortical neurons': ['Tbr1', 'Neurod2', 'Neurod6', 'Satb2'],
-           'striatal neurons': ['Ppp1r1b', 'Isl1', 'Dlx5', 'Six3'],
-           'meninges / vessels': ['Foxc1', 'Col1a2', 'Cldn5', 'Pdgfra']}
-rows = {}
-for group, gs in MARKERS.items():
-    for g in gs:
-        c, t = genes.loc[g, 'seqname'], int(genes.loc[g, 'tss'])
-        ii = [tile_index[(c, b)] for b in range(t // 500 - 5, t // 500 + 6) if (c, b) in tile_index]
-        rows[(group, g)] = cpm[:, ii].sum(1)
-marker = pd.DataFrame(rows, index=DOMAINS).T
-marker_z = marker.sub(marker.mean(1), axis=0).div(marker.std(1), axis=0)
-
-fig, (a1, a2) = plt.subplots(1, 2, figsize=(12, 5.2), gridspec_kw={'width_ratios': [1, 1.05]})
-xy = tiles.obsm['spatial']
-for d in DOMAINS:
-    m = spot_domain == d
-    a1.scatter(xy[m, 0], xy[m, 1], s=7, marker='s', lw=0, color=DCOL[d], label=d)
-a1.set_aspect('equal'); a1.axis('off'); a1.set_title('Chromatin domains')
-a1.legend(loc='upper center', bbox_to_anchor=(0.5, 0.0), ncol=6, frameon=False, markerscale=2,
-          handletextpad=0.1, columnspacing=0.6)
-im = a2.imshow(marker_z.to_numpy(), cmap='RdBu_r', vmin=-2, vmax=2, aspect='auto')
-a2.set_xticks(range(len(DOMAINS)), DOMAINS)
-a2.set_yticks(range(len(marker_z)), [g for _, g in marker_z.index])
-y0 = 0
-for group, gs in MARKERS.items():
-    a2.axhline(y0 - 0.5, color='w', lw=2)
-    a2.text(len(DOMAINS) - 0.4, y0 + (len(gs) - 1) / 2, group, va='center', ha='left', fontsize=10)
-    y0 += len(gs)
-fig.colorbar(im, ax=a2, shrink=0.6, pad=0.32, label='promoter accessibility (z)')
-a2.set_title('Marker promoters')
+fig, ax = plt.subplots(figsize=(5.5, 5))
+for t in TYPES:
+    xy = atac.obsm['X_umap'][ct == t]
+    ax.scatter(xy[:, 0], xy[:, 1], s=2, lw=0, color=TCOL[t], label=f'{t} ({len(xy):,})', rasterized=True)
+ax.set_xticks([]); ax.set_yticks([]); ax.set_xlabel('UMAP 1'); ax.set_ylabel('UMAP 2')
+ax.legend(markerscale=5, frameon=False, loc='center left', bbox_to_anchor=(1, 0.5))
+ax.set_title(f'{len(atac):,} PBMCs, iterative LSI of ATAC peaks')
 plt.show()
 """)
 
 md(r"""
-D4 lines the lateral ventricle and has the progenitor and ependymal promoters
-open (Sox2, Hes5, Pax6, Foxj1, Olig2); D1 is the cortex (Tbr1, Neurod2); D5
-the striatum (Ppp1r1b, Isl1); D3 the outer rim, with meningeal and vascular
-promoters (Foxc1, Pdgfra, Col1a2). D2 and D6 are intermixed regions without a
-clear marker profile. The domains are 0.3 to 2.3 thousand spots and 5 to 38
-million fragments each.
-""")
+## Part 3 · Peaks per cell type
 
-md(r"""
-## Part 3 · Peaks and folds
+scPrinter trains seq2PRINT on summit-centred peaks. `epi.single.call_peaks`
+calls peaks in each cell type and merges them into one set of 500-bp
+peaks around summits, labelled with the cell type that called each one
+most strongly, so peaks open only in a small cell type are not lost.
 
-Two peak sets, both as 500 bp windows centred on a tile:
-
-* **bulk peaks** — the 10,000 tiles with the most cuts genome-wide (mostly
-  promoters and other constitutive sites); the bulk model is trained on these;
-* **domain peaks** — for each domain, the 600 tiles (of those with at least 150
-  cuts) most enriched in that domain relative to the rest of the section.
-  These are where a domain model has something to predict.
-
-The split is **scPrinter's fold 0 for mm10**: whole chromosomes for train,
-validation and test, so no held-out window shares sequence with training.
+The split is **scPrinter's fold 0 for hg38**: whole chromosomes for
+training, validation and test (chr1, chr3, chr6), so no test window shares
+sequence with training.
 """)
 
 code(r"""
 %%time
-peak_file = WORK / 'peaks_top10000.tsv'
+peak_file = WORK / 'peaks_celltype.tsv'
 if peak_file.exists():
-    bulk_peaks = pd.read_csv(peak_file, sep='\t')
-else:                                   # densest 500 bp bins by insertion count
-    keep, cnt = set(barcodes), {}
-    tbx = pysam.TabixFile(str(FRAG))
-    for c in CHROMS:
-        for line in tbx.fetch(c):
-            f = line.split('\t', 4)
-            if f[3] in keep:
-                for p in (int(f[1]), int(f[2])):
-                    cnt[(c, p // 500)] = cnt.get((c, p // 500), 0) + 1
-    top = sorted(cnt.items(), key=lambda kv: -kv[1])[:10_000]
-    bulk_peaks = pd.DataFrame({'chrom': [k[0] for k, _ in top],
-                               'summit': [k[1] * 500 + 250 for k, _ in top],
-                               'cuts': [n for _, n in top]})
-    bulk_peaks.to_csv(peak_file, sep='\t', index=False)
-
-ok = P.sum(0) >= 150
-rest = P.sum(0, keepdims=True) - P
-lfc = np.log2((cpm + 2) / (rest / rest.sum(1, keepdims=True) * 1e6 + 2))
-dom_peaks = []
-for k, d in enumerate(DOMAINS):
-    top = np.argsort(-np.where(ok, lfc[k], -np.inf))[:600]
-    dom_peaks.append(pd.DataFrame({'chrom': tile_chrom[top], 'summit': tile_start[top] + 250,
-                                   'domain': d, 'log2_enrichment': lfc[k, top]}))
-dom_peaks = pd.concat(dom_peaks)
-print(dom_peaks.groupby('domain')['log2_enrichment'].median().round(2).to_dict())
-
-peaks = (pd.concat([bulk_peaks[['chrom', 'summit']].assign(kind='bulk'),
-                    dom_peaks[['chrom', 'summit', 'domain']].assign(kind='domain')])
-           .drop_duplicates(['chrom', 'summit']).reset_index(drop=True))
-folds = s2p.chromosome_folds('mm10', 0)
-peaks['split'] = np.select([peaks.chrom.isin(folds[s]) for s in ('train', 'valid', 'test')],
-                           ['train', 'valid', 'test'], 'unused')
-pd.crosstab(peaks['kind'], peaks['split'])
+    peaks = pd.read_csv(peak_file, sep='\t')
+else:
+    peaks = epi.single.call_peaks(atac, groupby='celltype', genome=epi.data.hg38, inplace=False)
+    peaks.to_csv(peak_file, sep='\t', index=False)
+folds = s2p.chromosome_folds('hg38', 0)
+print(f'{len(peaks):,} peaks; test chromosomes {folds["test"]}')
+peaks['group'].value_counts().reindex(TYPES).rename('peaks (strongest in)').to_frame().T
 """)
 
 md(r"""
 ## Part 4 · The bulk model
 
-`Seq2PRINTDataset` reads each window once from the fragments: 1,840 bp of
-sequence and a 1 kb track of insertions and Tn5 bias around the summit. The
-footprint target is computed from those two tracks on the fly at every
-training step (scPrinter's augmentation: shared jitter up to ±128 bp,
-reverse complement, 30 random scales). The bias is PRINT's CNN, run on the
-GPU in one pass per window (`exact=False`, equal to scPrinter's genome-wide
-bias up to float32 rounding).
+`Seq2PRINTDataset` reads each window once from the fragments file: 1,840 bp
+of sequence and a 1-kb track of Tn5 insertions and Tn5 bias around the
+summit. The training target, PRINT's footprint score at every size, is
+computed from those tracks at every step with scPrinter's augmentation
+(shared jitter up to ±128 bp, reverse complement, 30 random sizes). The
+bias is PRINT's CNN, run on the GPU.
 
-Training follows scPrinter's recipe (AdamW, bf16, an exponential moving
-average of the weights, early stopping) and takes about 10 minutes on an
-H100, so by default the trained model is **downloaded from Hugging Face**
-([`starlitnightly/epione-seq2print`](https://huggingface.co/starlitnightly/epione-seq2print),
-~47 MB, pinned and md5-checked; its manifest carries the training history).
-Set `TRAIN = True` to retrain.
+The bulk model is trained on the 40,000 strongest peaks with scPrinter's
+recipe (AdamW, bf16, an exponential moving average of the weights, early
+stopping). That takes about 50 minutes on an H100; the trained model is
+cached in `WORK`.
 """)
 
 code(r"""
@@ -314,62 +193,36 @@ model = s2p.build_seq2print()
 
 
 def windows(table, groups=None):
-    reader = InsertionReader(FRAG, barcodes, shift=bias.shift)
-    return s2p.Seq2PRINTDataset(table, fasta=FASTA, reader=reader, bias=bias,
-                                groups=groups, dna_len=model.dna_len)
+    reader = InsertionReader(str(files['fragments']), barcodes, shift=bias.shift)
+    return s2p.Seq2PRINTDataset(table, fasta=FASTA, reader=reader, bias=bias, groups=groups,
+                                dna_len=model.dna_len, verbose=False)
 
 
+N_BULK = 40_000
+ranked = peaks.sort_values('score', ascending=False)        # strongest peaks first
+bulk_peaks = ranked.head(N_BULK)[['chrom', 'summit']].reset_index(drop=True)
 bulk = windows(bulk_peaks)
 train, valid, test = (bulk.split(folds[s]) for s in ('train', 'valid', 'test'))
 print({'train': len(train), 'valid': len(valid), 'test': len(test)})
 
-TRAIN = False                                     # True: train instead of downloading
-ckpt, hist_file = WORK / 'bulk_fold0.pt', WORK / 'bulk_fold0_history.tsv'
-if not TRAIN and 'p2s1_fold0_bulk' in s2p.PRETRAINED:
-    model, manifest = s2p.load_pretrained('p2s1_fold0_bulk', return_manifest=True)
-    hist = pd.DataFrame(manifest['history'])
-elif ckpt.exists() and hist_file.exists():
+ckpt, hist_file = WORK / f'bulk_fold0_{N_BULK}.pt', WORK / f'bulk_fold0_{N_BULK}_history.tsv'
+if ckpt.exists():
     model.load_state_dict(torch.load(ckpt, map_location='cpu'))
     hist = pd.read_csv(hist_file, sep='\t')
 else:
-    res = s2p.fit(model, train, valid, epochs=60, patience=5, num_workers=6,
+    res = s2p.fit(model, train, valid, epochs=60, patience=5, num_workers=8,
                   device=DEVICE, target_model=target_model)
     model, hist = res.model, res.to_frame()
     torch.save(model.state_dict(), ckpt)
     hist.to_csv(hist_file, sep='\t', index=False)
 model = model.to(DEVICE).eval()
-best_epoch = int(hist.valid_loss.idxmin())
 metrics_bulk = s2p.evaluate(model, test, target_model=target_model, device=DEVICE)
-print(f'best epoch {best_epoch} of {len(hist)}; test chromosomes:',
-      {k: round(v, 3) for k, v in metrics_bulk.items()})
+print('test chromosomes:', {k: round(v, 3) for k, v in metrics_bulk.items()})
 """)
 
 code(r"""
-fig, (a1, a2) = plt.subplots(1, 2, figsize=(12, 4.2))
-a1.plot(hist.epoch, hist.train_loss, color=C[0], label='train (augmented, 30 scales)')
-a1.plot(hist.epoch, hist.valid_loss, color=C[1], label='valid (centred, 99 scales)')
-a1.set_yscale('log')                              # epoch 0's train loss would flatten the rest
-a1.set_yticks([0.5, 1, 2, 5, 10], ['0.5', '1', '2', '5', '10']); a1.minorticks_off()
-a1.axvline(best_epoch, color='k', lw=0.8, ls=':', label=f'best epoch ({best_epoch}), weights kept')
-a1.set_xlabel('epoch'); a1.set_ylabel('loss (log scale)'); a1.legend(loc='upper right', fontsize=11)
-a1.set_title('Loss')
-for col, c, lab in (('valid_profile_pearson', C[2], 'footprint profile r'),
-                    ('valid_coverage_pearson', C[3], 'coverage r')):
-    v = hist[col].iloc[best_epoch]
-    a2.plot(hist.epoch, hist[col], color=c, label=lab)
-    a2.plot(best_epoch, v, 'o', ms=5, color=c, zorder=3)
-    a2.annotate(f'{v:.2f}', xy=(best_epoch, v), xytext=(-6, 6), textcoords='offset points',
-                ha='right', fontsize=11)
-a2.axvline(best_epoch, color='k', lw=0.8, ls=':')
-a2.set_xlabel('epoch'); a2.set_ylabel('Pearson r')
-a2.set_ylim(0, 1.15 * hist.valid_profile_pearson.max())
-a2.legend(loc='center right', fontsize=11); a2.set_title('Validation chromosomes')
-plt.tight_layout(); plt.show()
-""")
-
-code(r"""
-# One held-out window: observed footprint vs prediction.
-i = int(np.argsort(test.coverage[:, 0])[-50])       # a well-covered test peak
+best_epoch = int(hist.valid_loss.idxmin())
+i = int(np.argsort(test.coverage[:, 0])[-50])          # a well-covered test peak
 X, y = test.centred()[i]
 with torch.no_grad():
     pred, _ = model(X[None].to(DEVICE))
@@ -379,225 +232,206 @@ pred = pred[0].float().cpu().numpy(); obs = obs.cpu().numpy()
 r = np.corrcoef(np.nan_to_num(obs).ravel(), pred.ravel())[0, 1]
 chrom, summit = test.peaks.chrom[i], int(test.peaks.summit[i])
 
-fig, axes = plt.subplots(1, 2, figsize=(12, 4.4), sharey=True, layout='constrained')
-ext = [-400, 400, 4, 200]                            # 800 bp around the summit; scales 2-100 = 4-200 bp
-vm = np.nanpercentile(np.abs(obs), 99)               # one colour scale for both panels
-for ax, M, t in ((axes[0], obs, 'Observed (from Tn5 cuts)'), (axes[1], pred, 'Predicted (from sequence)')):
+fig = plt.figure(figsize=(14, 4.2), layout='constrained')
+gs = fig.add_gridspec(1, 3, width_ratios=[1, 1.1, 1.1])
+a0 = fig.add_subplot(gs[0])
+a0.plot(hist.epoch, hist.valid_profile_pearson, label='footprint profile r')
+a0.plot(hist.epoch, hist.valid_coverage_pearson, label='coverage r')
+a0.axvline(best_epoch, color='k', lw=0.8, ls=':')
+a0.set_xlabel('epoch'); a0.set_ylabel('Pearson r (validation chromosomes)')
+a0.set_ylim(0, 1); a0.legend(loc='lower right'); a0.set_title('Training')
+ext = [-400, 400, 4, 200]                               # 800 bp; footprint sizes 4-200 bp
+vm = np.nanpercentile(np.abs(obs), 99)
+for k, (M, t) in enumerate(((obs, 'Observed (Tn5 cuts)'), (pred, 'Predicted (sequence)'))):
+    ax = fig.add_subplot(gs[k + 1])
     im = ax.imshow(M, aspect='auto', origin='lower', cmap='RdBu_r', vmin=-vm, vmax=vm,
                    extent=ext, interpolation='nearest')
     ax.set_title(t); ax.set_xlabel('position from summit (bp)')
-    ax.set_xticks(np.arange(-400, 401, 200))
-axes[0].set_ylabel('footprint size (bp)')
-cb = fig.colorbar(im, ax=axes, shrink=0.9, pad=0.02, extend='both')
-cb.set_label('footprint z-score')
-fig.suptitle(f'{chrom}:{summit:,} on a test chromosome, Pearson r = {r:.2f}')
+    if k == 0:
+        ax.set_ylabel('footprint size (bp)')
+fig.colorbar(im, ax=ax, shrink=0.9, label='footprint z-score')
+fig.suptitle(f'Held-out window {chrom}:{summit:,} (r = {r:.2f})')
 plt.show()
 """)
 
 md(r"""
-## Part 5 · One LoRA state per domain
+## Part 5 · One LoRA state per cell type
 
-LoRA freezes the trained backbone and adds a low-rank update to every
-convolution, generated from a cell state's embedding by a small network, so
-one backbone serves every state. Each domain's state is its mean
-iterative-LSI embedding; its coverage covariate is its log cuts in peaks
-(z-scored), which a coverage-adjustment head absorbs first
-(`coverage_warming`, scPrinter's schedule), because a footprint z-score grows
-with depth and every domain has far fewer cuts than the pooled section.
+LoRA freezes the bulk model and adds a low-rank update to every
+convolution. A small network generates the update from a cell type's
+embedding (its mean iterative-LSI coordinates), so one backbone serves all
+seven cell types. A coverage covariate (each cell type's log cuts in
+peaks) is absorbed first, because a footprint score grows with depth and
+the cell types differ eight-fold in depth.
 
-This uses a light LoRA (rank 8, hidden width 64, learning rate 10⁻⁴: about
-30 minutes on an H100 for six domains). scPrinter's defaults (rank 32, width
-256, 3×10⁻⁵ with 8-step accumulation) are `add_lora(emb, coverages=cov)` and
-`fit(..., lr=3e-5, accumulate=8, coverage_warming=5)`. The trained model is
-cached in `WORK`.
+The fine-tuning windows are the 8,000 strongest peaks plus, for each cell
+type, the 1,500 strongest peaks it called: every (peak, cell type) pair is
+one training example. This light LoRA (rank 8, hidden width 64) takes
+about 30 minutes on an H100; scPrinter's defaults (rank 32, width 256) are
+`add_lora(emb, coverages=cov)` and `fit(..., lr=3e-5, accumulate=8,
+coverage_warming=5)`.
 """)
 
 code(r"""
 %%time
-groups = [np.flatnonzero(spot_domain == d) for d in DOMAINS]
-per_domain = windows(peaks, groups)              # every (peak, domain) pair; item = peak * 6 + domain
-tr6, va6, te6 = (per_domain.split(folds[s]) for s in ('train', 'valid', 'test'))
-lsi = tiles.obsm['X_iterative_lsi']
-emb = np.stack([lsi[g].mean(0) for g in groups])
-emb = ((emb - emb.mean(0)) / emb.std(0)).astype(np.float32)
-cov = np.log10(per_domain.coverage.sum(0))[:, None]
-cov = ((cov - cov.mean()) / cov.std()).astype(np.float32)
+sel = [ranked.head(8000)]
+for t in TYPES:
+    sel.append(ranked[ranked['group'] == t].head(1500))
+lora_peaks = (pd.concat(sel)[['chrom', 'summit', 'group']].drop_duplicates(['chrom', 'summit'])
+                .reset_index(drop=True))
+groups = [np.flatnonzero(ct == t) for t in TYPES]
+per_type = windows(lora_peaks, groups)          # item = peak * 7 + cell type
+tr7, va7, te7 = (per_type.split(folds[s]) for s in ('train', 'valid', 'test'))
 
-lora = copy.deepcopy(model).cpu().add_lora(emb, coverages=cov, rank=8, hidden_dim=64)
-import hashlib                                     # cache key: the domains and peaks it was trained on
-key = hashlib.md5(spot_domain.astype(str).tobytes()
-                  + peaks[['chrom', 'summit']].to_csv(index=False).encode()).hexdigest()[:10]
-lora_ckpt, lora_hist_file = WORK / f'lora_domains_{key}.pt', WORK / f'lora_domains_{key}_history.tsv'
-if lora_ckpt.exists() and lora_hist_file.exists():
-    lora.load_state_dict(torch.load(lora_ckpt, map_location='cpu'))
-    lora_hist = pd.read_csv(lora_hist_file, sep='\t')
-    print('loaded cached domain LoRA')
+lora_ckpt = WORK / f'lora_celltype_{N_BULK}_8000_1500.pt'
+if lora_ckpt.exists():                           # the embedding the cached LoRA was trained with
+    emb, cov = np.load(WORK / 'lora_emb.npy'), np.load(WORK / 'lora_cov.npy')
 else:
-    res_lora = s2p.fit(lora, tr6, va6, epochs=8, patience=3, lr=1e-4, coverage_warming=2,
-                       num_workers=6, device=DEVICE, target_model=target_model)
-    lora, lora_hist = res_lora.model, res_lora.to_frame()
+    lsi = atac.obsm['X_iterative_lsi']
+    emb = np.stack([lsi[g].mean(0) for g in groups])
+    emb = ((emb - emb.mean(0)) / emb.std(0)).astype(np.float32)
+    cov = np.log10(per_type.coverage.sum(0))[:, None]
+    cov = ((cov - cov.mean()) / cov.std()).astype(np.float32)
+    np.save(WORK / 'lora_emb.npy', emb); np.save(WORK / 'lora_cov.npy', cov)
+lora = copy.deepcopy(model).cpu().add_lora(emb, coverages=cov, rank=8, hidden_dim=64)
+if lora_ckpt.exists():
+    lora.load_state_dict(torch.load(lora_ckpt, map_location='cpu'))
+else:
+    res = s2p.fit(lora, tr7, va7, epochs=8, patience=3, lr=1e-4, coverage_warming=2,
+                  num_workers=8, device=DEVICE, target_model=target_model)
+    lora = res.model
     torch.save(lora.state_dict(), lora_ckpt)
-    lora_hist.to_csv(lora_hist_file, sep='\t', index=False)
 lora = lora.to(DEVICE).eval()
-n_lora = sum(p.numel() for n, p in lora.named_parameters() if 'A_embedding' in n or 'B_embedding' in n)
-print(f'{len(per_domain):,} (peak, domain) windows; LoRA networks: {n_lora:,} parameters '
-      f'(backbone: {sum(p.numel() for p in model.parameters()):,}, frozen)')
+print(f'{len(lora_peaks):,} peaks x {len(TYPES)} cell types = {len(per_type):,} windows')
+metrics_lora = s2p.evaluate(lora, te7, target_model=target_model, device=DEVICE)
+print('test chromosomes, each cell type with its own state:',
+      {k: round(v, 3) for k, v in metrics_lora.items()})
 """)
 
 md(r"""
-**Every domain under every state.** On held-out chromosomes, each domain's
-windows are predicted with each of the six LoRA states and with the bulk
-model. If the state carries domain identity, a domain is predicted best by its
-own state (the diagonal); if fine-tuning only adapted the model to thinner
-data, every state would do equally well. Footprint profiles are scored with
-scPrinter's metric (`evaluate`), coverage as the correlation of predicted and
-observed log coverage across the domain's test peaks.
+**One held-out peak in three cell types.** The peak below is on a test
+chromosome and is open mainly in CD14 monocytes. The top row is the
+footprint each cell type's own cuts give (PRINT's score, from that cell
+type alone); the bottom row is what the LoRA model predicts from the
+sequence, conditioned on that cell type.
 """)
 
 code(r"""
-%%time
-class AsState(torch.utils.data.Dataset):
-    # the same windows, conditioned on a chosen state
-    def __init__(self, base, idx, state):
-        self.base, self.idx, self.state = base, idx, state
-    def __len__(self):
-        return len(self.idx)
-    def __getitem__(self, i):
-        X, y, _ = self.base[self.idx[i]]
-        return X, y, torch.tensor(self.state)
-
-
-ND, centred = len(DOMAINS), te6.centred()
-nP = len(te6) // ND                                 # test peaks; item = peak * ND + domain
-prof = pd.DataFrame(index=DOMAINS, columns=DOMAINS + ['bulk'], dtype=float)
-obs_cov, pred_cov, bulk_cov = np.zeros((nP, ND)), np.zeros((nP, ND, ND)), np.zeros(nP)
+SHOW = ['CD14 Mono', 'B', 'CD4 T']
+cov_t = te7.coverage                                   # [test peaks, cell types]: cuts per window
+g_m, g_t = TYPES.index('CD14 Mono'), TYPES.index('CD4 T')
+spec = np.log2((cov_t[:, g_m] + 10) / (cov_t[:, g_t] + 10))
+ok = cov_t[:, g_m] >= np.quantile(cov_t[:, g_m], 0.9)
+p = int(np.argmax(np.where(ok, spec, -np.inf)))       # deep in monocytes, low in CD4 T cells
+cen = te7.centred()
+obs, pred = [], []
 with torch.no_grad():
-    for g, d in enumerate(DOMAINS):
-        idx = np.arange(g, len(te6), ND)
-        for s in range(ND):
-            prof.loc[d, DOMAINS[s]] = s2p.evaluate(lora, AsState(centred, idx, s),
-                                                   target_model=target_model,
-                                                   device=DEVICE)['profile_pearson']
-        prof.loc[d, 'bulk'] = s2p.evaluate(model, AsState(centred, idx, g), target_model=target_model,
-                                           device=DEVICE)['profile_pearson']
-        for k in range(0, nP, 64):
-            items = [centred[i] for i in idx[k:k + 64]]
-            X = torch.stack([it[0] for it in items]).to(DEVICE)
-            obs_cov[k:k + 64, g] = torch.log1p(torch.stack([it[1][0] for it in items]).sum(-1))
-            for s in range(ND):
-                pred_cov[k:k + 64, g, s] = lora(X, cells=torch.full((len(X),), s, device=DEVICE))[1].float().cpu()
-            if g == 0:
-                bulk_cov[k:k + 64] = model(X)[1].float().cpu()
-covr = pd.DataFrame([[np.corrcoef(pred_cov[:, g, s], obs_cov[:, g])[0, 1] for s in range(ND)]
-                     + [np.corrcoef(bulk_cov, obs_cov[:, g])[0, 1]] for g in range(ND)],
-                    index=DOMAINS, columns=DOMAINS + ['bulk'])
-fig, axes = plt.subplots(1, 2, figsize=(13, 5), layout='constrained')
-for ax, M, t in ((axes[0], prof, 'Footprint profile r'), (axes[1], covr, 'Coverage r across peaks')):
-    v = M.to_numpy(float)
-    im = ax.imshow(v, cmap='Blues', aspect='auto')
-    for i in range(ND):
-        for j in range(ND + 1):
-            ax.text(j, i, f'{v[i, j]:.2f}', ha='center', va='center', fontsize=10,
-                    color='w' if v[i, j] > v.min() + 0.6 * (v.max() - v.min()) else 'k')
-        ax.add_patch(plt.Rectangle((i - 0.5, i - 0.5), 1, 1, fill=False, ec='k', lw=1.5))
-    ax.axvline(ND - 0.5, color='w', lw=4)
-    ax.set_xticks(range(ND + 1), DOMAINS + ['bulk']); ax.set_yticks(range(ND), DOMAINS)
-    ax.set_xlabel('LoRA state used'); ax.set_ylabel('domain predicted'); ax.set_title(t)
-    fig.colorbar(im, ax=ax, shrink=0.8)
-fig.suptitle('Test chromosomes; boxes mark each domain\'s own state')
+    for t in SHOW:
+        g = TYPES.index(t)
+        X, y, _ = cen[p * len(TYPES) + g]
+        obs.append(s2p.multiscaleFoot(y[None, 0].to(DEVICE), y[None, 1].to(DEVICE), np.arange(2, 101),
+                                      target_model.to(DEVICE))[0].cpu().numpy())
+        pred.append(lora(X[None].to(DEVICE), cells=torch.tensor([g], device=DEVICE))[0][0].float().cpu().numpy())
+chrom, summit = te7.peaks.chrom[p], int(te7.peaks.summit[p])
+
+fig, axes = plt.subplots(2, 3, figsize=(14, 7), sharex=True, sharey=True, layout='constrained')
+vm = np.nanpercentile(np.abs(np.stack(obs)), 99)
+for j, t in enumerate(SHOW):
+    for i, (M, kind) in enumerate(((obs[j], 'observed'), (pred[j], 'predicted'))):
+        ax = axes[i, j]
+        im = ax.imshow(np.nan_to_num(M), aspect='auto', origin='lower', cmap='RdBu_r', vmin=-vm, vmax=vm,
+                       extent=[-400, 400, 4, 200], interpolation='nearest')
+        ax.set_title(f'{t}, {kind}' + (f' ({int(cov_t[p, TYPES.index(t)]):,} cuts)' if i == 0 else ''))
+        if i == 1:
+            ax.set_xlabel('position from summit (bp)')
+        if j == 0:
+            ax.set_ylabel('footprint size (bp)')
+fig.colorbar(im, ax=axes, shrink=0.8, label='footprint z-score')
+fig.suptitle(f'Held-out peak {chrom}:{summit:,}')
 plt.show()
 """)
 
 md(r"""
-Neither score shows domain identity. Footprint profile r barely depends on the
-state (each row varies by 0.01 or less), but every LoRA state beats the bulk
-model by 0.03-0.04: fine-tuning on per-domain data improves the predicted
-footprint shapes, and the improvement is not domain-specific. For coverage the
-columns dominate: the D4 state ranks peaks best in every domain and the D1
-state worst. That is a property of how each state reweights the coverage head,
-not of matching the domain.
-""")
+## Part 6 · TF binding scores at marker promoters
 
-md(r"""
-**Between-domain differences.** The scores above mostly measure how well a
-window's shape and level are predicted, which the bulk model already does.
-The sharper test is whether the model predicts how the *same* peak differs
-between domains. Two things are removed first: each peak's overall level
-(what the bulk model predicts) and each domain's overall depth (domains range
-from 5 to 38 million fragments, and the coverage covariate tells the model
-that). What is left, the peak-by-domain interaction, is what only a domain
-model can predict; the bulk model scores zero on it by construction.
+`tf_binding` turns the model into a binding score at every base:
 
-Observed interactions are noisy at these depths, so the measure has a
-ceiling: two independent Poisson draws of the same expected counts agree only
-so well. The null is the same LoRA with the states shifted (each domain's
-peaks predicted with another domain's state, for each of the five shifts).
+1. DeepLIFT/SHAP attributions (through gReLU) of two outputs, the coverage
+   and the TF-sized footprints, for each cell type's state;
+2. each attribution track is put on a common scale (median and 5-95%
+   range over a sample of peaks, as scPrinter does);
+3. scPrinter's two published TF-binding networks, trained on ChIP-seq,
+   read the tracks and give a binding probability per base.
+
+The scale comes from 300 random peaks in all seven states, so scores are
+comparable across cell types and windows. These are the seven promoter
+windows of scPrinter's PBMC tutorial.
 """)
 
 code(r"""
-kind = te6.peaks.merge(peaks[['chrom', 'summit', 'kind']], on=['chrom', 'summit'],
-                       how='left')['kind'].to_numpy()
+%%time
+samp = peaks.sample(300, random_state=0).reset_index(drop=True)
+NORM = s2p.tf_binding(lora, s2p.one_hot_regions(FASTA, samp, length=model.dna_len),
+                      states=list(range(len(TYPES)))).norm
 
-
-def interaction(a):
-    # remove peak means and domain means: the peak-by-domain part
-    return a - a.mean(1, keepdims=True) - a.mean(0, keepdims=True) + a.mean()
-
-
-rng = np.random.default_rng(0)
-ceiling_a, ceiling_b = (np.log1p(rng.poisson(np.expm1(obs_cov))) for _ in range(2))
-own = pred_cov[:, np.arange(ND), np.arange(ND)]
-shifted = [pred_cov[:, np.arange(ND), (np.arange(ND) + k) % ND] for k in range(1, ND)]
-oi = interaction(obs_cov)
-r = lambda u, v, m: np.corrcoef(u[m].ravel(), v[m].ravel())[0, 1]
-rows = {}
-for name, m in (('all test peaks', np.ones(nP, bool)), ('bulk peaks', kind == 'bulk'),
-                ('domain peaks', kind == 'domain')):
-    null = [r(oi, interaction(p), m) for p in shifted]
-    rows[name] = {'LoRA, own state': r(oi, interaction(own), m),
-                  'states shifted (mean of 5)': np.mean(null),
-                  'states shifted (max of 5)': np.max(null),
-                  'ceiling (two Poisson draws)': r(interaction(ceiling_a), interaction(ceiling_b), m)}
-between = pd.DataFrame(rows).round(3)
-between
+LOCI = pd.DataFrame([
+    ('SPI1',   'monocytes, B', 'chr11', 47378230, 47379030),
+    ('CD14',   'monocytes',    'chr5',  140633035, 140633835),
+    ('CD79A',  'B cells',      'chr19', 41876833, 41877633),
+    ('CD3D',   'T cells',      'chr11', 118342294, 118343094),
+    ('MPO',    'myeloid',      'chr17', 58281312, 58282112),
+    ('ITGAM',  'myeloid',      'chr16', 31259594, 31260394),
+    ('CX3CR1', 'monocytes',    'chr3',  39281281, 39282081),
+], columns=['gene', 'marker of', 'chrom', 'start', 'end'])
+loci_tfbs = s2p.tf_binding(lora, s2p.one_hot_regions(FASTA, LOCI, length=model.dna_len),
+                           states=list(range(len(TYPES))), regions=LOCI, norm=NORM)
+# strongest binding in each window, per cell type
+pd.DataFrame(loci_tfbs.score.max(-1).T, index=LOCI.gene, columns=TYPES).round(2)
 """)
 
 code(r"""
-fig, ax = plt.subplots(figsize=(5.6, 5))
-x, y = oi.ravel(), interaction(own).ravel()
-lx, ly = np.percentile(np.abs(x), 99.5), np.percentile(np.abs(y), 99.5)
-hb = ax.hexbin(x, y, gridsize=45, extent=(-lx, lx, -ly, ly), cmap='Blues', mincnt=1, bins='log')
-ax.axhline(0, color='0.6', lw=0.5); ax.axvline(0, color='0.6', lw=0.5)
-ax.set_xlabel('observed peak-by-domain log coverage')
-ax.set_ylabel('predicted (own state)')
-ax.text(0.04, 0.96, f"r = {between.loc['LoRA, own state', 'all test peaks']:.2f}\n"
-        f"shifted states: {between.loc['states shifted (mean of 5)', 'all test peaks']:.2f}\n"
-        f"ceiling: {between.loc['ceiling (two Poisson draws)', 'all test peaks']:.2f}",
-        transform=ax.transAxes, va='top')
-fig.colorbar(hb, ax=ax, shrink=0.8, label='(peak, domain) pairs (log)')
-ax.set_title(f'{nP:,} test peaks x {ND} domains\n(y axis narrower: predictions are compressed)')
-plt.tight_layout(); plt.show()
+fig, axes = plt.subplots(len(LOCI), 1, figsize=(12, 1.55 * len(LOCI)), sharex=True, layout='constrained')
+for ax, (k, row) in zip(axes, LOCI.iterrows()):
+    im = ax.imshow(loci_tfbs.score[:, k], aspect='auto', cmap='Reds', vmin=0, vmax=1,
+                   extent=[-400, 400, len(TYPES) - 0.5, -0.5], interpolation='nearest')
+    ax.set_yticks(range(len(TYPES)), TYPES, fontsize=8)
+    ax.set_ylabel(f"{row.gene}\n({row['marker of']})", rotation=0, ha='right', va='center')
+axes[-1].set_xlabel('position in the 800-bp promoter window (bp from centre)')
+fig.colorbar(im, ax=axes, shrink=0.4, label='TF binding probability')
+plt.show()
 """)
 
 md(r"""
-Here the state matters. With each domain's own state, LoRA predicts the
-peak-by-domain interaction at r = 0.23 (0.25 on bulk peaks, 0.24 on domain
-peaks); with the states shifted, r is -0.05 on average and at most 0.06. The
-ceiling is 0.83, so this light LoRA recovers about a quarter of the
-reproducible between-domain signal, and its predicted differences are
-compressed (the y axis spans about a third of the x axis). scPrinter's
-full-size LoRA, longer training and finer states are the obvious next steps.
+At six of the seven promoters, binding follows the cells that use the gene:
+
+* **SPI1** (PU.1, expressed in myeloid and B cells) is bound over the
+  100 bp left of the window centre in both monocyte types, DCs and B cells
+  (strongest base 0.51-0.75) and much less in T and NK cells (0.28-0.31).
+* **CD14**: a bound stretch near the right end of the window appears in
+  monocytes and DCs (0.40-0.57) and not in lymphocytes (0.07-0.20).
+* **CD3D** is bound most in CD4 and CD8 T cells (0.71).
+* **MPO** and **CX3CR1** are bound in myeloid cells (0.34-0.62) and hardly
+  in T and NK cells (0.08 or less); **ITGAM** in myeloid cells (0.66-0.84),
+  but also in B cells (0.73).
+* **CD79A** is the exception: binding is weak in every cell type (0.34 or
+  less) and not highest in B cells.
+
+scPrinter's tutorial picks, for each promoter, the pseudobulks with the
+strongest binding; here each cell type is one LoRA state, and B cells
+(735 cells) are one of the smaller training sets.
 """)
 
 md(r"""
-## Part 6 · Motif effects across footprint sizes
+## Part 7 · Binding of one TF across cell types
 
-`delta_effects` plants a motif's consensus at the centre of background
-sequences (here 1,000 test-chromosome peaks) and averages how the predicted
-footprints change, at every size and position, in -log10 p (scPrinter's
-`seq2print_delta`). A TF leaves a narrow, small-radius footprint over its
-site; nucleosome-scale changes show at large radii. Motifs are from JASPAR
-2024 (vertebrates, non-redundant), downloaded once.
+A TF's binding in a cell type is read at its motif sites: the score is the
+highest per-base binding probability over the site. Motif sites of
+CEBPA, SPI1 (PU.1), PAX5, EBF1, RUNX3 and TBX21 (T-bet), plus CTCF as a
+control (a TF bound in every cell type), are found with MOODS (`hint_match_motifs`,
+JASPAR 2024, p < 10⁻⁴) in the 500 strongest peaks of each cell type
+(3,500 peaks), and every site is scored in all seven cell types.
+This takes about an hour on an H100 (3,500 windows × 7 states × 2
+outputs of DeepLIFT/SHAP).
 """)
 
 code(r"""
@@ -606,123 +440,85 @@ MEME = WORK / 'JASPAR2024_CORE_vertebrates_non-redundant_pfms_meme.txt'
 if not MEME.exists():
     import urllib.request
     urllib.request.urlretrieve('https://jaspar.elixir.no/download/data/2024/CORE/' + MEME.name, MEME)
-jaspar = {}
-for block in MEME.read_text().split('MOTIF ')[1:]:
-    head, *lines = block.strip().splitlines()
-    mid, name = head.split()[:2]
-    rows_ = [l.split() for l in lines if re.fullmatch(r'\s*([0-9.]+\s+){3}[0-9.]+\s*', l)]
-    jaspar.setdefault(name.upper(), np.array(rows_, float).T)          # [4, width]
+jaspar = {k.split()[1].upper(): v for k, v in epi.models.grelu.read_meme(MEME).items()}
+TFS = ['CEBPA', 'SPI1', 'PAX5', 'EBF1', 'RUNX3', 'TBX21', 'CTCF']
+site_peaks = pd.concat([ranked[ranked['group'] == t].head(500) for t in TYPES]).reset_index(drop=True)
+sites = epi.tl.hint_match_motifs(site_peaks[['chrom', 'start', 'end']],
+                                 {tf: (jaspar[tf] * 100).round().tolist() for tf in TFS}, FASTA, fpr=1e-4)
+# each site's window: the peak it was found in
+key = pd.Series(np.arange(len(site_peaks)),
+                index=pd.MultiIndex.from_frame(site_peaks[['chrom', 'start']]))
+pk_start = sites.merge(site_peaks[['chrom', 'start', 'end']].rename(columns={'start': 'ps', 'end': 'pe'}),
+                       on='chrom')
+pk_start = pk_start[(pk_start.start >= pk_start.ps) & (pk_start.end <= pk_start.pe)]
+pk_start = pk_start.drop_duplicates(['chrom', 'start', 'end', 'name', 'strand'])
+sites = pk_start.assign(window=[key[(c, s)] for c, s in zip(pk_start.chrom, pk_start.ps)]) \
+                .drop(columns=['ps', 'pe']).reset_index(drop=True)
 
-TF = slice(0, 30)                                     # footprint radius 2-31 bp: TF-sized
-MOTIFS = ['CTCF', 'RFX3', 'NFIA', 'SOX9', 'NEUROD2', 'TBR1', 'DLX2', 'LHX2', 'MEF2C', 'POU3F2',
-          'FOXC1', 'NRF1', 'YY1', 'FOS::JUN', 'EGR1', 'KLF4']
-motifs = {m: jaspar[m] for m in MOTIFS}
-test_X = np.stack([test.centred()[i][0].numpy() for i in range(len(test))])
-backgrounds = test_X[np.random.default_rng(0).choice(len(test_X), 1000, replace=False)]
-delta_foot, delta_cov = s2p.delta_effects(model, motifs, backgrounds)
-summary = pd.DataFrame({
-    'TF-size footprint at the site': {m: f[TF, 390:410].mean() for m, f in delta_foot.items()},
-    'nucleosome-size change (±100 bp)': {m: f[60:, 300:500].mean() for m, f in delta_foot.items()},
-    'coverage (log)': delta_cov}).sort_values('TF-size footprint at the site', ascending=False)
-summary.round(3)
+ckpt_tfbs = WORK / 'tfbs_sites_500.npy'
+if ckpt_tfbs.exists():
+    site_tfbs = s2p.TFBindingTracks(score=np.load(ckpt_tfbs).astype(np.float32),
+                                    states=list(range(len(TYPES))), regions=site_peaks, norm=NORM)
+else:
+    site_tfbs = s2p.tf_binding(lora, s2p.one_hot_regions(FASTA, site_peaks, length=model.dna_len),
+                               states=list(range(len(TYPES))), regions=site_peaks, norm=NORM)
+    np.save(ckpt_tfbs, site_tfbs.score.astype(np.float16))
+scores = site_tfbs.site_scores(sites)
+scores.columns = TYPES
+sites = pd.concat([sites, scores], axis=1)
+sites.groupby('name')[TYPES].mean().reindex(TFS).round(3).assign(sites=sites['name'].value_counts())
 """)
 
 code(r"""
-show = ['CTCF', 'RFX3', 'NRF1', 'FOS::JUN', 'MEF2C', 'POU3F2']
-fig, axes = plt.subplots(2, 3, figsize=(13, 7), sharex=True, sharey=True, layout='constrained')
-vm = max(np.abs(delta_foot[m][:, 300:500]).max() for m in show)
-for ax, m in zip(axes.ravel(), show):
-    im = ax.imshow(delta_foot[m][:, 300:500], origin='lower', aspect='auto', cmap='RdBu_r',
-                   vmin=-vm, vmax=vm, extent=[-100, 100, 4, 200], interpolation='nearest')
-    w = motifs[m].shape[1]
-    ax.axvline(-w / 2, color='k', lw=0.5, ls=':'); ax.axvline(w / 2, color='k', lw=0.5, ls=':')
-    ax.set_title(m)
-for ax in axes[1]:
-    ax.set_xlabel('position from motif centre (bp)')
-for ax in axes[:, 0]:
-    ax.set_ylabel('footprint size (bp)')
-fig.colorbar(im, ax=axes, shrink=0.8, label='change in footprint (-log10 p)')
-fig.suptitle('Planting a motif: change in predicted footprints (bulk model, 1,000 test peaks)')
+PAIRS = [('CEBPA', 'CD4 T', 'CD14 Mono'), ('SPI1', 'CD4 T', 'B'), ('PAX5', 'CD4 T', 'B'),
+         ('EBF1', 'CD4 T', 'B'), ('RUNX3', 'B', 'CD8 T'), ('TBX21', 'B', 'NK'),
+         ('CTCF', 'CD4 T', 'CD14 Mono'), ('CTCF', 'CD4 T', 'B')]
+fig, axes = plt.subplots(2, 4, figsize=(15, 7.6), layout='constrained')
+for ax, (tf, a, b) in zip(axes.ravel(), PAIRS):
+    d = sites[sites['name'] == tf]
+    diff = d[b] - d[a]
+    ax.scatter(d[a], d[b], s=6, lw=0, alpha=0.5, color=TCOL[b], rasterized=True)
+    ax.plot([0, 1], [0, 1], color='k', lw=0.6)
+    ax.set_xlim(0, 1); ax.set_ylim(0, 1); ax.set_aspect('equal')
+    ax.set_xlabel(f'{a}'); ax.set_ylabel(f'{b}')
+    ax.set_title(f'{tf}: {len(d):,} sites\n{(diff > 0.05).mean():.0%} higher in {b}, '
+                 f'{(diff < -0.05).mean():.0%} in {a}', fontsize=10)
+fig.suptitle('TF binding probability at motif sites, one cell type against another')
 plt.show()
 """)
 
 md(r"""
-RFX3 and CTCF leave a TF-sized footprint over the site and lower the
-nucleosome-scale signal around it: a factor that binds and keeps the site
-open. NRF1 mostly clears nucleosome-scale signal. MEF2C and POU3F2, both
-AT-rich motifs, raise predicted footprints at every size; FOS::JUN changes
-little in this tissue. The effects are small (at most about 0.15 in -log10 p)
-because the model is trained on 10,000 peaks of one section; scPrinter trains
-on genome-wide peak sets.
-""")
+Read every panel against the two CTCF panels. CTCF binds its sites in
+all of these cell types, yet its scores are not symmetric: 37% of its
+sites score higher in CD4 T cells than in monocytes (18% the other way),
+and 47% higher in CD4 T than in B cells (11% the other way). The LoRA
+states differ in overall level, and the B-cell state scores lower in
+general. Comparing each TF's mean score ratio with CTCF's ratio for the
+same two cell types (table above) removes that offset:
 
-md(r"""
-## Part 7 · Exactness and checkpoint compatibility
+| TF | cell types | mean ratio | CTCF ratio |
+|---|---|---|---|
+| CEBPA | CD14 Mono / CD4 T | 3.7 | 0.92 |
+| SPI1 | B / CD4 T | 1.39 | 0.85 |
+| RUNX3 | CD8 T / B | 1.79 | 1.16 |
+| TBX21 | NK / B | 1.25 | 0.92 |
+| EBF1 | B / CD4 T | 0.95 | 0.85 |
+| PAX5 | B / CD4 T | 0.83 | 0.85 |
 
-The network blocks are scPrinter's own, vendored unchanged, and the
-assembled model has scPrinter's layout. So the bulk model trained above
-loads into **scPrinter's** `seq2PRINT` class with `strict=True`, and the
-two must predict identically — checked here on real held-out windows.
-The training targets get the same check. `tests/test_seq2print.py` covers
-the LoRA model, the EMA (against `ema_pytorch`) and the loss as well.
+* **CEBPA** is the clearest case: 67% of its 508 sites score higher in CD14
+  monocytes than in CD4 T cells and 7% lower, as in scPrinter's tutorial.
+* **SPI1 (PU.1)**, **RUNX3** and **TBX21 (T-bet)** are bound more where they
+  are expressed: B cells over T cells, CD8 T over B cells, NK over B cells,
+  well beyond the CTCF offset.
+* **PAX5** and **EBF1**, the B-cell factors, follow the CTCF offset (EBF1
+  at most slightly above it): the model does not resolve their B-cell
+  binding. [t_print_footprint](t_print_footprint.ipynb) finds the same with
+  footprints read from cuts, and scPrinter names the reasons: TFs with weak
+  footprints or few sites are learned poorly, and related TFs share motifs.
 
-Set `SCPRINTER_SRC` to the `scprinter/` directory of a scPrinter clone to
-run it.
-""")
-
-code(r"""
-SRC = os.environ.get('SCPRINTER_SRC')
-if not SRC:
-    print('SCPRINTER_SRC not set — skipping.')
-else:
-    import ast, importlib, shutil, types, tempfile
-    root = pathlib.Path(tempfile.mkdtemp()); pkg = root / 'scp_up'
-    (pkg / 'seq').mkdir(parents=True)
-    (pkg / '__init__.py').write_text(''); (pkg / 'seq' / '__init__.py').write_text('')
-    for f in ('Models.py', 'Modules.py', 'Functions.py', 'minimum_footprint.py'):
-        shutil.copy(pathlib.Path(SRC) / 'seq' / f, pkg / 'seq' / f)
-    text = (pathlib.Path(SRC) / 'utils.py').read_text(); lines = text.splitlines(keepends=True)
-    fn = next(n for n in ast.parse(text).body if isinstance(n, ast.FunctionDef) and n.name == 'rz_conv_torch')
-    (pkg / 'utils.py').write_text('import torch\n\n' + ''.join(lines[fn.lineno - 1:fn.end_lineno]))
-    sys.modules.setdefault('wandb', types.ModuleType('wandb')); sys.path.insert(0, str(root))
-    UM = importlib.import_module('scp_up.seq.Modules')
-    UModels = importlib.import_module('scp_up.seq.Models')
-    Umf = importlib.import_module('scp_up.seq.minimum_footprint')
-
-    # scPrinter's construct_model_from_config, with its published defaults
-    dil = lambda x: 2 ** (x + 1)
-    theirs = UModels.seq2PRINT(
-        dna_cnn_model=UM.DNA_CNN(n_filters=1024),
-        hidden_layer_model=UM.DilatedCNN(n_filters=1024, bottleneck=1024, n_layers=8, kernel_size=3,
-                                         groups=8, activation=torch.nn.GELU(), batch_norm=True,
-                                         residual=True, rezero=False, dilation_func=dil,
-                                         batch_norm_momentum=0.1, inception=[True] * 8,
-                                         inception_version=2),
-        profile_cnn_model=UM.Footprints_head(1024, kernel_size=1, n_scales=99),
-        dna_len=model.dna_len, output_len=800)
-    theirs.load_state_dict(model.state_dict(), strict=True)
-    theirs = theirs.to(DEVICE).eval(); model.eval()
-
-    same_pred = same_tgt = True
-    tm_up = Umf.dispModel({str(r): {**{k: p[k] for k in ('featureMean', 'featureSD', 'targetMean', 'targetSD')},
-                                    'modelWeights': [torch.from_numpy(w).float() for w in p['weights']]}
-                           for r, p in dispersion.params.items()}).to(DEVICE)
-    tm = target_model.to(DEVICE)
-    loader = torch.utils.data.DataLoader(test.centred(), batch_size=64)
-    n = 0
-    with torch.no_grad():
-        for b, (Xb, yb) in enumerate(loader):
-            Xb, yb = Xb.to(DEVICE), yb.to(DEVICE)
-            a, c = model(Xb), theirs(Xb)
-            same_pred &= torch.equal(a[0], c[0]) and torch.equal(a[1], c[1])
-            ta = s2p.multiscaleFoot(yb[:, 0], yb[:, 1], np.arange(2, 101), tm)
-            tb = Umf.multiscaleFoot(yb[:, 0], yb[:, 1], np.arange(2, 101), tm_up)
-            same_tgt &= torch.equal(torch.nan_to_num(ta, 123.), torch.nan_to_num(tb, 123.))
-            n += len(Xb)
-            if b == 9:
-                break
-    print(f'{n} held-out windows: predictions identical to scPrinter: {same_pred}; '
-          f'targets identical: {same_tgt}')
+The scores come from sequence, so every site gets one in every cell type,
+including the small ones; how well a cell type's state is learned still
+depends on its cells, which the CTCF panels make visible.
 """)
 
 md(r"""
@@ -730,15 +526,14 @@ md(r"""
 
 | | |
 |---|---|
-| Data | GSE308623 `P2S1`, mouse brain P2 spatial ATAC, 7,131 spots |
-| Domains | 6, from smoothed BiRMT-2 + k-means; named by marker promoters |
-| Peaks | 10,000 bulk peaks + 600 domain-enriched peaks per domain |
-| Split | scPrinter's mm10 fold 0, whole chromosomes |
-| Bulk model | scPrinter's architecture; trained weights from Hugging Face |
-| LoRA per domain | peak-by-domain coverage r = 0.23 (states shifted -0.05, ceiling 0.83); footprint shapes +0.03-0.04 over bulk, not domain-specific |
-| Delta effects | motif planted into 1,000 test peaks (bulk model); footprint change at every size |
-| Exactness | predictions and targets equal to scPrinter's on held-out windows |
+| Data | 10x PBMC 10k Multiome ATAC, 9,341 cells in seven cell types (Seurat-WNN labels) |
+| Peaks | `epi.single.call_peaks(groupby='celltype')`: 138,986 summit-centred peaks |
+| Bulk model | scPrinter's architecture, 40,000 peaks, fold 0; test chromosomes: footprint profile r 0.76, coverage r 0.83 |
+| LoRA | one state per cell type (rank 8); test chromosomes, own state: footprint profile r 0.57 (each cell type has a fraction of the cuts), coverage r 0.85 |
+| TF binding | `s2p.tf_binding(model, onehot, states=...)`: per-base binding probability per cell type; marker promoters follow their cell types at 6 of 7; CEBPA, SPI1, RUNX3 and TBX21 sites are bound more where the TF is expressed; PAX5 and EBF1 are not resolved |
+| More | attributions and motif discovery for this model and ChromBPNet: [t_sequence_attribution](t_sequence_attribution.ipynb); motif delta effects: `s2p.delta_effects` |
 """)
+
 
 nb = nbf.v4.new_notebook(cells=CELLS)
 nb.metadata.update({

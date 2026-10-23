@@ -14,9 +14,20 @@ The format roughly follows Keep a Changelog.
   (a LoRA model folded to one cell state, scPrinter's `collapse`).
 - `epi.pl.plot_seqlogo` / `pfm_information`: dependency-free sequence logos for attribution tracks and
   motif PFMs.
-- `t_seq2print` reworked: spots clustered into chromatin domains, one LoRA state per domain evaluated on
-  between-domain differences (depth removed, Poisson ceiling, wrong-domain null), and motif delta
-  effects across footprint sizes.
+- seq2PRINT sequence TF binding scores: `epi.models.seq2print.tf_binding` (scPrinter's
+  `seq_tfbs_seq2print`: DeepLIFT/SHAP attributions of the coverage and TF-footprint outputs, through
+  gReLU, read by scPrinter's published TF-binding networks, now in the model registry as
+  `seq2print_tfbs_count` / `seq2print_tfbs_footprint`), `TFBindingTracks.site_scores`,
+  `one_hot_regions`.
+- gReLU bridge: seq2PRINT head `footprint_tf` (scPrinter's footprint attribution target);
+  `epi.models.grelu.modisco` (TF-MoDISco patterns from saved attributions, named by TOMTOM);
+  `attributions` accepts one-hot numpy arrays, unknown bases and `batch_size`.
+- `epi.datasets.pbmc10k_multiome_atac`: 10x PBMC 10k Multiome fragments with Seurat-WNN cell types.
+- Tutorials: `t_seq2print` rewritten on PBMC cell types (bulk model, LoRA per cell type, TF binding at
+  marker promoters and per TF across cell types, after scPrinter's PBMC tutorial); new
+  `t_sequence_attribution` (attributions and TF-MoDISco motifs for ChromBPNet and seq2PRINT states);
+  `t_print_footprint` rewritten on PBMC cell types. Validation and parity cells of the PRINT,
+  seq2PRINT, ChromBPNet, scooby and gReLU tutorials moved to `tests/parity/<tool>/`.
 - Single-cell Hi-C compartments from raw contacts (`epi.single.hic`): `cpg_ratio`, `contacts_to_scool`,
   `load_contact_tables`, `compartment_scores` (scHiCluster single-cell score), `merge_cells` (raw
   pseudobulks, `cis_only=`), and the Human Cell Epigenome Atlas recipe `compartment_model` →
