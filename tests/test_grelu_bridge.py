@@ -59,3 +59,32 @@ def test_genome_arg_writes_sizes(tmp_path):
     out = _genome_arg(str(fa))
     assert out == str(fa)
     assert (tmp_path / "g.fa.sizes").read_text() == "chrA\t10\nchrB\t4\n"
+
+
+def test_modisco_recovers_planted_motif():
+    pytest.importorskip("modiscolite")
+    pytest.importorskip("memelite")
+    from epione.models import grelu as eg
+
+    rng = np.random.default_rng(0)
+    n, L, motif = 400, 200, "TGACTCATCC"
+    idx = rng.integers(0, 4, (n, L))
+    for i in range(n):
+        p = int(rng.integers(40, L - 50))
+        idx[i, p:p + len(motif)] = ["ACGT".index(b) for b in motif]
+    X = np.zeros((n, 4, L), np.float32)
+    X[np.arange(n)[:, None], idx, np.arange(L)[None]] = 1
+    hyp = rng.normal(0, 0.01, (n, 4, L)).astype(np.float32)
+    for i in range(n):                      # attribution only at the motif, on its bases
+        s = "".join("ACGT"[j] for j in idx[i])
+        p = s.find(motif)
+        hyp[i, idx[i, p:p + 10], np.arange(p, p + 10)] += 1.0
+    ref = {"AP1": np.eye(4)[["ACGT".index(b) for b in "TGACTCA"]].T * 0.97 + 0.0075,
+           "GATA": np.eye(4)[["ACGT".index(b) for b in "AGATAA"]].T * 0.97 + 0.0075}
+    res = eg.modisco(hyp, X, window=None, motifs=ref, n_matches=1)
+    assert len(res.table) >= 1
+    top = res.table.iloc[0]
+    assert top["sign"] == "pos"
+    assert "TGACTCA" in top["consensus"] or "TGAGTCA" in top["consensus"]   # either strand
+    assert top["match"] == "AP1"
+    assert res.contrib[top["pattern"]].shape[1] == 4
