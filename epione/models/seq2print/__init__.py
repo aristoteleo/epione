@@ -20,6 +20,8 @@ Layout:
 * :mod:`._splits` -- :func:`chromosome_folds`, scPrinter's folds.
 * :mod:`._interpret` -- :func:`delta_effects` (planted-motif effects on
   predicted footprints at every scale).
+* :mod:`._tfbs` -- :func:`tf_binding`, scPrinter's sequence TF binding
+  scores (gReLU attributions + scPrinter's published networks).
 
 Requires torch. Models are trained per dataset; the tutorial's are on
 Hugging Face (:func:`load_pretrained`).
@@ -36,6 +38,7 @@ _ATTRS = {
     "_splits": {"chromosome_folds", "FOLDS"},
     "_pretrained": {"load_pretrained", "save_pretrained", "PRETRAINED"},
     "_interpret": {"delta_effects", "plant_motif", "zscore2pval"},
+    "_tfbs": {"tf_binding", "TFBindingTracks", "one_hot_regions", "SEQ_TFBS_HEADS"},
 }
 __all__ = sorted(set().union(*_ATTRS.values()))
 
