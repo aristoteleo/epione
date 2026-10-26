@@ -745,6 +745,6 @@ nb.metadata.update({
     "kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"},
     "language_info": {"name": "python", "version": "3.11"},
 })
-out = pathlib.Path(__file__).with_name("t_seq2print.ipynb")
+out = pathlib.Path(__file__).with_name("t_seq2print_brain_domains.ipynb")
 nbf.write(nb, str(out))
 print(f"wrote {out} ({len(CELLS)} cells)")
