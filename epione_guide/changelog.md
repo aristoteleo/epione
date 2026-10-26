@@ -26,8 +26,10 @@ The format roughly follows Keep a Changelog.
 - Tutorials: `t_seq2print` rewritten on PBMC cell types (bulk model, LoRA per cell type, TF binding at
   marker promoters and per TF across cell types, after scPrinter's PBMC tutorial); new
   `t_sequence_attribution` (attributions and TF-MoDISco motifs for ChromBPNet and seq2PRINT states);
-  `t_print_footprint` rewritten on PBMC cell types. Validation and parity cells of the PRINT,
-  seq2PRINT, ChromBPNet, scooby and gReLU tutorials moved to `tests/parity/<tool>/`.
+  `t_print_footprint` and `t_tf_binding` rewritten on PBMC cell types (the K562 ChIP-seq
+  evaluation of the occupancy score is now `tests/parity/tf_binding/`). Validation and parity
+  cells of the PRINT, seq2PRINT, ChromBPNet, scooby and gReLU tutorials moved to
+  `tests/parity/<tool>/`.
 - Single-cell Hi-C compartments from raw contacts (`epi.single.hic`): `cpg_ratio`, `contacts_to_scool`,
   `load_contact_tables`, `compartment_scores` (scHiCluster single-cell score), `merge_cells` (raw
   pseudobulks, `cis_only=`), and the Human Cell Epigenome Atlas recipe `compartment_model` →
