@@ -120,3 +120,10 @@ def test_spatial_domains_entry_point_and_selection():
     assert len(sel["loglik"]) == 4
     with pytest.raises(TypeError):
         epi.tl.spatial_domains(a, 4, method="kmeans", use_rep="X_aegle", use_pca=False, select=True)
+
+
+def test_spatial_domains_default_is_aegle():
+    import epione as epi
+    a, lab = _planted(g=20, n_peaks=1500, seed=5)
+    epi.tl.spatial_domains(a, 4, key_added="dom")           # no method: AEGLE on adata.X
+    assert "X_aegle" in a.uns and a.obs["dom"].nunique() <= 4
