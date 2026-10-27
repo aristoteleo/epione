@@ -1,7 +1,7 @@
 """Generate t_spatial_atac.ipynb (spatial ATAC / ATAC-RNA analysis).
 
 Execute with ``jupyter nbconvert --to notebook --execute --inplace``; needs
-``torch`` and ``pymclustR`` and about 40 min on 8 CPU cores, most of it the
+``torch`` and ``pymclustR`` and about 40 min on 6 CPU cores, most of it the
 tile matrix, the motif scan and mclust on 9k spots. Data go to
 ``$EPIONE_SPATIAL_DIR`` (default ``./data_spatial``); the hg38 genome to
 ``$EPIONE_DATA_DIR``.
@@ -37,7 +37,7 @@ few cells. This tutorial goes from fragments to spatial domains:
 | per-spot QC on the tissue | `epi.pp.tsse`, `epi.pl.spatial_qc` |
 | spot maps of any value | `epi.pl.spatial` |
 | spot graph, neighbourhood smoothing, Moran's I | `epi.tl.spatial_neighbors`, `epi.tl.spatial_smooth`, `epi.tl.spatial_moran` |
-| spatial domains | `epi.tl.spatial_domains` |
+| spatial domains (default: AEGLE) | `epi.tl.spatial_domains`, `epi.tl.aegle` |
 | ATAC + RNA integration | `epi.tl.spatialglue` (port of SpatialGlue, Long et al., *Nature Methods* 2024) |
 
 The AnnData follow the scanpy / squidpy layout (`obsm["spatial"]`,
@@ -136,27 +136,49 @@ tiles
 """)
 
 md(r"""
-## Neighbourhood smoothing and spatial domains
+## Spatial domains
 
 A 50 um spot of a 45 M-fragment section holds about 10,000 fragments, so
-spot-level embeddings are noisy. `spatial_smooth` replaces every spot by
-`(1 - lam) * itself + lam * mean of its grid neighbours`. It is a plain
-smoother, not a published method. `spatial_domains` clusters an embedding into a fixed number of
-domains: PCA, then a Gaussian mixture (mclust, `EEE` covariance, the routine
-SpatialGlue uses, via the pure-Python pymclustR port), a Leiden resolution
-search, or k-means. Moran's I of the one-hot domain labels measures how
-spatially coherent the domains are (smoothing makes domains more coherent
-partly by construction, so this is a description, not a score of
-correctness). With about 10,000 fragments per spot, only four components of the
-ATAC embedding rise above the Marchenko-Pastur noise edge. Without smoothing
-the domains are mostly salt-and-pepper apart from one coherent band; one round
-of smoothing makes them more coherent (mean Moran's I 0.20 -> 0.38). The joint
-RNA + ATAC model further down resolves the hippocampal layers.
+spot-level embeddings are noisy and spatial domains have to borrow strength
+from neighbouring spots. `epi.tl.spatial_domains` does this by default with
+**AEGLE**, Epione's native spatial-ATAC method (`epi.tl.aegle`). It works on the
+spots x tiles matrix itself:
+
+1. the binary matrix is biwhitened as in BiRMT-2;
+2. it is smoothed over the spot graph with the exact graph-Tikhonov filter
+   `(I + lam L)^-1` *before* the rank is chosen, and the components kept are those
+   above the noise edge of the smoothed matrix (a generalised Marchenko-Pastur
+   edge, which is lower than the unsmoothed one);
+3. grid edges are down-weighted across sharp changes (edge-aware smoothing), and one
+   hop of neighbour-averaged features is appended;
+4. a Gaussian mixture with a neighbour-agreement (Potts) prior gives the domains.
+
+On held-out MISAR-seq sections with independent anatomical labels it gave a mean
+ARI of 0.45 against 0.32 for the previous default, on par with CellCharter
+(0.45). The previous default -- one round of neighbourhood smoothing of the
+BiRMT-2 embedding (`epi.tl.spatial_smooth`, `(1 - lam) * itself + lam * mean of
+its grid neighbours`) followed by mclust -- is still available with
+`method="mclust"` and is shown next to it. Moran's I of the one-hot domain labels
+measures how spatially coherent the domains are; smoothing raises it partly by
+construction, so it is a description, not a score of correctness.
+
+On this section (about 10,000 fragments per spot) four components lie above the
+noise edge with or without smoothing. AEGLE returns large, contiguous domains
+(mean Moran's I 0.85, against 0.38 for the previous default and 0.20 without
+smoothing). It does not keep the thin curved band that both mclust maps show
+(blue) as a domain of its own: the default smoothing strength (`lam=8`, chosen on
+the development sections) merges structures one or two spots wide at this depth.
+`lam` sets the smoothing strength; the spatial ARI of these domains cannot be
+checked here because the section has no anatomical annotation.
 """)
 code(r"""
+epi.tl.spatial_domains(tiles, 8, key_added="domain_aegle")      # default: AEGLE on tiles.X
+print("components kept:", tiles.uns["X_aegle"]["modalities"][0]["rank"],
+      "(BiRMT-2 without smoothing:", tiles.obsm["X_birmt"].shape[1], ")")
+
+# previous default, for comparison: smoothed BiRMT-2 embedding + mclust (and no smoothing)
 epi.tl.spatial_smooth(tiles, use_rep="X_birmt", lam=0.5)
 for rep, key in [("X_birmt", "domain_atac"), ("X_birmt_smooth", "domain_atac_smooth")]:
-    # BiRMT-2 keeps only the components above the noise edge (few here), so no PCA step
     epi.tl.spatial_domains(tiles, 8, use_rep=rep, method="mclust", use_pca=False, key_added=key)
 
 def domain_moran(a, key):
@@ -164,11 +186,13 @@ def domain_moran(a, key):
     a.obsm["_onehot"] = pd.get_dummies(lab).to_numpy(float)
     return float(epi.tl.spatial_moran(a, use_rep="_onehot").mean())
 
-pd.Series({k: domain_moran(tiles, k) for k in ["domain_atac", "domain_atac_smooth"]},
-          name="mean Moran's I of domains").round(3)
+keys = {"AEGLE (default)": "domain_aegle", "BiRMT-2 + mclust": "domain_atac",
+        "smoothed BiRMT-2 + mclust (previous default)": "domain_atac_smooth"}
+pd.Series({k: domain_moran(tiles, v) for k, v in keys.items()}, name="mean Moran's I of domains").round(3)
 """)
 code(r"""
-epi.pl.spatial(tiles, ["domain_atac", "domain_atac_smooth"], show=False)
+epi.pl.spatial(tiles, ["domain_aegle", "domain_atac", "domain_atac_smooth"],
+               title=list(keys), ncols=3, show=False)
 plt.show()
 """)
 
@@ -281,7 +305,8 @@ epi.tl.spatial_domains(sg, 8, use_rep="SpatialGlue", method="mclust", key_added=
 sg.obs["alpha_rna"] = sg.obsm["SpatialGlue_alpha"][:, 0]
 tiles_sub = tiles[sg.obs_names].copy()          # spots kept by the RNA filter
 sg.obsp["spatial_connectivities"] = tiles_sub.obsp["spatial_connectivities"]
-pd.Series({"ATAC smoothed BiRMT-2": domain_moran(tiles_sub, "domain_atac_smooth"),
+pd.Series({"ATAC, AEGLE": domain_moran(tiles_sub, "domain_aegle"),
+           "ATAC smoothed BiRMT-2": domain_moran(tiles_sub, "domain_atac_smooth"),
            "SpatialGlue (RNA+ATAC)": domain_moran(sg, "domain_spatialglue")},
           name="mean Moran's I of domains").round(3)
 """)
