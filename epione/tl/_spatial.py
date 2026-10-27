@@ -189,7 +189,7 @@ def spatial_domains(
     *,
     use_rep: Optional[str] = None,
     method: Literal["mclust", "leiden", "kmeans", "stagate", "graphst", "spaceflow",
-                    "cellcharter", "cast", "binary"] = "mclust",
+                    "cellcharter", "cast", "binary", "aegle"] = "mclust",
     use_pca: bool = True,
     n_comps: int = 20,
     model_name: str = "EEE",
@@ -212,6 +212,13 @@ def spatial_domains(
       search from ``end`` to ``start`` until ``n_domains`` clusters appear;
     * ``"kmeans"``: scikit-learn k-means (n_init = 10).
 
+    * ``"aegle"``: Epione's native spatial-ATAC method (:func:`epione.tl.aegle`):
+      graph-Tikhonov smoothing of the biwhitened peak matrix with a generalised
+      Marchenko-Pastur rank decision, then a Potts-prior Gaussian mixture. It works on the
+      spots x peaks matrix ``adata.X`` (``use_rep``, ``use_pca`` and ``n_comps`` are
+      ignored); ``method_kwargs`` go to :func:`~epione.tl.aegle` (e.g. ``rna=`` for
+      ATAC + RNA, ``select=True`` for count-splitting hyper-parameter selection).
+
     Labels go to ``obs[key_added]`` (categorical, 1-based for mclust as in R).
     Works on AnnData and MuData (``obsm`` of the container). ``use_rep``
     defaults to ``"SpatialGlue"`` for these three clustering methods.
@@ -229,6 +236,10 @@ def spatial_domains(
     :func:`~epione.tl.cast`, :func:`~epione.tl.binary`), e.g. ``seed``,
     ``device``, ``cluster_method``.
     """
+    if method == "aegle":
+        from ._aegle import aegle
+
+        return aegle(adata, int(n_domains), seed=random_seed, key_added=key_added, **method_kwargs)
     from ._spatial_ov import OV_DOMAIN_METHODS
 
     if method in OV_DOMAIN_METHODS:
