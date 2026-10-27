@@ -189,7 +189,8 @@ def spatial_domains(
     *,
     use_rep: Optional[str] = None,
     method: Literal["mclust", "leiden", "kmeans", "stagate", "graphst", "spaceflow",
-                    "cellcharter", "cast", "binary", "aegle"] = "aegle",
+                    "cellcharter", "cast", "binary", "aegle", "cosmos", "present",
+                    "instinct", "candies", "praga", "miso"] = "aegle",
     use_pca: bool = True,
     n_comps: int = 20,
     model_name: str = "EEE",
@@ -198,6 +199,7 @@ def spatial_domains(
     end: float = 3.0,
     increment: float = 0.01,
     key_added: str = "domain",
+    rna=None,
     **method_kwargs,
 ):
     """Cluster spots into ``n_domains`` spatial domains.
@@ -229,6 +231,15 @@ def spatial_domains(
       ignored); ``method_kwargs`` go to :func:`~epione.tl.aegle` (e.g. ``rna=`` for
       ATAC + RNA, ``select=True`` for count-splitting hyper-parameter selection).
 
+    Ported spatial multi-omics / ATAC methods (torch, no torch_geometric; each also public
+    as its own function): ``"cosmos"`` (:func:`epione.tl.cosmos`, RNA + ATAC, needs
+    ``rna=``), ``"present"`` (:func:`~epione.tl.present`, ATAC +/- ``rna=``, raw counts),
+    ``"instinct"`` (:func:`~epione.tl.instinct`, several ATAC slices: list of AnnData or
+    ``obs["slice"]``), ``"candies"`` (:func:`~epione.tl.candies`, RNA + ATAC),
+    ``"praga"`` (:func:`~epione.tl.praga`, RNA + ATAC, AGPL-3.0 file) and ``"miso"``
+    (:func:`~epione.tl.miso`, clean-room re-implementation). ``adata`` is the ATAC AnnData
+    (or a MuData with ``mod["atac"]``/``mod["rna"]``); ``method_kwargs`` go to the function.
+
     Labels go to ``obs[key_added]`` (categorical, 1-based for mclust as in R).
     Works on AnnData and MuData (``obsm`` of the container). ``use_rep``
     defaults to ``"SpatialGlue"`` for these three clustering methods.
@@ -246,6 +257,8 @@ def spatial_domains(
     :func:`~epione.tl.cast`, :func:`~epione.tl.binary`), e.g. ``seed``,
     ``device``, ``cluster_method``.
     """
+    if rna is not None and method not in ("cosmos", "present", "instinct", "candies", "praga", "miso"):
+        method_kwargs["rna"] = rna  # e.g. aegle(rna=...)
     if method == "aegle":
         from ._aegle import aegle
 
@@ -261,6 +274,15 @@ def spatial_domains(
             use_rep = "X_birmt"
         return _run(method, adata, n_domains, use_rep=use_rep, key_added=key_added,
                     random_seed=random_seed, **method_kwargs)
+    from ._spatial_methods import SPATIAL_METHODS
+
+    if method in SPATIAL_METHODS:
+        from ._spatial_methods import run_spatial_method
+
+        return run_spatial_method(adata, n_domains, method=method, rna=rna, key_added=key_added, **method_kwargs)
+    if method not in ("mclust", "leiden", "kmeans"):
+        raise ValueError(f"unknown method {method!r}; clustering: 'mclust', 'leiden', 'kmeans'; spatial methods: "
+                         f"'aegle', {sorted(OV_DOMAIN_METHODS)}, {sorted(SPATIAL_METHODS)}")
     if method_kwargs:
         raise TypeError(f"unexpected arguments for method={method!r}: {sorted(method_kwargs)}")
     if use_rep is None:

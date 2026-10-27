@@ -1,0 +1,19 @@
+Epione includes code adapted from the following third-party projects. Each
+vendored file keeps an SPDX licence identifier and a header naming its origin;
+the full licence texts are shipped in epione/tl/_licenses/ (PYG.LICENSE for
+the PyTorch Geometric parts).
+
+* COSMOS (epione/tl/_cosmos.py) - https://github.com/Lin-Xu-lab/COSMOS
+  Copyright (c) 2024 The University of Texas Southwestern Medical Center. MIT.
+  COSMOS contains code from SpaceFlow (c) 2022 Honglei, MIT; pyWNN
+  (c) 2021 Dylan Kotliar, MIT; and PyTorch Geometric (c) 2023 PyG Team, MIT.
+* PRESENT (epione/tl/_present.py) - https://github.com/lizhen18THU/PRESENT
+  Copyright (c) 2024 Zhen Li. MIT.
+* INSTINCT (epione/tl/_instinct.py) - https://github.com/yyLIU12138/INSTINCT
+  Copyright (c) 2024 Yuyao LIU. MIT.
+* CANDIES (epione/tl/_candies.py) - https://github.com/YeLiu-Lab/CANDIES
+  Copyright (c) 2025 zouwanpeng. MIT.
+* PyTorch Geometric (re-implemented layers in epione/tl/_gnn.py) -
+  https://github.com/pyg-team/pytorch_geometric, Copyright (c) 2023 PyG Team. MIT.
+* SpatialGlue (epione/tl/_spatialglue.py) - https://github.com/JinmiaoChenLab/SpatialGlue.
+  AGPL-3.0-or-later (see the file header).
