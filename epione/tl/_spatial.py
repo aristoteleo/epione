@@ -189,7 +189,7 @@ def spatial_domains(
     *,
     use_rep: Optional[str] = None,
     method: Literal["mclust", "leiden", "kmeans", "stagate", "graphst", "spaceflow",
-                    "cellcharter", "cast", "binary", "aegle"] = "mclust",
+                    "cellcharter", "cast", "binary", "aegle"] = "aegle",
     use_pca: bool = True,
     n_comps: int = 20,
     model_name: str = "EEE",
@@ -200,7 +200,17 @@ def spatial_domains(
     key_added: str = "domain",
     **method_kwargs,
 ):
-    """Cluster an embedding into ``n_domains`` spatial domains.
+    """Cluster spots into ``n_domains`` spatial domains.
+
+    **Default (since this release): ``method="aegle"``** -- Epione's native spatial-ATAC
+    method (:func:`epione.tl.aegle`), run on the spots x peaks matrix ``adata.X``.
+    Breaking change: the previous default was ``method="mclust"`` (mclust ``EEE`` on an
+    embedding, in the tutorial on the one-step smoothed BiRMT-2 embedding
+    ``X_birmt_smooth``); call it explicitly to keep the old behaviour. Pre-registered
+    held-out evaluation (MISAR-seq E15.5 / E18.5, independent anatomical labels): mean ARI
+    0.452 (AEGLE) vs 0.316 (previous default), a tie with CellCharter (0.451); the competitor
+    set was incomplete and the not-slower-than-default speed rule was not met / not fairly
+    measured (see PR #106).
 
     Mirrors ``SpatialGlue.utils.clustering``: optional PCA (``n_comps``) of
     ``obsm[use_rep]``, then
