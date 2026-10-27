@@ -224,6 +224,9 @@ def biwhiten_binary(X: sp.spmatrix, *, n_subsample: int = 2000, seed: int = 0) -
     Y = sp.csr_matrix(X)
     Yb = sp.csr_matrix((np.ones(Y.nnz, np.float32), Y.indices, Y.indptr), shape=Y.shape)
     Yb.eliminate_zeros()
+    colc = np.bincount(Yb.indices, minlength=Yb.shape[1])
+    if np.any(colc == 0):          # empty features carry no information (and break Sinkhorn)
+        Yb = Yb[:, np.flatnonzero(colc > 0)].tocsr()
     m, n = Yb.shape
     depth = np.diff(Yb.indptr).astype(np.float64)
     if np.any(depth == 0):
