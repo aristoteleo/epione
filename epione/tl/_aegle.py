@@ -201,8 +201,15 @@ class _Biwhitened:
 
 
 def _alpha_mp(rows_dense: np.ndarray, n_cols: int) -> float:
+    return _alpha_gram(rows_dense @ rows_dense.T, n_cols, n_rows=rows_dense.shape[0])
+
+
+def _alpha_gram(G: np.ndarray, n_cols: int, n_rows: Optional[int] = None) -> float:
+    """``α`` of Landa et al. (2022) Eq. (24) from the Gram matrix ``G = Ŷ_s Ŷ_sᵀ`` of a row
+    subsample: median eigenvalue of ``G / n_cols`` over the MP median."""
     from ._birmt import mp_median
-    G = rows_dense @ rows_dense.T / n_cols
+    G = np.asarray(G, np.float64) / n_cols
+    rows_dense = G   # only its shape is used below
     from threadpoolctl import threadpool_limits
     with threadpool_limits(limits=1, user_api="blas"):
         ev = np.linalg.eigvalsh((G + G.T) / 2)
@@ -234,7 +241,12 @@ def biwhiten_binary(X: sp.spmatrix, *, n_subsample: int = 2000, seed: int = 0) -
     bop = B2.BinaryBiwhitened(Pf, x, y, Pf.transpose())
     rng = np.random.default_rng(seed)
     idx = np.sort(rng.choice(fit, size=min(len(fit), n_subsample), replace=False))
-    alpha = _alpha_mp(bop.rows(idx), n)
+    # Gram matrix of the biwhitened subsample rows by the BiRMT-2 pattern kernel (no dense rows)
+    K = B2._fast_kernels()
+    Sr = Pf.take(idx)
+    sc_p, sc_i = K["pat_transpose"](Sr.indptr, Sr.indices, Sr.shape[1])
+    G = K["pat_gram"](Sr.indptr, Sr.indices, sc_p, sc_i, bop.sx[idx], bop.sy, Sr.shape[0])
+    alpha = _alpha_gram(G, n)
     return _Biwhitened(Yb, x, y, alpha, depth, binary_op=bop)
 
 
