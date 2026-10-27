@@ -62,6 +62,9 @@ _SPATIALGLUE_ATTRS = {
     "lsi_spatialglue", "clr_normalize_each_cell",
 }
 
+# General spatial-domain models wrapped from omicverse (imported inside the call).
+_SPATIAL_OV_ATTRS = {"stagate", "graphst", "spaceflow", "cellcharter", "cast", "binary"}
+
 
 def __getattr__(name):
     if name == "bindetect":
@@ -105,6 +108,9 @@ def __getattr__(name):
         return getattr(mod, name)
     if name in _SPATIALGLUE_ATTRS:
         mod = importlib.import_module("._spatialglue", __name__)
+        return getattr(mod, name)
+    if name in _SPATIAL_OV_ATTRS:
+        mod = importlib.import_module("._spatial_ov", __name__)
         return getattr(mod, name)
     if name in _SCORE_BIGWIG_ATTRS:
         mod = importlib.import_module("._score_bigwig", __name__)
@@ -279,6 +285,7 @@ __all__ = [
     "spatial_neighbors", "spatial_smooth", "spatial_domains", "spatial_moran",
     "spatialglue", "spatialglue_preprocess", "spatialglue_graphs",
     "lsi_spatialglue", "clr_normalize_each_cell",
+    "stagate", "graphst", "spaceflow", "cellcharter", "cast", "binary",
     "cnv", "cnv_make_windows", "cnv_count_matrix", "cnv_subclones",
     "cnv_karyotype_measures", "cnv_burden",
     "scbasset",
