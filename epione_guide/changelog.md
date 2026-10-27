@@ -8,6 +8,16 @@ The format roughly follows Keep a Changelog.
 ## Unreleased
 
 ### Added
+- `epi.pl.add_arrow` (now exported) draws small corner coordinate arrows ("UMAP 1 →", "UMAP 2 ↑") in axes
+  coordinates: equal physical length on both axes whatever the data range, labels from the basis and plotted
+  components (UMAP, t-SNE, PC, LSI, BiRMT, ...), `loc` = any corner (arrows always point to +x/+y), `length`, `lw`,
+  `color`, `pad`. `epi.pl.embedding` / `umap` take `arrow_kwds` to style them.
+
+### Changed
+- `frameon='small'` (the default of `epi.pl.embedding` / `umap`) uses the new corner arrows instead of filled
+  data-coordinate arrows; `frameon=False` now draws no frame and no arrows (it used to draw arrows too);
+  `frameon=True` axis labels read "UMAP 1" instead of "X_umap1".
+
 - Single-cell Hi-C compartments from raw contacts (`epi.single.hic`): `cpg_ratio`, `contacts_to_scool`,
   `load_contact_tables`, `compartment_scores` (scHiCluster single-cell score), `merge_cells` (raw
   pseudobulks, `cis_only=`), and the Human Cell Epigenome Atlas recipe `compartment_model` →
