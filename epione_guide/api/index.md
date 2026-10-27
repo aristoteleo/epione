@@ -154,6 +154,7 @@ linked above.
 | Spot maps on the tissue, per-spot QC panel | {func}`epione.pl.spatial`, {func}`epione.pl.spatial_qc` |
 | Spot graph (DBiT / Visium grid or kNN; squidpy keys), smoothing, Moran's I | {func}`epione.tl.spatial_neighbors`, {func}`epione.tl.spatial_smooth`, {func}`epione.tl.spatial_moran` |
 | Spatial domains (PCA + mclust / Leiden search / k-means) | {func}`epione.tl.spatial_domains` |
+| Spatial-domain models from omicverse on an ATAC embedding or peak matrix (`spatial_domains(method="stagate" / "graphst" / "spaceflow" / "cellcharter" / "cast" / "binary")`; needs `pip install omicverse`, not an Epione dependency) | {func}`epione.tl.stagate`, {func}`epione.tl.graphst`, {func}`epione.tl.spaceflow`, {func}`epione.tl.cellcharter`, {func}`epione.tl.cast`, {func}`epione.tl.binary` |
 | ATAC + RNA integration, SpatialGlue (Long *et al.* 2024; AGPL-3.0 port, `pip install epione[spatial]`) | {func}`epione.tl.spatialglue`, {func}`epione.tl.spatialglue_preprocess` |
 | Example data | {func}`epione.datasets.zhang2023_hippocampus_atac_rna`, {func}`epione.datasets.spatialglue_mouse_brain` |
 
