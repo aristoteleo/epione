@@ -18,7 +18,7 @@ pytestmark = pytest.mark.skipif(not PARITY, reason="EPIONE_SPATIAL_PARITY_DIR no
 HERE = Path(__file__).parent / "parity" / "spatial_ports"
 
 
-@pytest.mark.parametrize("method", ["cosmos", "present", "instinct", "candies", "praga", "miso"])
+@pytest.mark.parametrize("method", ["cosmos", "present", "instinct", "candies", "praga", "miso", "spamosaic"])
 def test_manifest_frozen_and_required_gates_pass(method):
     base = Path(PARITY) / method
     gates = base / "gates.json"

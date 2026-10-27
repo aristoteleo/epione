@@ -28,14 +28,14 @@ def _split(adata, rna):
     return adata, rna, None
 
 
-def _mclust(emb, n_domains, random_seed=2020, n_comps=20):
+def _mclust(emb, n_domains, random_seed=2020, n_comps=20, use_pca=True):
     import anndata as ad
 
     from ._spatial import spatial_domains
 
     t = ad.AnnData(np.zeros((emb.shape[0], 1), dtype=np.float32))
     t.obsm["E"] = np.asarray(emb, dtype=float)
-    return spatial_domains(t, int(n_domains), use_rep="E", method="mclust", use_pca=True,
+    return spatial_domains(t, int(n_domains), use_rep="E", method="mclust", use_pca=use_pca,
                            n_comps=min(n_comps, emb.shape[1]), random_seed=random_seed).to_numpy()
 
 
@@ -108,6 +108,31 @@ def _miso(atac, rna, n_domains, *, seed: int = 100, **kw):
     return labels, "X_miso"
 
 
+def _spamosaic(atac, rna, n_domains, *, seed: int = 1234, batch_key: Optional[str] = None,
+               n_hvg: int = 5000, n_peak: int = 50000, lsi_comps: int = 50, **kw):
+    from ._spamosaic import spamosaic, spamosaic_preprocess
+
+    a, r = atac.copy(), (rna.copy() if rna is not None else None)
+    key = batch_key or "src"
+    if batch_key is None:
+        a.obs[key] = "b0"
+        if r is not None:
+            r.obs[key] = "b0"
+    names = [str(x) for x in pd.unique(a.obs[key])]
+    split = lambda x: [x[x.obs[key].astype(str) == n].copy() for n in names]  # noqa: E731
+    mb = {"atac": split(a)}
+    if r is not None:
+        mb["rna"] = split(r)
+        spamosaic_preprocess(mb["rna"], "rna", n_features=n_hvg, n_comps=lsi_comps, batch_key=key)
+    spamosaic_preprocess(mb["atac"], "atac", n_features=n_peak, n_comps=lsi_comps, batch_key=key)
+    finals = spamosaic(mb, batch_key=key, seed=seed, n_clusters=n_domains, **kw)
+    lab = pd.concat([f.obs["spamosaic_domain"].astype(str) for f in finals]).reindex(atac.obs_names)
+    emb = pd.DataFrame(np.vstack([f.obsm["X_spamosaic"] for f in finals]),
+                       index=np.concatenate([f.obs_names for f in finals])).reindex(atac.obs_names)
+    atac.obsm["X_spamosaic"] = emb.to_numpy()
+    return lab.to_numpy(), "X_spamosaic"
+
+
 SPATIAL_METHODS: Dict[str, Callable] = {
     "cosmos": _cosmos,
     "present": _present,
@@ -115,6 +140,7 @@ SPATIAL_METHODS: Dict[str, Callable] = {
     "candies": _candies,
     "praga": _praga,
     "miso": _miso,
+    "spamosaic": _spamosaic,
 }
 
 

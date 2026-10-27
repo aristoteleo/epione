@@ -218,3 +218,29 @@ def test_praga_runs_on_cpu(monkeypatch):
     assert emb.shape == (rna.n_obs, 64)
     assert np.allclose(np.linalg.norm(emb, axis=1), 1, atol=1e-4)
     assert atac.obs["praga_domain"].nunique() == 2
+
+
+# ---------------------------------------------------------------- SpaMosaic
+def test_spamosaic_two_bridge_batches_and_dispatch():
+    pytest.importorskip("skmisc")
+    pytest.importorskip("mclust_py")
+    from epione.tl._spamosaic import spamosaic, spamosaic_preprocess
+
+    batches = {"rna": [], "atac": []}
+    for b in range(2):
+        atac, rna = _synthetic(seed=b)
+        for x in (atac, rna):
+            x.obs_names = [f"{o}_b{b}" for o in x.obs_names]
+            x.obs["src"] = f"b{b}"
+        batches["atac"].append(atac)
+        batches["rna"].append(rna)
+    spamosaic_preprocess(batches["rna"], "rna", n_features=40, n_comps=8, batch_key="src")
+    spamosaic_preprocess(batches["atac"], "atac", n_features=100, n_comps=8, batch_key="src")
+    finals = spamosaic(batches, batch_key="src", intra_knns=4, radius_cutoff=1.5, n_epochs=5, n_clusters=2, device="cpu")
+    assert [f.n_obs for f in finals] == [64, 64]
+    assert finals[0].obsm["X_spamosaic"].shape == (64, 32)
+    assert not torch.are_deterministic_algorithms_enabled()
+    atac, rna = _synthetic()
+    epi.tl.spatial_domains(atac, 2, method="spamosaic", rna=rna, n_hvg=40, n_peak=100, lsi_comps=8, intra_knns=4,
+                           radius_cutoff=1.5, n_epochs=5, device="cpu")
+    assert atac.obs["domain"].nunique() == 2

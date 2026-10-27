@@ -73,6 +73,8 @@ _SPATIAL_PORT_ATTRS = {
     "praga": "._praga",
     "miso": "._miso",
     "miso_features": "._miso",
+    "spamosaic": "._spamosaic",
+    "spamosaic_preprocess": "._spamosaic",
 }
 
 

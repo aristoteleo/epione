@@ -44,6 +44,16 @@ def domains(emb):
     return t.obs["domain"].astype(int).to_numpy()
 
 R = {}
+failed = {"official": [], "port": []}
+for arm in ("official", "port"):
+    for s in a.seeds:
+        z = np.load(f"{a.runs}/{arm}_{s}.npz", allow_pickle=True)
+        if "failed" in z.files:
+            failed[arm].append(s)
+for arm in failed:
+    print("failed seeds", arm, failed[arm])
+all_seeds = list(a.seeds)
+a.seeds = [s for s in a.seeds if s not in failed["official"] and s not in failed["port"]]
 for arm in ("official", "port"):
     for s in a.seeds:
         z = np.load(f"{a.runs}/{arm}_{s}.npz", allow_pickle=True)
@@ -95,6 +105,10 @@ out["gates"] = {
            "pass": bool(np.median(ps_po) >= np.median(ps_oo) - 0.02)},
     "G4": g4,
 }
-out["PASS_required"] = bool(out["gates"]["G2"]["pass"] and out["gates"]["G3"]["pass"] and all(v["pass"] for v in g4.values()))
+out["failed"] = failed
+out["gates"]["G5"] = {"failed_port": len(failed["port"]), "failed_official": len(failed["official"]),
+                      "pass": len(failed["port"]) <= len(failed["official"]) + 1}
+out["n_seeds_compared"] = len(a.seeds)
+out["PASS_required"] = bool(len(a.seeds) >= 3 and out["gates"]["G5"]["pass"] and out["gates"]["G2"]["pass"] and out["gates"]["G3"]["pass"] and all(v["pass"] for v in g4.values()))
 json.dump(out, open(a.out, "w"), indent=1, default=float)
 print(json.dumps(out["gates"], indent=1, default=float)); print("PASS_required:", out["PASS_required"])

@@ -190,7 +190,7 @@ def spatial_domains(
     use_rep: Optional[str] = None,
     method: Literal["mclust", "leiden", "kmeans", "stagate", "graphst", "spaceflow",
                     "cellcharter", "cast", "binary", "aegle", "cosmos", "present",
-                    "instinct", "candies", "praga", "miso"] = "aegle",
+                    "instinct", "candies", "praga", "miso", "spamosaic"] = "aegle",
     use_pca: bool = True,
     n_comps: int = 20,
     model_name: str = "EEE",
@@ -237,7 +237,8 @@ def spatial_domains(
     ``"instinct"`` (:func:`~epione.tl.instinct`, several ATAC slices: list of AnnData or
     ``obs["slice"]``), ``"candies"`` (:func:`~epione.tl.candies`, RNA + ATAC),
     ``"praga"`` (:func:`~epione.tl.praga`, RNA + ATAC, AGPL-3.0 file) and ``"miso"``
-    (:func:`~epione.tl.miso`, clean-room re-implementation). ``adata`` is the ATAC AnnData
+    (:func:`~epione.tl.miso`, clean-room re-implementation) and ``"spamosaic"``
+    (:func:`~epione.tl.spamosaic`; ATAC +/- ``rna=``, batches from ``batch_key=``). ``adata`` is the ATAC AnnData
     (or a MuData with ``mod["atac"]``/``mod["rna"]``); ``method_kwargs`` go to the function.
 
     Labels go to ``obs[key_added]`` (categorical, 1-based for mclust as in R).
@@ -257,7 +258,7 @@ def spatial_domains(
     :func:`~epione.tl.cast`, :func:`~epione.tl.binary`), e.g. ``seed``,
     ``device``, ``cluster_method``.
     """
-    if rna is not None and method not in ("cosmos", "present", "instinct", "candies", "praga", "miso"):
+    if rna is not None and method not in ("cosmos", "present", "instinct", "candies", "praga", "miso", "spamosaic"):
         method_kwargs["rna"] = rna  # e.g. aegle(rna=...)
     if method == "aegle":
         from ._aegle import aegle

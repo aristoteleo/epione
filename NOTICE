@@ -13,6 +13,12 @@ the PyTorch Geometric parts).
   Copyright (c) 2024 Yuyao LIU. MIT.
 * CANDIES (epione/tl/_candies.py) - https://github.com/YeLiu-Lab/CANDIES
   Copyright (c) 2025 zouwanpeng. MIT.
+* SpaMosaic (epione/tl/_spamosaic.py) - https://github.com/JinmiaoChenLab/SpaMosaic
+  Copyright (c) 2025 Jinmiao Lab. MIT.
+* PRAGA (epione/tl/_praga.py) - https://github.com/Xubin-s-Lab/PRAGA. AGPL-3.0-or-later
+  (file header); contains SpatialGlue (AGPL-3.0) and DeepDPM (MIT, Meitar Ronen) code.
+* MISO (epione/tl/_miso.py) is a clean-room re-implementation; no code of
+  https://github.com/kpcoleman/miso (Penn non-commercial licence) is included.
 * PyTorch Geometric (re-implemented layers in epione/tl/_gnn.py) -
   https://github.com/pyg-team/pytorch_geometric, Copyright (c) 2023 PyG Team. MIT.
 * SpatialGlue (epione/tl/_spatialglue.py) - https://github.com/JinmiaoChenLab/SpatialGlue.

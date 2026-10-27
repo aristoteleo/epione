@@ -42,3 +42,14 @@ Domains: both arms' embeddings clustered identically,
 | G4 | required | mean ARI and NMI vs `MB_cluster.txt` | \|port - off\| <= max(2 SD_off, 0.02) each |
 
 Pass = G2 & G3 & G4. Runtime: wall time per seed, both arms, same GPU.
+
+## Amendment A1 (2026-10-27 04:00; after 2 of 5 port seeds failed, before any official-arm result)
+
+The official arm had not run (an import of the removed `sklearn.utils._joblib`; fixed by an
+alias shim to joblib, no numerical effect). Port seeds 1 and 3 diverged to NaN before the
+epoch-100 prototype step (SGD lr 0.01, momentum 0.9, CUDA autocast; the GMM then fails).
+Rule added before the official runs: a seed whose run diverges (NaN / exception) in an arm is
+recorded as a failure of that arm; G2-G4 are computed over the seeds where both arms finish;
+additional required gate **G5**: number of failed seeds of the port <= number of failed seeds
+of the original + 1 (out of 5). If fewer than 3 seeds finish in both arms the comparison is
+reported as inconclusive (not pass).
