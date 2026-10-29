@@ -13,7 +13,9 @@ models first-class gReLU models and accepts native gReLU models too:
   one API across model kinds, exact pass-throughs to gReLU, local FASTA
   genomes;
 * :func:`pseudobulk_anndata` -- groups x peaks training data in gReLU's
-  ``AnnDataSeqDataset`` layout.
+  ``AnnDataSeqDataset`` layout;
+* :func:`modisco` -- TF-MoDISco motifs from precomputed attributions,
+  named by TOMTOM against a reference (e.g. JASPAR).
 
 Requires ``pip install epione[grelu]``; imported only on use.
 """
@@ -23,12 +25,15 @@ import importlib
 
 _NAMES = {"HEADS", "wrap", "predict_variant_effects", "ism", "attributions",
           "pseudobulk_anndata"}
-__all__ = sorted(_NAMES)
+_MODISCO = {"modisco", "ModiscoResult", "read_meme"}
+__all__ = sorted(_NAMES | _MODISCO)
 
 
 def __getattr__(name):
     if name in _NAMES:
         return getattr(importlib.import_module("._bridge", __name__), name)
+    if name in _MODISCO:
+        return getattr(importlib.import_module("._modisco", __name__), name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
