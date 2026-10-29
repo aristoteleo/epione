@@ -36,6 +36,10 @@ jobs:
           # by the test suite live in [project.optional-dependencies.test].
           # Heavy extras (snapatac2 / torch / MOODS / pyjaspar) stay out —
           # tests that need them use pytest.importorskip.
+          # MOODS-python ships only as source and compiles with -march=native. A
+          # wheel from the pip cache, built on a runner with a newer CPU, then
+          # crashes on import ("Illegal instruction"); build it here, uncached.
+          pip install --no-cache-dir --no-binary MOODS-python MOODS-python
           pip install -e '.[test]'
 
       - name: Import smoke test
@@ -67,6 +71,10 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install torch --index-url https://download.pytorch.org/whl/cpu
+          # MOODS-python ships only as source and compiles with -march=native. A
+          # wheel from the pip cache, built on a runner with a newer CPU, then
+          # crashes on import ("Illegal instruction"); build it here, uncached.
+          pip install --no-cache-dir --no-binary MOODS-python MOODS-python
           pip install -e '.[test]'
 
       - name: Run GPU-backend tests
