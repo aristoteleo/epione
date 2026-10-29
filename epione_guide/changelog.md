@@ -83,6 +83,9 @@ The format roughly follows Keep a Changelog.
   by gene scores co-embedded with snRNA-seq through `epi.tl.integrate(method='cca')`).
 
 ### Fixed
+- `epi.bulk.hic.insulation` with cooler 0.12: `ignore_diags` is read from the balancing weights'
+  attributes by epione (cooltools 0.7.1 used `Cooler._load_attrs`, which cooler 0.12 removed, and
+  reported the value as missing).
 - `impute_cells` wrote empty matrices with scHiCluster ≥ 1.3, which saves `.npz` instead of HDF; failures
   were silenced. It now reads both formats and warns when a cell fails.
 - `epi.pl` contact plots: `title=''` hides the default title.
