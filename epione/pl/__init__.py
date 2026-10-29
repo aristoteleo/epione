@@ -5,7 +5,7 @@ from ._differential import volcano, ma_plot
 from ._base import *
 
 from ._embedding import (
-    embedding, umap, tsne, pca, diffmap, draw_graph,
+    embedding, umap, tsne, pca, diffmap, draw_graph, add_arrow,
     plot_embedding,  # sc-Hi-C cell-embedding scatter (v0.4 PR3)
 )
 
@@ -80,7 +80,7 @@ __all__ = [
     "homer_motif_table",
     "volcano",
     "ma_plot",
-    "embedding", "umap", "tsne", "pca", "diffmap", "draw_graph",
+    "embedding", "umap", "tsne", "pca", "diffmap", "draw_graph", "add_arrow",
     "plot_embedding",
     "plot_contact_matrix", "plot_contact_triangle",
     "plot_decay_curve", "plot_coverage",

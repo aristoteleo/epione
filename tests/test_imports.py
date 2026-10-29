@@ -98,19 +98,30 @@ def test_key_public_symbols_resolve():
 
 
 def test_no_omicverse_imports_in_epione():
-    """``epione`` must not depend on ``omicverse`` — per project
-    convention. Regression guard: grep the loaded module files."""
+    """``epione`` must not depend on ``omicverse`` (``ov.epi`` wraps Epione, so a module-level import
+    would be circular). Project rule since 2026-10-26: omicverse may only be imported lazily INSIDE a
+    function (the ``epi.tl.spatial_domains`` wrappers for omicverse's spatial methods); any
+    module-level ``import omicverse`` / ``from omicverse ...`` is a regression."""
+    import ast
     import epione
     from pathlib import Path
 
     root = Path(epione.__file__).parent
     offenders = []
     for f in root.rglob("*.py"):
-        text = f.read_text(errors="ignore")
-        for line in text.splitlines():
-            stripped = line.strip()
-            if stripped.startswith("#"):
-                continue
-            if "import omicverse" in stripped or "from omicverse" in stripped:
-                offenders.append(f"{f.relative_to(root.parent)}: {stripped}")
-    assert not offenders, "omicverse imports leaked in:\n  " + "\n  ".join(offenders)
+        tree = ast.parse(f.read_text(errors="ignore"))
+
+        def visit(node, in_function):
+            for child in ast.iter_child_nodes(node):
+                inside = in_function or isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda))
+                mods = []
+                if isinstance(child, ast.Import):
+                    mods = [a.name for a in child.names]
+                elif isinstance(child, ast.ImportFrom) and child.module:
+                    mods = [child.module]
+                if any(m == "omicverse" or m.startswith("omicverse.") for m in mods) and not in_function:
+                    offenders.append(f"{f.relative_to(root.parent)}:{child.lineno}")
+                visit(child, inside)
+
+        visit(tree, False)
+    assert not offenders, "module-level omicverse imports in:\n  " + "\n  ".join(offenders)

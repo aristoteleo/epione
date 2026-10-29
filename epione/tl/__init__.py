@@ -62,6 +62,21 @@ _SPATIALGLUE_ATTRS = {
     "lsi_spatialglue", "clr_normalize_each_cell",
 }
 
+# General spatial-domain models wrapped from omicverse (imported inside the call).
+_SPATIAL_OV_ATTRS = {"stagate", "graphst", "spaceflow", "cellcharter", "cast", "binary"}
+# Spatial-domain method ports (need torch; no torch_geometric). name -> module.
+_SPATIAL_PORT_ATTRS = {
+    "cosmos": "._cosmos",
+    "present": "._present",
+    "instinct": "._instinct",
+    "candies": "._candies",
+    "praga": "._praga",
+    "miso": "._miso",
+    "miso_features": "._miso",
+    "spamosaic": "._spamosaic",
+    "spamosaic_preprocess": "._spamosaic",
+}
+
 
 def __getattr__(name):
     if name == "bindetect":
@@ -105,6 +120,12 @@ def __getattr__(name):
         return getattr(mod, name)
     if name in _SPATIALGLUE_ATTRS:
         mod = importlib.import_module("._spatialglue", __name__)
+        return getattr(mod, name)
+    if name in _SPATIAL_OV_ATTRS:
+        mod = importlib.import_module("._spatial_ov", __name__)
+        return getattr(mod, name)
+    if name in _SPATIAL_PORT_ATTRS:
+        mod = importlib.import_module(_SPATIAL_PORT_ATTRS[name], __name__)
         return getattr(mod, name)
     if name in _SCORE_BIGWIG_ATTRS:
         mod = importlib.import_module("._score_bigwig", __name__)
@@ -186,6 +207,7 @@ from ._bulk_projection import LSIModel, project_bulk_atac, deconvolve_bulk
 from ._multimodal import combined_dims, wnn, multivi
 from ._tsne import tsne
 from ._spatial import spatial_neighbors, spatial_smooth, spatial_domains, spatial_moran
+from ._aegle import aegle, aegle_embedding
 from ._cnv import (
     cnv, cnv_make_windows, cnv_count_matrix, cnv_subclones,
     cnv_karyotype_measures, cnv_burden,
@@ -276,9 +298,11 @@ __all__ = [
     "wnn",
     "multivi",
     "tsne",
-    "spatial_neighbors", "spatial_smooth", "spatial_domains", "spatial_moran",
+    "spatial_neighbors", "spatial_smooth", "spatial_domains", "spatial_moran", "aegle", "aegle_embedding",
     "spatialglue", "spatialglue_preprocess", "spatialglue_graphs",
     "lsi_spatialglue", "clr_normalize_each_cell",
+    "stagate", "graphst", "spaceflow", "cellcharter", "cast", "binary",
+    *_SPATIAL_PORT_ATTRS,
     "cnv", "cnv_make_windows", "cnv_count_matrix", "cnv_subclones",
     "cnv_karyotype_measures", "cnv_burden",
     "scbasset",

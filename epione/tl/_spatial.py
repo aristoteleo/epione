@@ -187,8 +187,10 @@ def spatial_domains(
     adata,
     n_domains: int,
     *,
-    use_rep: str = "SpatialGlue",
-    method: Literal["mclust", "leiden", "kmeans"] = "mclust",
+    use_rep: Optional[str] = None,
+    method: Literal["mclust", "leiden", "kmeans", "stagate", "graphst", "spaceflow",
+                    "cellcharter", "cast", "binary", "aegle", "cosmos", "present",
+                    "instinct", "candies", "praga", "miso", "spamosaic"] = "aegle",
     use_pca: bool = True,
     n_comps: int = 20,
     model_name: str = "EEE",
@@ -197,8 +199,20 @@ def spatial_domains(
     end: float = 3.0,
     increment: float = 0.01,
     key_added: str = "domain",
+    rna=None,
+    **method_kwargs,
 ):
-    """Cluster an embedding into ``n_domains`` spatial domains.
+    """Cluster spots into ``n_domains`` spatial domains.
+
+    **Default (since this release): ``method="aegle"``** -- Epione's native spatial-ATAC
+    method (:func:`epione.tl.aegle`), run on the spots x peaks matrix ``adata.X``.
+    Breaking change: the previous default was ``method="mclust"`` (mclust ``EEE`` on an
+    embedding, in the tutorial on the one-step smoothed BiRMT-2 embedding
+    ``X_birmt_smooth``); call it explicitly to keep the old behaviour. Pre-registered
+    held-out evaluation (MISAR-seq E15.5 / E18.5, independent anatomical labels): mean ARI
+    0.452 (AEGLE) vs 0.316 (previous default), a tie with CellCharter (0.451); the competitor
+    set was incomplete and the not-slower-than-default speed rule was not met / not fairly
+    measured (see PR #106).
 
     Mirrors ``SpatialGlue.utils.clustering``: optional PCA (``n_comps``) of
     ``obsm[use_rep]``, then
@@ -210,9 +224,70 @@ def spatial_domains(
       search from ``end`` to ``start`` until ``n_domains`` clusters appear;
     * ``"kmeans"``: scikit-learn k-means (n_init = 10).
 
+    * ``"aegle"``: Epione's native spatial-ATAC method (:func:`epione.tl.aegle`):
+      graph-Tikhonov smoothing of the biwhitened peak matrix with a generalised
+      Marchenko-Pastur rank decision, then a Potts-prior Gaussian mixture. It works on the
+      spots x peaks matrix ``adata.X`` (``use_rep``, ``use_pca`` and ``n_comps`` are
+      ignored); ``method_kwargs`` go to :func:`~epione.tl.aegle` (e.g. ``rna=`` for
+      ATAC + RNA, ``select=True`` for count-splitting hyper-parameter selection).
+
+    Ported spatial multi-omics / ATAC methods (torch, no torch_geometric; each also public
+    as its own function): ``"cosmos"`` (:func:`epione.tl.cosmos`, RNA + ATAC, needs
+    ``rna=``), ``"present"`` (:func:`~epione.tl.present`, ATAC +/- ``rna=``, raw counts),
+    ``"instinct"`` (:func:`~epione.tl.instinct`, several ATAC slices: list of AnnData or
+    ``obs["slice"]``), ``"candies"`` (:func:`~epione.tl.candies`, RNA + ATAC),
+    ``"praga"`` (:func:`~epione.tl.praga`, RNA + ATAC, AGPL-3.0 file) and ``"miso"``
+    (:func:`~epione.tl.miso`, clean-room re-implementation) and ``"spamosaic"``
+    (:func:`~epione.tl.spamosaic`; ATAC +/- ``rna=``, batches from ``batch_key=``). ``adata`` is the ATAC AnnData
+    (or a MuData with ``mod["atac"]``/``mod["rna"]``); ``method_kwargs`` go to the function.
+
     Labels go to ``obs[key_added]`` (categorical, 1-based for mclust as in R).
-    Works on AnnData and MuData (``obsm`` of the container).
+    Works on AnnData and MuData (``obsm`` of the container). ``use_rep``
+    defaults to ``"SpatialGlue"`` for these three clustering methods.
+
+    Spatial-domain models wrapped from omicverse (imported only when
+    called; ``pip install omicverse``): ``"stagate"``, ``"graphst"``,
+    ``"spaceflow"``, ``"cellcharter"``, ``"cast"`` and ``"binary"`` train
+    the model on ``obsm[use_rep]`` (default ``"X_birmt"``; ``None`` is not
+    possible here -- call :func:`epione.tl.stagate` etc. with
+    ``use_rep=None`` for the peak / tile matrix; ``"binary"`` always uses
+    the matrix) and cluster its embedding. ``random_seed`` is the
+    clustering seed; ``method_kwargs`` go to the method's function
+    (:func:`epione.tl.stagate`, :func:`~epione.tl.graphst`,
+    :func:`~epione.tl.spaceflow`, :func:`~epione.tl.cellcharter`,
+    :func:`~epione.tl.cast`, :func:`~epione.tl.binary`), e.g. ``seed``,
+    ``device``, ``cluster_method``.
     """
+    if rna is not None and method not in ("cosmos", "present", "instinct", "candies", "praga", "miso", "spamosaic"):
+        method_kwargs["rna"] = rna  # e.g. aegle(rna=...)
+    if method == "aegle":
+        from ._aegle import aegle
+
+        return aegle(adata, int(n_domains), seed=random_seed, key_added=key_added, **method_kwargs)
+    from ._spatial_ov import OV_DOMAIN_METHODS
+
+    if method in OV_DOMAIN_METHODS:
+        from ._spatial_ov import _run
+
+        if method == "binary":
+            use_rep = None
+        elif use_rep is None:
+            use_rep = "X_birmt"
+        return _run(method, adata, n_domains, use_rep=use_rep, key_added=key_added,
+                    random_seed=random_seed, **method_kwargs)
+    from ._spatial_methods import SPATIAL_METHODS
+
+    if method in SPATIAL_METHODS:
+        from ._spatial_methods import run_spatial_method
+
+        return run_spatial_method(adata, n_domains, method=method, rna=rna, key_added=key_added, **method_kwargs)
+    if method not in ("mclust", "leiden", "kmeans"):
+        raise ValueError(f"unknown method {method!r}; clustering: 'mclust', 'leiden', 'kmeans'; spatial methods: "
+                         f"'aegle', {sorted(OV_DOMAIN_METHODS)}, {sorted(SPATIAL_METHODS)}")
+    if method_kwargs:
+        raise TypeError(f"unexpected arguments for method={method!r}: {sorted(method_kwargs)}")
+    if use_rep is None:
+        use_rep = "SpatialGlue"
     X = np.asarray(adata.obsm[use_rep], dtype=float)
     if use_pca:
         np.random.seed(random_seed)

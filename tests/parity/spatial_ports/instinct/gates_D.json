@@ -1,0 +1,36 @@
+{
+ "t_align_port": 1.8720648288726807,
+ "names_equal_E11_0-S1": true,
+ "merged_maxabs_E11_0-S1": 0.0,
+ "shape_E11_0-S1": [
+  [
+   1258,
+   131336
+  ],
+  [
+   1258,
+   131336
+  ]
+ ],
+ "names_equal_E13_5-S1": true,
+ "merged_maxabs_E13_5-S1": 0.0,
+ "shape_E13_5-S1": [
+  [
+   1777,
+   131336
+  ],
+  [
+   1777,
+   131336
+  ]
+ ],
+ "t_prep_port": 26.450183868408203,
+ "concat_names_equal": true,
+ "tfidf_maxabs": 0.0,
+ "X_pca_maxabs": 8.400657947049694e-11,
+ "graphs_equal": true,
+ "t_align_official": 143.08758068084717,
+ "t_prep_official": 9.925114870071411,
+ "D1_pass": true,
+ "D2_pass": true
+}

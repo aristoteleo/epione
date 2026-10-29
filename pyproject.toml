@@ -139,8 +139,14 @@ translate = [
 ]
 spatial = [
     # epione.tl.spatialglue (SpatialGlue port) and spatial_domains(method="mclust").
+    # Also epi.tl.cosmos / present / instinct / candies / praga / miso and
+    # spatial_domains(method=...): plain-torch layers (epione.tl._gnn), no
+    # torch_geometric; torch-sparse, if installed, is used only for PRESENT's
+    # METIS mini-batches (coordinate-bisection fallback otherwise).
     'torch>=2.0',
     'pymclustR>=0.2.1',
+    'scikit-misc',   # seurat_v3 highly-variable genes / peaks (PRESENT, CANDIES, PRAGA)
+    'leidenalg',     # PRESENT's Leiden resolution search
 ]
 pando = [
     # epione.grn.pando: the omicverse port of Pando (R) with its parity tests.
