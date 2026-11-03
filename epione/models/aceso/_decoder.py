@@ -110,6 +110,10 @@ def trainable_state(model) -> dict:
     gate bias (``balance="bias"``)."""
     keep = {n for n, p in model.named_parameters() if p.requires_grad} | _bn_buffer_names(model)
     keep |= {n for n, _ in model.named_buffers() if n.endswith("gate_bias")}          # MoLoRA balance="bias"
+    # the whole gate, parameters and buffers: with an EMA codebook (gate_mode="vq") the codes are not trained by
+    # the optimizer and the EMA statistics are buffers, so neither would be caught by the requires_grad filter
+    keep |= {n for n, _ in model.named_parameters() if "cell_state_to_gate" in n}
+    keep |= {n for n, _ in model.named_buffers() if "cell_state_to_gate" in n}
     return {k: v for k, v in model.state_dict().items() if k in keep}
 
 
