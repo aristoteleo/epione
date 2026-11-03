@@ -84,6 +84,22 @@ def apply_locon(model: nn.Module, target_modules, rank: int, alpha: float):
     return model
 
 
+def _grad_ckpt(ag) -> bool:
+    """Is the non-transformer trunk to be activation-checkpointed on this call?
+
+    Same condition the port already applies to the transformer blocks: the backbone was built with
+    ``gradient_checkpointing`` and gradients are actually being taken. Under ``torch.no_grad`` (training
+    predictions, :mod:`._predict`, every benchmark run) nothing changes — same ops, same order, same memory.
+    It matters for **input gradients**: a backward through the 524,288 bp conv encoder and the U-net decoder
+    without checkpointing is what made attribution on this backbone need ~30 GB and OOM at 18 GB.
+    """
+    return bool(getattr(ag.tower, "gradient_checkpointing", False)) and torch.is_grad_enabled()
+
+
+def _ck(fn, *args, on: bool):
+    return torch.utils.checkpoint.checkpoint(fn, *args, use_reentrant=False) if on else fn(*args)
+
+
 def _crop_bounds(L: int, res: int):
     """[start, end) at resolution ``res`` of the target window plus margin, inside an input of L bp"""
     s = (L - TARGET_BP) // 2 - MARGIN_BP
@@ -117,12 +133,13 @@ class AlphaGenomeScooby(nn.Module):
         ag = self.ag
         x = sequence.transpose(1, 2)                                 # scooby's [B, 4, L] -> AlphaGenome's NLC
         L = x.shape[1]
-        trunk, inter = ag.encoder(x)
+        ck = _grad_ckpt(ag)
+        trunk, inter = _ck(ag.encoder, x, on=ck)                     # 524 kb conv stack: the big one for input grads
         inter = {k: v[:, :, slice(*_crop_bounds(L, int(k.split("_")[-1])))] for k, v in inter.items()}
         trunk = trunk.transpose(1, 2) + ag.organism_embed(self._org(x.shape[0], x.device)).unsqueeze(1)
         pair = None
         for blk in ag.tower.blocks[:n_blocks]:
-            if ag.tower.gradient_checkpointing and torch.is_grad_enabled():
+            if ck:
                 trunk, pair = torch.utils.checkpoint.checkpoint(ag.tower._forward_block, blk, trunk, pair,
                                                                 ag.dtype_policy.compute_dtype, use_reentrant=False)
             else:
@@ -132,14 +149,22 @@ class AlphaGenomeScooby(nn.Module):
     def upper(self, trunk, pair, inter, L: int, from_block: int):
         """remaining transformer blocks + cropped decoder/embedders -> [B, 1536, 6144] (32 bp)"""
         ag = self.ag
+        ck = _grad_ckpt(ag)
         for blk in ag.tower.blocks[from_block:]:
-            trunk, pair = ag.tower._forward_block(blk, trunk, pair, ag.dtype_policy.compute_dtype)
+            if ck:
+                trunk, pair = torch.utils.checkpoint.checkpoint(ag.tower._forward_block, blk, trunk, pair,
+                                                                ag.dtype_policy.compute_dtype, use_reentrant=False)
+            else:
+                trunk, pair = ag.tower._forward_block(blk, trunk, pair, ag.dtype_policy.compute_dtype)
         org = self._org(trunk.shape[0], trunk.device)
         t = trunk.transpose(1, 2)[:, :, slice(*_crop_bounds(L, 128))]
-        e128 = ag.embedder_128bp(t, org, channels_last=False)
-        dec = ag.decoder(t, dict(inter))
-        e1 = ag.embedder_1bp(dec, org, skip_x=e128, channels_last=False)          # [B, 1536, crop bp]
-        e1 = e1[:, :, MARGIN_BP:MARGIN_BP + TARGET_BP]
+        # The skip tensors are passed positionally, not captured in the closure, so the recomputed forward
+        # reconnects their gradients the same way the uncheckpointed one does.
+        ik = list(inter)
+        e128 = _ck(lambda t_: ag.embedder_128bp(t_, org, channels_last=False), t, on=ck)
+        dec = _ck(lambda t_, *v: ag.decoder(t_, dict(zip(ik, v))), t, *[inter[k] for k in ik], on=ck)
+        e1 = _ck(lambda d_, s_: ag.embedder_1bp(d_, org, skip_x=s_, channels_last=False), dec, e128, on=ck)
+        e1 = e1[:, :, MARGIN_BP:MARGIN_BP + TARGET_BP]                            # [B, 1536, crop bp]
         return F.avg_pool1d(e1, BIN_BP, BIN_BP)                                   # [B, 1536, 6144]
 
     # ---- scooby interface
