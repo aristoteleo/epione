@@ -1,0 +1,14 @@
+{
+ "G1a_knn_delta": 0.0,
+ "G1a_auroc_delta": 0.0,
+ "G1a_pass": true,
+ "G1b_epione": 0.9131266200823575,
+ "G1b_keras": 0.9131266474723816,
+ "G1b_delta": 2.7390024137652347e-08,
+ "G1b_pass": true,
+ "G1c_max_abs_dprob": 1.8477439880371094e-06,
+ "G1c_embedding_identical": true,
+ "G1c_intercept_identical": true,
+ "G1c_pass": true,
+ "pass": true
+}

@@ -96,6 +96,7 @@ def lsi(
         use_fast_tfidf: bool = True,
         chunk_size: int = 10000,
         remove_first_component: bool = True,
+        device: str = "cpu",
         **kwargs
 ) -> None:
     r"""
@@ -116,9 +117,21 @@ def lsi(
     remove_first_component : bool, default True
         Whether to remove the first component which is typically 
         associated with number of peaks or counts per cell
+    device : str, default "cpu"
+        ``"cpu"`` runs the NumPy / SciPy implementation below. ``"cuda"``
+        (or ``"cuda:N"``, or ``"auto"`` when a GPU is visible) runs TF-IDF and
+        the randomized SVD with torch on the GPU: the same arithmetic in the
+        same precision, and a torch port of sklearn's ``randomized_svd`` that
+        draws the same random test matrix, so for a fixed ``random_state``
+        the embedding agrees with the CPU one up to floating-point rounding.
+        The sparse matrix is streamed in row blocks when it does not fit the
+        GPU memory budget (``EPIONE_GPU_MEMORY_GB``). Needs
+        ``pip install epione[gpu]``.
     **kwargs
         Additional arguments passed to randomized_svd
     """
+    from ..core._gpu import resolve_device, is_torch_device
+    device = resolve_device(device)
     console.info("Starting optimized LSI analysis...")
 
     # Feature selection
@@ -141,6 +154,11 @@ def lsi(
             X_mat = scipy.sparse.vstack(parts).tocsr()
         else:
             X_mat = np.vstack(parts)
+
+    if is_torch_device(device):
+        console.info(f"TF-IDF + randomized SVD on {device} (torch)...")
+        X_lsi = _lsi_tfidf_svd_torch(X_mat, n_components, device, **kwargs)
+        return _lsi_finish(adata, X_lsi, n_components, remove_first_component)
 
     console.info("Computing TF-IDF normalization...")
     if use_fast_tfidf:
@@ -187,6 +205,77 @@ def lsi(
     
     adata.obsm["X_lsi"] = X_lsi
     console.info("LSI analysis completed!")
+
+
+def _lsi_finish(adata, X_lsi, n_components, remove_first_component):
+    """Post-SVD steps of :func:`lsi`, shared by the CPU and torch paths."""
+    console.info("Standardizing embeddings...")
+    X_lsi -= X_lsi.mean(axis=1, keepdims=True)
+    X_lsi /= X_lsi.std(axis=1, ddof=1, keepdims=True)
+    if remove_first_component and n_components > 1:
+        console.info("Removing first component (typically associated with peak count per cell)")
+        X_lsi = X_lsi[:, 1:]
+    adata.obsm["X_lsi"] = X_lsi
+    console.info("LSI analysis completed!")
+
+
+def _lsi_operand_torch(X, dev, budget=None):
+    """TF-IDF -> L1 -> ``log1p(x * 1e4)`` of ``X`` as a device
+    :class:`~epione.core._gpu.SparseOperand` (the torch twin of the CPU
+    ``tfidf_fast`` + ``X.multiply(1 / row_sums)`` + ``log1p`` steps).
+
+    Reproduces the CPU path's dtype promotion: integer or float64 counts are
+    normalised in float64, float32 counts in float32, and every stored value
+    goes through the same sequence of roundings.
+    """
+    from ..core._gpu import (
+        SparseOperand, csr_row_blocks, csr_row_ids, get_torch, memory_budget,
+        to_torch_csr, torch_dtype, _csr_rows_view,
+    )
+    torch = get_torch()
+    X = X.tocsr() if scipy.sparse.issparse(X) else scipy.sparse.csr_matrix(X)
+    dt = np.float32 if X.dtype == np.float32 else np.float64
+    tdt = torch_dtype(dt)
+    n_obs, n_vars = X.shape
+    # Row / column sums in the CPU path's dtype (scipy sums ints exactly).
+    row = np.asarray(X.sum(axis=1)).ravel()
+    col = np.asarray(X.sum(axis=0)).ravel()
+    row = np.where(row == 0, 1, row)
+    col = np.where(col == 0, 1, col)
+    inv_row = torch.as_tensor((1 / row).astype(dt, copy=False), device=dev)
+    idf = torch.as_tensor((n_obs / col).astype(dt, copy=False), device=dev)
+
+    def _tfidf(v, r, c):
+        return (v.to(tdt) * inv_row[r]) * idf[c]
+
+    if budget is None:
+        budget = memory_budget(dev)
+    # pass 1: L1 row sums of the TF-IDF matrix
+    rs = torch.zeros(n_obs, dtype=tdt, device=dev)
+    for blk in csr_row_blocks(X.indptr, max(budget // 64, 1)):
+        T = to_torch_csr(_csr_rows_view(X, blk), dev)
+        rr = csr_row_ids(T) + blk.start
+        cc = T.col_indices().to(torch.int64)
+        rs.index_add_(0, rr, _tfidf(T.values(), rr, cc))
+        del T, rr, cc
+    rs = torch.where(rs == 0, torch.ones_like(rs), rs)
+    inv_rs = 1 / rs
+
+    def _value_fn(v, r, c):
+        return torch.log1p((_tfidf(v, r, c) * inv_rs[r]) * 1e4)
+
+    return SparseOperand(X, dev, tdt, budget=budget, value_fn=_value_fn)
+
+
+def _lsi_tfidf_svd_torch(X, n_components, device, **kwargs):
+    """torch twin of the CPU TF-IDF + randomized SVD of :func:`lsi`."""
+    from ..core._gpu import torch_device
+    from ..core._gpu_ops import randomized_svd
+    dev = torch_device(device)
+    op = _lsi_operand_torch(X, dev)
+    U = randomized_svd(op, n_components, dev=dev, n_iter=kwargs.pop("n_iter", "auto"),
+                       **kwargs)[0]
+    return U
 
 
 def tfidf(X: Union[np.ndarray, sp.sparse.spmatrix]) -> Union[np.ndarray, sp.sparse.spmatrix]:

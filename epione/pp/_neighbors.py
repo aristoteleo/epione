@@ -120,6 +120,35 @@ def _get_sparse_matrix_from_indices_distances(
     return csr_matrix((data, (row_indices, col_indices)), shape=shape)
 
 
+def _set_self_distance_zero(
+    knn_indices: np.ndarray,
+    knn_distances: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Make each point its own first neighbour, at distance exactly 0.
+
+    sklearn and pynndescent compute float32 distances and can return a
+    self-distance of ~1e-7, which ``fuzzy_simplicial_set`` then takes as the
+    nearest-neighbour distance rho. The GPU search sets it to 0 exactly.
+    """
+    knn_indices = np.array(knn_indices, dtype=np.int64, copy=True)
+    knn_distances = np.array(knn_distances, copy=True)
+    rows = np.arange(knn_indices.shape[0])
+    is_self = knn_indices == rows[:, None]
+    # A search can miss the point itself when exact duplicates tie at 0:
+    # put it in front and drop the last neighbour.
+    missing = ~is_self.any(axis=1)
+    if missing.any():
+        knn_indices[missing, 1:] = knn_indices[missing, :-1]
+        knn_distances[missing, 1:] = knn_distances[missing, :-1]
+        knn_indices[missing, 0] = rows[missing]
+        is_self = knn_indices == rows[:, None]
+    knn_distances[is_self] = 0
+    key = np.where(is_self, -1.0, knn_distances.astype(np.float64))
+    order = np.argsort(key, axis=1, kind="stable")
+    return (np.take_along_axis(knn_indices, order, axis=1),
+            np.take_along_axis(knn_distances, order, axis=1))
+
+
 def compute_connectivities_umap(
     knn_indices: np.ndarray,
     knn_distances: np.ndarray,
@@ -196,6 +225,8 @@ def neighbors(
     random_state: _LegacyRandom = 0,
     key_added: str | None = None,
     copy: bool = False,
+    device: str = "cpu",
+    backend: Literal["epione", "rapids"] = "epione",
 ) -> AnnData | None:
     """
     Compute the nearest neighbors distance matrix and neighborhood graph.
@@ -236,11 +267,42 @@ def neighbors(
         .obsp['connectivities'] respectively.
     copy
         Return a copy instead of writing to adata.
-    
+    device
+        ``"cpu"`` (default) searches with ``transformer`` as described
+        above. ``"cuda"`` (``"cuda:N"``, or ``"auto"``) runs an exact
+        brute-force search with torch on the GPU, in query blocks sized to
+        the GPU memory budget; distances are computed in float64, like
+        sklearn's brute-force euclidean search, so the neighbour sets match
+        the exact CPU search. Supported metrics: euclidean, sqeuclidean,
+        cosine, correlation, manhattan / cityblock / l1, chebyshev,
+        minkowski. The UMAP / Gaussian connectivities are then computed on
+        the CPU from that kNN graph, exactly as for ``device="cpu"``.
+        Ignored when ``transformer`` is an object. Needs
+        ``pip install epione[gpu]``.
+    backend
+        ``"epione"`` (default) uses the implementation above (on ``device``).
+        ``"rapids"`` hands the whole call to
+        :func:`rapids_singlecell.pp.neighbors` (brute-force cuVS search and
+        cuML / cupy connectivities) when ``rapids_singlecell`` is installed,
+        see :doc:`/gpu`; the outputs land in the same ``.uns`` / ``.obsp``
+        keys.
+
     Returns
     -------
     Returns None if copy=False, else returns an AnnData object.
     """
+    if backend == "rapids":
+        from ..core._rapids import rapids_neighbors
+        return rapids_neighbors(
+            adata, n_neighbors=n_neighbors, n_pcs=n_pcs, use_rep=use_rep,
+            metric=metric, metric_kwds=metric_kwds, random_state=random_state,
+            key_added=key_added, copy=copy,
+        )
+    if backend != "epione":
+        raise ValueError(f"backend must be 'epione' or 'rapids', got {backend!r}")
+    from ..core._gpu import resolve_device, is_torch_device
+    from ._fragment_io import resolve_n_jobs
+    device = resolve_device(device)
     print(f"Computing neighbors with n_neighbors={n_neighbors}")
     
     adata = adata.copy() if copy else adata
@@ -254,7 +316,16 @@ def neighbors(
     X = _choose_representation(adata, use_rep=use_rep, n_pcs=n_pcs)
     
     # Setup transformer
-    if transformer is None or transformer == "sklearn":
+    if is_torch_device(device) and not hasattr(transformer, "fit_transform"):
+        from ..core._gpu import torch_device
+        from ..core._gpu_ops import knn
+        if not isinstance(metric, str):
+            raise ValueError("device='cuda' needs a named metric, not a callable")
+        indices, distances = knn(
+            X, min(n_neighbors, X.shape[0] - 1), dev=torch_device(device),
+            metric=metric, metric_kwds=dict(metric_kwds),
+        )
+    elif transformer is None or transformer == "sklearn":
         from sklearn.neighbors import NearestNeighbors
         
         nn = NearestNeighbors(
@@ -262,7 +333,10 @@ def neighbors(
             algorithm="auto" if X.shape[0] > 100 else "brute",
             metric=metric,
             metric_params=dict(metric_kwds),
-            n_jobs=-1
+            # Exact search: the thread count does not change the result; stay
+            # within the CPU budget (affinity / OMP_NUM_THREADS) instead of
+            # joblib's machine-wide -1.
+            n_jobs=resolve_n_jobs(None),
         )
         nn.fit(X)
         distances, indices = nn.kneighbors(X)
@@ -300,6 +374,9 @@ def neighbors(
         else:
             raise ValueError(f"Unknown transformer: {transformer}")
     
+    if transformer is None or transformer in ("sklearn", "pynndescent"):
+        indices, distances = _set_self_distance_zero(indices, distances)
+
     # Create sparse distance matrix
     distances_matrix = _get_sparse_matrix_from_indices_distances(
         indices, distances, shape=(adata.n_obs, adata.n_obs)

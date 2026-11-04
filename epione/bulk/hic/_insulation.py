@@ -40,8 +40,18 @@ def insulation(
     ignore_diags: Optional[int] = None,
     threshold: Union[str, float] = "Li",
     nproc: int = 1,
+    method: str = "cooltools",
+    min_depth: Optional[int] = None,
+    max_depth: Optional[int] = None,
+    step: Optional[int] = None,
 ) -> pd.DataFrame:
     """Diamond insulation score per bin from a balanced ``.cool``.
+
+    ``method="cooltools"`` (default) is :func:`cooltools.insulation`.
+    ``method="hicexplorer"`` computes HiCExplorer's TAD-separation score
+    (``hicFindTADs``, 3.7.6): the mean z-score of the diamond between each
+    bin's left and right flanks, at several window sizes. Pass its output to
+    :func:`tad_boundaries` for HiCExplorer's boundary calling.
 
     Arguments:
         cool_path: ``.cool`` / ``.mcool::resolutions/N`` (must be
@@ -60,7 +70,15 @@ def insulation(
             cooltools. ``'Li'`` (default) is the automated method
             from Crane et al. 2015; pass a float to set a hard
             cutoff.
-        nproc: parallel processes for the per-chromosome scoring.
+        nproc: parallel processes for the per-chromosome scoring
+            (``method="cooltools"`` only).
+        method: ``"cooltools"`` or ``"hicexplorer"``.
+        min_depth, max_depth, step: ``method="hicexplorer"`` window sizes in
+            bp (``--minDepth`` / ``--maxDepth`` / ``--step``); windows are
+            ``min_depth + int(step * k ** 1.5)`` up to ``max_depth``. Defaults
+            follow HiCExplorer (for 1–20 kb bins: 10, 40 and 2 bins).
+            ``window_bp``, ``ignore_diags``, ``threshold`` and ``nproc`` do
+            not apply.
 
     Returns:
         ``pandas.DataFrame`` with one row per bin and columns:
@@ -72,7 +90,19 @@ def insulation(
         * ``is_boundary_<W>``: bool, ``True`` for thresholded boundaries
 
         Bins masked by ICE balancing show ``NaN`` insulation scores.
+
+        With ``method="hicexplorer"``: ``chrom``, ``start``, ``end`` (bins
+        after HiCExplorer drops masked bins and closes the gaps), one
+        ``tad_separation_score_<W>`` column per window and their mean
+        ``tad_separation_score``. Bins whose diamond is undefined at any
+        window are omitted, as in HiCExplorer. The table's ``attrs`` remember
+        the input so :func:`tad_boundaries` can compute boundary p-values.
     """
+    if method == "hicexplorer":
+        return _insulation_hicexplorer(cool_path, resolution=resolution, chromosomes=chromosomes,
+                                       min_depth=min_depth, max_depth=max_depth, step=step)
+    if method != "cooltools":
+        raise ValueError("method must be 'cooltools' or 'hicexplorer'")
     import cooler
     import cooltools
 
@@ -108,8 +138,18 @@ def tad_boundaries(
     *,
     window_bp: Optional[int] = None,
     min_strength: Optional[float] = None,
+    delta: float = 0.01,
+    threshold_comparisons: float = 0.01,
+    correct_for_multiple_testing: Optional[str] = "fdr",
+    min_boundary_distance: Optional[int] = None,
 ) -> pd.DataFrame:
     """Extract TAD boundaries from an insulation table.
+
+    The method follows the table: a cooltools insulation table is thresholded
+    on its ``is_boundary_*`` / ``boundary_strength_*`` columns; a
+    ``method="hicexplorer"`` table goes through ``hicFindTADs``' boundary
+    calling (consensus minima of the mean TAD-separation score, filtered by
+    ``delta`` and a Wilcoxon rank-sum p-value against the flanking diamonds).
 
     Arguments:
         insulation_df: output of :func:`insulation`.
@@ -118,12 +158,31 @@ def tad_boundaries(
         min_strength: optional override for the boundary-strength
             threshold; if ``None``, use cooltools' ``is_boundary_<W>``
             (Li-method auto-threshold).
+        delta, threshold_comparisons, correct_for_multiple_testing,
+        min_boundary_distance: HiCExplorer boundary filters (``--delta``,
+            ``--thresholdComparisons``, ``--correctForMultipleTesting`` =
+            ``"fdr"`` / ``"bonferroni"`` / ``None``, ``--minBoundaryDistance``
+            in bp, default 4 bins); used only for a ``method="hicexplorer"``
+            table.
 
     Returns:
         BED-like DataFrame with ``chrom``, ``start``, ``end``,
         ``window_bp``, ``insulation_score``, ``boundary_strength``,
         sorted by genomic coordinate.
+
+        For a ``method="hicexplorer"`` table, HiCExplorer's boundary records:
+        ``chrom``, ``start``, ``end`` (between the centres of the two bins
+        that meet at the boundary), ``name``, ``tad_separation_score``,
+        ``delta``, ``pvalue``, plus ``bin_start`` / ``next_boundary_start``
+        used by :func:`tad_domains`.
     """
+    if insulation_df.attrs.get("epione_method") == "hicexplorer":
+        from ._tads_hicexplorer import find_boundaries
+        hm, params = _hicexplorer_state(insulation_df)
+        return find_boundaries(insulation_df, hm, params, delta=delta,
+                               threshold_comparisons=threshold_comparisons,
+                               correct_for_multiple_testing=correct_for_multiple_testing,
+                               min_boundary_distance=min_boundary_distance)
     cols = [c for c in insulation_df.columns
             if c.startswith("log2_insulation_score_")]
     if not cols:
@@ -159,3 +218,68 @@ def tad_boundaries(
     out = out[["chrom", "start", "end", "window_bp",
                "insulation_score", "boundary_strength"]]
     return out.sort_values(["chrom", "start"]).reset_index(drop=True)
+
+
+# ------------------------------------------------------------------ hicexplorer
+_HICEXPLORER_CACHE: "dict" = {}
+
+
+def _insulation_hicexplorer(cool_path, *, resolution, chromosomes, min_depth, max_depth, step):
+    from ._hicmatrix import HiCMat
+    from ._tads_hicexplorer import tad_separation_score
+
+    uri = _resolve_uri(cool_path, resolution)
+    hm = HiCMat.from_cool(uri)
+    table, hm, params = tad_separation_score(hm, min_depth=min_depth, max_depth=max_depth,
+                                             step=step, chromosomes=chromosomes)
+    key = f"{uri}|{chromosomes}|{params['minDepth']}|{params['maxDepth']}|{params['step']}"
+    _HICEXPLORER_CACHE.clear()  # keep only the latest z-score matrix in memory
+    _HICEXPLORER_CACHE[key] = (hm, params)
+    table.attrs["epione_method"] = "hicexplorer"
+    table.attrs["hicexplorer"] = {"cool": uri, "chromosomes": None if chromosomes is None else list(chromosomes),
+                                  "min_depth": params["minDepth"], "max_depth": params["maxDepth"],
+                                  "step": params["step"], "key": key}
+    return table
+
+
+def _hicexplorer_state(table):
+    """The z-score matrix behind a hicexplorer insulation table (recomputed if evicted)."""
+    from ._hicmatrix import HiCMat
+    from ._tads_hicexplorer import tad_separation_score
+
+    info = table.attrs["hicexplorer"]
+    if info["key"] in _HICEXPLORER_CACHE:
+        return _HICEXPLORER_CACHE[info["key"]]
+    hm = HiCMat.from_cool(info["cool"])
+    _, hm, params = tad_separation_score(hm, min_depth=info["min_depth"], max_depth=info["max_depth"],
+                                         step=info["step"], chromosomes=info["chromosomes"])
+    return hm, params
+
+
+def tad_domains(boundaries: pd.DataFrame) -> pd.DataFrame:
+    """TAD domains between consecutive boundaries.
+
+    Arguments:
+        boundaries: output of :func:`tad_boundaries`.
+
+    Returns:
+        BED-like DataFrame ``chrom``, ``start``, ``end``, ``name`` (plus the
+        boundary score). For HiCExplorer boundaries this is ``hicFindTADs``'
+        ``_domains.bed``: each domain runs from a boundary bin's start to the
+        next boundary bin's start on the same chromosome, so the region before
+        a chromosome's first boundary and after its last is not a domain. For
+        cooltools boundaries, domains run between consecutive boundary bins
+        (from one boundary's ``end`` to the next one's ``start``).
+    """
+    if "next_boundary_start" in boundaries.columns:
+        from ._tads_hicexplorer import domains_from_boundaries
+        return domains_from_boundaries(boundaries)
+    recs = []
+    for chrom, g in boundaries.sort_values(["chrom", "start"]).groupby("chrom", sort=False):
+        s = g["start"].to_numpy()
+        e = g["end"].to_numpy()
+        for k in range(len(g) - 1):
+            recs.append((chrom, int(e[k]), int(s[k + 1])))
+    out = pd.DataFrame(recs, columns=["chrom", "start", "end"])
+    out["name"] = [f"TAD_{i + 1}" for i in range(len(out))]
+    return out

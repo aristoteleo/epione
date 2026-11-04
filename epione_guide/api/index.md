@@ -76,10 +76,13 @@ linked above.
 | BAM ops | {func}`epione.upstream.sort_bam`, {func}`epione.upstream.index_bam`, {func}`epione.upstream.merge_bams`, {func}`epione.upstream.filter_bam` |
 | BAM → coverage bigwig | {func}`epione.upstream.bam_to_bigwig` |
 | Tn5 shift (ATAC) | {func}`epione.upstream.shift_atac_bam` |
-| BAM → fragments | {func}`epione.upstream.bam_to_frags` |
+| BAM → fragments (bulk) | {func}`epione.upstream.bam_to_frags` |
+| scATAC FASTQ → fragments (chromap / bwa-mem2 / bowtie2) | {func}`epione.upstream.fastq_to_fragments`, {class}`epione.upstream.FragmentsResult`, {func}`epione.upstream.find_fastqs`, {class}`epione.upstream.ReadLayout`, {data}`epione.upstream.CHEMISTRIES` |
+| scATAC BAM (CB tags) → fragments | {func}`epione.upstream.bam_to_fragments`, {func}`epione.upstream.read_fragments` |
+| Cell-barcode whitelist correction | {class}`epione.upstream.BarcodeCorrector`, {func}`epione.upstream.load_whitelist`, {func}`epione.upstream.detect_barcode_orientation`, {func}`epione.upstream.barcode_translation_table` |
 | Bulk peak calling (MACS2) | {func}`epione.upstream.call_peaks_macs2` |
 | Hi-C: BAM → pairs → .cool | {func}`epione.upstream.pairs_from_bam`, {func}`epione.upstream.pairs_to_cool` |
-| Format helpers | {data}`epione.upstream.HIC_TOOLS`, {data}`epione.upstream.ATAC_TOOLS`, {data}`epione.upstream.RNA_TOOLS`, {data}`epione.upstream.MOTIF_TOOLS` |
+| Format helpers | {data}`epione.upstream.HIC_TOOLS`, {data}`epione.upstream.ATAC_TOOLS`, {data}`epione.upstream.RNA_TOOLS`, {data}`epione.upstream.MOTIF_TOOLS`, {data}`epione.upstream.SC_ATAC_TOOLS` |
 
 ### Preprocessing — load, QC, matrices
 
@@ -87,6 +90,8 @@ linked above.
 |---|---|
 | Import scATAC fragments | {func}`epione.pp.import_fragments`, {func}`epione.pp.ensure_tabix_index` |
 | Per-cell QC | {func}`epione.pp.qc`, {func}`epione.pp.tss_enrichment` (alias `tsse`), {func}`epione.pp.nucleosome_signal`, {func}`epione.pp.frag_size_distr`, {func}`epione.pp.scrublet` |
+| Doublet scores | {func}`epione.pp.doublets` (default: {func}`epione.pp.bayes_doublets`, generative mixture-likelihood detector; `method=` selects the others), {func}`epione.pp.count_overlap_loci`, {func}`epione.pp.loading_doublet_rate`, {func}`epione.pp.archr_doublets` (ArchR `addDoubletScores` port), {func}`epione.pp.scdblfinder`, {func}`epione.pp.amulet`, {func}`epione.pp.clamulet` (pyscdblfinder), {func}`epione.pp.combine_doublet_scores`, {func}`epione.pp.scrublet` |
+| Remove doublets | {func}`epione.pp.filter_doublets` (default rule: `bayes_doublet_class`) |
 | Concatenate samples | {func}`epione.pp.concat_samples` |
 | Tile-matrix / peak-matrix / gene-activity matrix | {func}`epione.pp.add_tile_matrix`, {func}`epione.pp.make_peak_matrix`, {func}`epione.pp.make_gene_matrix` |
 | Feature selection | {func}`epione.pp.select_features` |
@@ -96,8 +101,10 @@ linked above.
 
 | Task | Functions |
 |---|---|
+| Cell embedding (default: BiRMT-2, `obsm['X_birmt']`) | {func}`epione.tl.birmt` |
 | LSI / iterative LSI | {func}`epione.tl.lsi`, {func}`epione.tl.iterative_lsi` |
-| UMAP / t-SNE / PCA | {func}`epione.tl.umap`, {func}`epione.pl.umap`, {func}`epione.pl.tsne`, {func}`epione.pl.pca`, {func}`epione.pl.diffmap`, {func}`epione.pl.draw_graph` |
+| Learned scATAC embeddings: scBasset (sequence CNN, PyTorch rewrite of the official code) and PeakVI (scvi-tools) (`pip install epione[multimodal]`) | {func}`epione.tl.scbasset`, {func}`epione.tl.peakvi` |
+| UMAP / t-SNE / PCA | {func}`epione.tl.umap`, {func}`epione.tl.tsne` (openTSNE / FIt-SNE), {func}`epione.pl.umap`, {func}`epione.pl.tsne`, {func}`epione.pl.pca`, {func}`epione.pl.diffmap`, {func}`epione.pl.draw_graph` |
 | Clustering (leiden / louvain / kmeans / RPH-kmeans / hierarchical) | {func}`epione.tl.clusters` |
 | Marker features per cluster | {func}`epione.tl.find_marker_features` |
 | MAGIC imputation (ArchR `addImputeWeights` / `imputeMatrix`) | {func}`epione.tl.add_impute_weights`, {func}`epione.tl.impute_matrix` |
@@ -105,6 +112,18 @@ linked above.
 | Gene-set module scores (ArchR `addModuleScore`) | {func}`epione.tl.add_module_score` |
 | Label cross-tabulation (ArchR `confusionMatrix`) | {func}`epione.tl.confusion_matrix`, {func}`epione.pl.plot_confusion_matrix` |
 | Per-group ridge / violin plots (ArchR `plotGroups`) | {func}`epione.pl.plot_groups` |
+| Project bulk ATAC-seq into the embedding (ArchR `projectBulkATAC`) | {func}`epione.tl.project_bulk_atac`, {class}`epione.tl.LSIModel` |
+| Bulk ATAC composition by NNLS on cluster pseudobulks | {func}`epione.tl.deconvolve_bulk` |
+
+### GPU acceleration (`device=` / `backend=`)
+
+| Task | Functions |
+|---|---|
+| torch backend (`device="cuda"` / `"auto"`, `pip install epione[gpu]`) | {func}`epione.tl.lsi`, {func}`epione.tl.iterative_lsi`, {func}`epione.pp.neighbors`, {func}`epione.tl.compute_deviations`, {func}`epione.tl.add_motif_matrix`, {func}`epione.tl.peak_to_gene` |
+| rapids-singlecell backend (`backend="rapids"`, optional install) | {func}`epione.pp.neighbors`, {func}`epione.tl.umap`, {func}`epione.tl.clusters` (`method="leiden"`) |
+| Device resolution | {func}`epione.core.resolve_device` (`"cpu"`, `"cuda"`, `"cuda:N"`, `"auto"`) |
+| Sparse conversion, batching, memory budget, torch kernels (internal) | {mod}`epione.core._gpu`, {mod}`epione.core._gpu_ops`, {mod}`epione.core._rapids` |
+| Installation, memory budget, RAPIDS requirements | {doc}`/gpu` |
 
 ### Multi-sample integration
 
@@ -112,16 +131,42 @@ linked above.
 |---|---|
 | Cross-batch integration | {func}`epione.tl.integrate`, {func}`epione.tl.joint_embedding` |
 | CCA-based label transfer | {func}`epione.tl.transfer_labels` |
+| Batch correction (default: per-batch biwhitening + unbalanced OT barycenter) | {func}`epione.tl.batch_correct`, {func}`epione.tl.ot_batch` |
 | Harmony batch correction (ArchR `addHarmony`) | {func}`epione.tl.harmony`, {func}`epione.tl.run_harmony` |
 
-### chromVAR & motif analysis
+### Paired multiome (RNA + ATAC in the same cells)
+
+| Task | Functions |
+|---|---|
+| Read cellranger-arc output (h5, matrix folder or `outs/`; optional MuData / out-of-core `.h5mu`) | {func}`epione.io.read_10x_multiome` |
+| Concatenate embeddings at equal total variance (ArchR `addCombinedDims`) | {func}`epione.tl.combined_dims` |
+| Weighted nearest neighbours: per-cell modality weights and a joint graph (Hao *et al.* 2021) | {func}`epione.tl.wnn` |
+| Deep generative joint latent space, MultiVI (`pip install epione[multimodal]`) | {func}`epione.tl.multivi` |
+| Example data: cellranger-arc output of 10x PBMC 10k | {func}`epione.datasets.pbmc10k_multiome_10x` |
+
+### Spatial ATAC (spatial ATAC-seq, spatial ATAC-RNA-seq)
+
+| Task | Functions |
+|---|---|
+| Fragments + barcode -> (x, y) table (Space Ranger or DBiT whitelist) + tissue image -> AnnData | {func}`epione.io.read_spatial_atac`, {func}`epione.io.read_spatial_positions`, {func}`epione.io.read_spatial_images` |
+| Spatial ATAC-RNA co-profiling -> MuData | {func}`epione.io.read_spatial_atac_rna` |
+| Attach positions / image to any AnnData | {func}`epione.io.add_spatial` |
+| Spot maps on the tissue, per-spot QC panel | {func}`epione.pl.spatial`, {func}`epione.pl.spatial_qc` |
+| Spot graph (DBiT / Visium grid or kNN; squidpy keys), smoothing, Moran's I | {func}`epione.tl.spatial_neighbors`, {func}`epione.tl.spatial_smooth`, {func}`epione.tl.spatial_moran` |
+| Spatial domains (PCA + mclust / Leiden search / k-means) | {func}`epione.tl.spatial_domains` |
+| Spatial-domain models from omicverse on an ATAC embedding or peak matrix (`spatial_domains(method="stagate" / "graphst" / "spaceflow" / "cellcharter" / "cast" / "binary")`; needs `pip install omicverse`, not an Epione dependency) | {func}`epione.tl.stagate`, {func}`epione.tl.graphst`, {func}`epione.tl.spaceflow`, {func}`epione.tl.cellcharter`, {func}`epione.tl.cast`, {func}`epione.tl.binary` |
+| ATAC + RNA integration, SpatialGlue (Long *et al.* 2024; AGPL-3.0 port, `pip install epione[spatial]`) | {func}`epione.tl.spatialglue`, {func}`epione.tl.spatialglue_preprocess` |
+| Example data | {func}`epione.datasets.zhang2023_hippocampus_atac_rna`, {func}`epione.datasets.spatialglue_mouse_brain` |
+
+### TF activity, chromVAR & motif analysis
 
 | Task | Functions |
 |---|---|
 | Build / query motif database | {func}`epione.tl.build_motif_database`, {func}`epione.tl.query_motif_database` |
-| Annotate peaks × motif matches | {func}`epione.tl.add_motif_matrix` |
-| GC-matched background peaks | {func}`epione.tl.add_background_peaks` |
-| chromVAR deviations / z-scores | {func}`epione.tl.compute_deviations` |
+| Annotate peaks × motif matches | {func}`epione.tl.add_motif_matrix`, {func}`epione.tl.add_motif_occupancy` (+ occupancy weights) |
+| **Per-cell TF activity (default)** | {func}`epione.tl.tf_activity` |
+| GC-matched background peaks (chromVAR) | {func}`epione.tl.add_background_peaks` |
+| chromVAR deviations / z-scores (chromVAR / ArchR-compatible) | {func}`epione.tl.compute_deviations` |
 | Motif variability ranking (ArchR `getVarDeviations`) | {func}`epione.tl.var_deviations`, {func}`epione.pl.var_dev` |
 | Correlate two matrices over kNN groups (ArchR `correlateMatrices`) | {func}`epione.tl.correlate_matrices`, {func}`epione.tl.group_means` |
 | Positive TF regulators (ArchR book recipe) | {func}`epione.tl.positive_tf_regulators`, {func}`epione.pl.tf_regulators` |
@@ -131,6 +176,16 @@ linked above.
 | Bulk motif enrichment (HOMER + pure-Python) | {func}`epione.bulk.atac.run_homer_motifs`, {func}`epione.bulk.atac.find_motifs_genome` |
 | HOMER motif results table plot | {func}`epione.pl.homer_motif_table` |
 | scATAC motif sequence annotation | {func}`epione.single.atac.add_dna_sequence`, {func}`epione.single.atac.match_motif` |
+
+### Pando gene regulatory networks (`epione.grn`)
+
+Pando (Fleck et al., *Nature* 2023) through the omicverse port [py-Pando](https://github.com/omicverse/py-Pando) (`pip install 'epione[pando]'`), parity-tested against R Pando 1.1.1. `epione.grn.scenic` is the SCENIC+ module below.
+
+| Function | Epione |
+|---|---|
+| Pando GRN: candidate regions, motif scan, per-gene models, TF modules (Pando `initiate_grn`, `find_motifs`, `infer_grn`, `find_modules`) | {func}`epione.grn.pando` |
+| Signac-style gene annotation from a GENCODE GFF3/GTF (Signac `GetGRangesFromEnsDb`) | {func}`epione.grn.pando_annotation` |
+| Signac TF-IDF (Signac `RunTFIDF`, method 1) and Seurat log-normalisation (Seurat `NormalizeData`) | {func}`epione.grn.signac_tfidf`, {func}`epione.grn.seurat_lognormalize` |
 
 ### SCENIC+ enhancer-driven GRNs (`epione.scenic`)
 
@@ -164,11 +219,24 @@ RNA → ATAC and ATAC → RNA translators learned from paired multiome cells, be
 
 | Task | Functions |
 |---|---|
-| Preprocessing (normalise/log1p/HVG; binarise, filter, TF-IDF, scale) | {func}`epione.translate.prepare`, {func}`epione.translate.prepare_rna`, {func}`epione.translate.prepare_atac`, {func}`epione.translate.tfidf`, {func}`epione.translate.chrom_blocks` |
-| Train / translate / save (`method="scbutterfly"`; `fast=True` for the validated fast path) | {func}`epione.translate.fit`, {class}`epione.translate.TranslationModel`, {func}`epione.translate.load`, {func}`epione.translate.available_methods` |
+| Preprocessing (`prepare(..., method=)`: normalise/log1p/HVG or raw counts; binarise, filter, TF-IDF, scale) | {func}`epione.translate.prepare`, {func}`epione.translate.size_normalize`, {func}`epione.translate.prepare_rna`, {func}`epione.translate.prepare_atac`, {func}`epione.translate.tfidf`, {func}`epione.translate.chrom_blocks` |
+| Train / translate / save (`method="scbutterfly"`, `"babel"`, `"scpair"`, `"multidgd"` or `"jamie"`; `fast=True` trades accuracy for speed, see each method's parity MANIFEST) | {func}`epione.translate.fit`, {class}`epione.translate.TranslationModel`, {func}`epione.translate.load`, {func}`epione.translate.available_methods` |
 | Metrics: Leiden ARI/AMI/NMI/HOM, per-cell PCC/SPCC, MSE/MAE, per-feature CORR, MMD, graph iLISI, AUROC/AUPRC | {mod}`epione.translate.metrics` |
 | Benchmark tables and plot (scib style) | {func}`epione.translate.evaluate`, {func}`epione.translate.benchmark`, {func}`epione.translate.summarize`, {func}`epione.translate.plot_benchmark` |
+| multiDGD (`method="multidgd"`): raw-count inputs, source-only translation, joint reconstruction | {func}`epione.translate.prepare_counts`, {meth}`epione.translate._multidgd.MultiDGD.predict`, {meth}`epione.translate._multidgd.MultiDGD.reconstruct` |
 | Example data: 10x Multiome PBMC 10k (scGLUE release) | {func}`epione.datasets.pbmc10k_multiome` |
+
+### Copy-number variation (scATAC-seq)
+
+epiAneufinder (Ramakrishnan et al., *Nat. Commun.* 2023), ported from the R package 1.1.5 and parity-tested against it (`tests/parity/epianeufinder/`). GC correction needs `pip install 'epione[cnv]'` (scikit-misc).
+
+| Task | Functions |
+|---|---|
+| Per-cell CNV states from fragments or a peak matrix (epiAneufinder `epiAneufinder`) | {func}`epione.tl.cnv` |
+| Genome windows with GC content (`makeWindows`), window count matrix (`generateCountMatrix`) | {func}`epione.tl.cnv_make_windows`, {func}`epione.tl.cnv_count_matrix` |
+| Subclones by Ward clustering (`split_subclones`) | {func}`epione.tl.cnv_subclones` |
+| Aneuploidy / heterogeneity (`karyotype_measures`), CNV burden (`cnv_burden_per_cell`) | {func}`epione.tl.cnv_karyotype_measures`, {func}`epione.tl.cnv_burden` |
+| Karyogram heatmap (`plot_karyo_gainloss`, `plot_karyo_annotated`), single-cell profile (`plot_single_cell_profile`) | {func}`epione.pl.karyogram`, {func}`epione.pl.cnv_profile` |
 
 ### Differential & peak-to-gene linkage
 
@@ -176,7 +244,9 @@ RNA → ATAC and ATAC → RNA translators learned from paired multiome cells, be
 |---|---|
 | Differential peaks (DESeq2 / edgeR) | {func}`epione.tl.differential_peaks` |
 | Volcano / MA / cumulative-distance plots | {func}`epione.pl.volcano`, {func}`epione.pl.ma_plot`, {func}`epione.pl.cumulative_distance` |
+| Enhancer–gene links (default) | {func}`epione.tl.link_peaks_to_genes`, {func}`epione.tl.e2g_links`, {func}`epione.tl.e2g_features`, {func}`epione.tl.count_insertions` |
 | ArchR-style peak-to-gene linkage | {func}`epione.tl.peak_to_gene`, {func}`epione.pl.plot_peak2gene` |
+| Polymer-contact links / gene activity | {func}`epione.tl.contact_links`, {func}`epione.tl.contact_gene_score`, {func}`epione.tl.fit_contact_gamma`, {func}`epione.tl.powerlaw_contact` |
 | ArchR marker / peak-to-gene heatmaps | {func}`epione.pl.marker_heatmap`, {func}`epione.pl.marker_heatmap_matrix`, {func}`epione.pl.peak2gene_heatmap`, {func}`epione.pl.prepare_peak2gene_heatmap` |
 | Peak co-accessibility | {func}`epione.tl.coaccessibility` |
 | Gene-activity score matrix | {func}`epione.tl.add_gene_score_matrix` |
@@ -186,6 +256,8 @@ RNA → ATAC and ATAC → RNA translators learned from paired multiome cells, be
 
 | Task | Functions |
 |---|---|
+| Peak set from fragments (default: CellScan; `method='macs3'` for MACS3 + merge) | {func}`epione.single.atac.call_peaks` |
+| CellScan: cells-as-replicates, Tn5-bias-corrected scan statistic | {func}`epione.single.atac.scan_peaks` |
 | MACS3 per-cluster peak calling | {func}`epione.single.atac.macs3` |
 | Merge per-sample peak sets | {func}`epione.single.atac.merge_peaks` |
 | Pseudobulk (count-based) | {func}`epione.single.atac.pseudobulk` |
@@ -197,10 +269,31 @@ RNA → ATAC and ATAC → RNA translators learned from paired multiome cells, be
 
 | Task | Functions |
 |---|---|
+| HINT-ATAC footprints from BAMs (port of RGT `rgt-hint`): bias-corrected strand-specific signal, HMM footprint calls, motif sites, differential TF activity | {func}`epione.tl.hint_footprints`, {func}`epione.tl.hint_signal`, {func}`epione.tl.hint_match_motifs`, {func}`epione.tl.hint_differential`, {class}`epione.tl.HintBias` (`epi.tl.tn5_bias(method="hint")`), {func}`epione.tl.load_hint_hmm` |
 | ArchR-style footprint pipeline | {func}`epione.bulk.atac.footprint_archr`, {func}`epione.bulk.atac.bam_to_fragments_bulk` |
 | TF aggregate footprint plot | {func}`epione.pl.plot_footprints` |
 | Multi-scale footprint (scPrinter-style) | {func}`epione.pl.plot_multi_scale_footprint`, {func}`epione.pl.plot_multi_scale_footprint_region` |
 | TOBIAS-style BINDetect (in-package port) | {class}`epione.tl.FootprintPlotter`, {class}`epione.tl.PlotTracks`, {func}`epione.tl.plot_tracks`, {func}`epione.tl.plot_heatmap` |
+
+### Sequence models (`epione.models`, needs torch)
+
+Imported on demand, never by `import epione`; listed here without autodoc pages because they need torch.
+
+| Task | Functions |
+|---|---|
+| Pretrained-model registry: list, filter and load every family's published weights (pinned source + md5/sha256, cached, offline mode; no torch needed to list) | `epione.models.list_pretrained`, `load_pretrained`, `fetch_pretrained`, `get_pretrained`, `pretrained_cache_dir` |
+| Add your own or a new family's models to the registry | `epione.models.register`, `register_family`, `unregister`, `PretrainedEntry`, `ChecksumError` |
+| ChromBPNet in PyTorch (official Keras layers, no TensorFlow) | `epione.models.chrombpnet.BPNet`, `ChromBPNet`, `build_bpnet` |
+| Official `.h5` weights and ENCODE releases (md5-pinned; registry entries `chrombpnet_encode_*`) | `epione.models.chrombpnet.load_keras_h5`, `load_pretrained`, `PRETRAINED` |
+| Official data recipe: GC-matched non-peaks, hyper-parameter steps, signal from fragments or bigWig | `epione.models.chrombpnet.gc_matched_nonpeaks`, `bias_hyperparams`, `chrombpnet_hyperparams`, `InsertionSignal`, `BigWigSignal` |
+| Official training recipe | `epione.models.chrombpnet.train_bias`, `train_chrombpnet` |
+| Prediction, official metrics, interpretation | `epione.models.chrombpnet.predict_regions`, `evaluate`, `contribution_scores`, `ism`, `marginal_footprint` |
+| ChromBPNet bias as a Tn5 bias backend for footprinting | `epi.tl.tn5_bias(method="chrombpnet")`, {class}`epione.tl.ChromBPNetBias` |
+| scBasset in PyTorch (official Keras layers and training recipe, no TensorFlow; official `.h5` weights load) | `epione.models.scbasset.ScBasset`, `ScBassetNet`, `load_keras_h5` |
+| scBasset preprocessing, denoised accessibility, motif-injection TF activity | `epione.models.scbasset.peak_sequences`, `ScBasset.impute`, `ScBasset.motif_score`, `motif_library` |
+| gReLU bridge: an Epione model as a gReLU `LightningModel` (needs `epione[grelu]`) | `epione.models.grelu.wrap`, `HEADS` |
+| Variant effects, ISM and attributions for Epione or gReLU models | `epione.models.grelu.predict_variant_effects`, `ism`, `attributions` |
+| Groups × peaks training data for gReLU | `epione.models.grelu.pseudobulk_anndata` |
 
 ### BigWig matrix tooling (bulk)
 
@@ -220,6 +313,13 @@ RNA → ATAC and ATAC → RNA translators learned from paired multiome cells, be
 | Contact-matrix heatmap | {func}`epione.pl.plot_contact_matrix` |
 | P(s) decay curve | {func}`epione.pl.plot_decay_curve` |
 | Per-bin coverage / weight diagnostics | {func}`epione.pl.plot_coverage` |
+| HiCExplorer `.h5` → `.cool` (same file as `hicConvertFormat`) | {func}`epione.bulk.hic.h5_to_cool` |
+| A/B compartments: `method="cooltools"` (`eigs_cis`) or `"hicexplorer"` (`hicPCA`); saddle | {func}`epione.bulk.hic.compartments`, {func}`epione.bulk.hic.saddle`, {func}`epione.pl.plot_compartments`, {func}`epione.pl.plot_saddle` |
+| TADs: insulation (`cooltools`) or TAD-separation score (`hicexplorer`, `hicFindTADs`); boundaries; domains | {func}`epione.bulk.hic.insulation`, {func}`epione.bulk.hic.tad_boundaries`, {func}`epione.bulk.hic.tad_domains`, {func}`epione.pl.plot_insulation`, {func}`epione.pl.plot_contact_triangle` |
+| Loops: HICCUPS-style dots (`cooltools`) or `hicDetectLoops` (`hicexplorer`); APA pile-up | {func}`epione.bulk.hic.loops`, {func}`epione.bulk.hic.pileup`, {func}`epione.pl.plot_loops`, {func}`epione.pl.plot_apa` |
+| Compare / correlate matrices (`hicCompareMatrices`, `hicCorrelate`) | {func}`epione.bulk.hic.compare_matrices`, {func}`epione.bulk.hic.correlate_matrices` |
+| Differential TADs between conditions (`hicDifferentialTAD`) | {func}`epione.bulk.hic.differential_tads` |
+| Example data: Galaxy HiCExplorer lesson (Drosophila S2), HiCExplorer test matrices | {func}`epione.datasets.drosophila_s2_hic`, {func}`epione.datasets.hicexplorer_test_matrices` |
 
 ### Hi-C — single-cell (scHiCluster)
 
@@ -227,7 +327,8 @@ RNA → ATAC and ATAC → RNA translators learned from paired multiome cells, be
 |---|---|
 | Index per-cell .cool / .scool | {func}`epione.single.hic.load_cool_collection`, {func}`epione.single.hic.load_scool_cells` |
 | scHiCluster impute (linear conv + RWR + top-k) | {func}`epione.single.hic.impute_cells`, {func}`epione.single.hic.impute_cell_chromosome` |
-| Cell embedding (PCA on flattened imputed contacts) | {func}`epione.single.hic.embedding` |
+| Higashi hypergraph impute (Hyper-SAGNN + cell-dependent GNN, PyTorch) | {func}`epione.single.hic.impute_cells` (`method="higashi"`) |
+| Cell embedding (PCA on flattened imputed contacts, or Higashi) | {func}`epione.single.hic.embedding` (`method="pca"` / `"higashi"`) |
 | Cell scatter / per-cell heatmap | {func}`epione.pl.plot_embedding`, {func}`epione.pl.plot_cell_contacts` |
 
 ### TF networks (pySCENIC bridge)
@@ -244,6 +345,8 @@ RNA → ATAC and ATAC → RNA translators learned from paired multiome cells, be
 | GTF / GFF3 readers | {func}`epione.io.read_gtf`, {func}`epione.io.convert_gff_to_gtf`, {func}`epione.io.get_gene_annotation` |
 | Peak / feature files | {func}`epione.io.read_features` |
 | 10x ATAC matrix → AnnData | {func}`epione.io.read_ATAC_10x` |
+| 10x Multiome (cellranger-arc) → RNA + ATAC | {func}`epione.io.read_10x_multiome` |
+| Spatial ATAC (+ RNA) → AnnData / MuData with `obsm["spatial"]` | {func}`epione.io.read_spatial_atac`, {func}`epione.io.read_spatial_atac_rna` |
 | Pickle / h5ad cache helpers | {func}`epione.io.save`, {func}`epione.io.load`, {func}`epione.io.cached` |
 
 ### Core — pure-Python infrastructure
@@ -261,7 +364,8 @@ RNA → ATAC and ATAC → RNA translators learned from paired multiome cells, be
 | Task | Functions |
 |---|---|
 | Pre-built `Genome` instances | {data}`epione.data.GRCh37`, {data}`epione.data.GRCh38`, {data}`epione.data.GRCm38`, {data}`epione.data.GRCm39`, {data}`epione.data.hg19`, {data}`epione.data.hg38`, {data}`epione.data.mm10`, {data}`epione.data.mm39` |
-| Example datasets | {func}`epione.datasets.archr_hematopoiesis` (ArchR Hematopoiesis tutorial fragments) |
+| Example datasets | {func}`epione.datasets.archr_hematopoiesis` (ArchR Hematopoiesis tutorial fragments), {func}`epione.datasets.granja2021_cellline_mix` (cell-line mixture with genotype doublet calls) |
+| Example bulk ATAC-seq | {func}`epione.datasets.corces2016_bulk_atac` (Corces 2016 sorted hematopoietic populations, GSE74912) |
 
 ## Plotting helpers (overview)
 
@@ -272,8 +376,10 @@ RNA → ATAC and ATAC → RNA translators learned from paired multiome cells, be
 | Volcano / MA / cumulative distance | {func}`epione.pl.volcano`, {func}`epione.pl.ma_plot`, {func}`epione.pl.cumulative_distance` |
 | Fragment QC | {func}`epione.pl.frag_size_distr`, {func}`epione.pl.fragment_histogram`, {func}`epione.pl.tss_enrichment`, {func}`epione.pl.plot_joint` |
 | Footprint (per-TF, multi-scale) | {func}`epione.pl.plot_footprints`, {func}`epione.pl.plot_multi_scale_footprint`, {func}`epione.pl.plot_multi_scale_footprint_region` |
+| HINT differential footprinting (TF activity, per-TF profiles) | {func}`epione.pl.plot_hint_differential`, {func}`epione.pl.plot_hint_profile` |
 | Peak-to-gene arc plot | {func}`epione.pl.plot_peak2gene` |
 | Grouped genome browser track (ArchR `plotBrowserTrack`) | {func}`epione.pl.plot_browser_track`, {func}`epione.pl.browser_track_coverage` |
+| Interactive genome browser (igv.js; Jupyter, docs, standalone HTML) | {func}`epione.pl.igv_browser`, {class}`epione.pl.IGVBrowser` |
 | Marker / peak-to-gene heatmaps (ArchR) | {func}`epione.pl.marker_heatmap`, {func}`epione.pl.peak2gene_heatmap` |
 | Peak-annotation enrichment heatmap | {func}`epione.pl.enrich_heatmap` |
 | HOMER motif table | {func}`epione.pl.homer_motif_table` |

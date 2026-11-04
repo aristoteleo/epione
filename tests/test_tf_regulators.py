@@ -48,13 +48,13 @@ def _toy_motif_adata(n=300, m=20, seed=0):
 
 def test_var_deviations_equals_pooled_variance():
     a, z = _toy_motif_adata()
-    df = epi.tl.var_deviations(a, verbose=False)
+    df = epi.tl.var_deviations(a, key="motif_deviations", verbose=False)
     ref = pd.Series(z.var(axis=0, ddof=1), index=a.uns["motif_deviations_names"])
     np.testing.assert_allclose(df.set_index("name").combinedVars, ref.loc[df.name], rtol=1e-12)
     assert df["rank"].tolist() == list(range(1, 21))
     assert df["name"].iloc[0] == "TF19_19"
     assert "motif_deviations_var" in a.uns
-    no_sample = epi.tl.var_deviations(a, sample_key=None, verbose=False)
+    no_sample = epi.tl.var_deviations(a, key="motif_deviations", sample_key=None, verbose=False)
     np.testing.assert_allclose(no_sample.combinedVars, df.combinedVars, rtol=1e-12)
 
 
@@ -131,8 +131,9 @@ def test_correlate_matrices_recovers_signal():
 
 def test_positive_tf_regulators_toy():
     a = _toy_pair()
-    tf = epi.tl.positive_tf_regulators(a, use_rep="X_lsi", k=20, knn_iteration=200,
-                                       cor_cutoff=None, verbose=False, delta_quantile=0.0)
+    tf = epi.tl.positive_tf_regulators(a, motif_key="motif_deviations", use_rep="X_lsi", k=20,
+                                       knn_iteration=200, cor_cutoff=None, verbose=False,
+                                       delta_quantile=0.0)
     assert set(tf.columns) >= {"cor", "padj", "maxDelta", "TFRegulator"}
     assert "GATA1" in set(tf.loc[tf.TFRegulator == "YES", "GeneScoreMatrix_name"])
     assert "SPI1" not in set(tf.loc[tf.TFRegulator == "YES", "GeneScoreMatrix_name"])
@@ -153,6 +154,37 @@ def test_plots_smoke():
     epi.tl.positive_tf_regulators(b, use_rep="X_lsi", k=20, knn_iteration=200, cor_cutoff=None, verbose=False)
     fig, ax = epi.pl.tf_regulators(b, show=False)
     assert ax.get_xlabel() == "Correlation To Gene Score"
+
+
+def test_default_activity_key_prefers_tf_activity():
+    """``key='auto'`` (the default) reads epi.tl.tf_activity's output when
+    present and falls back to chromVAR deviations otherwise."""
+    a, z = _toy_motif_adata()
+    df_cv = epi.tl.var_deviations(a, verbose=False)          # only chromVAR present
+    assert "motif_deviations_var" in a.uns
+    rng = np.random.default_rng(1)
+    t = rng.normal(size=z.shape) * np.linspace(3, 0.2, z.shape[1])
+    a.obsm["tf_activity"] = t
+    a.uns["tf_activity_names"] = a.uns["motif_deviations_names"]
+    df = epi.tl.var_deviations(a, verbose=False)
+    assert "tf_activity_var" in a.uns and df["name"].iloc[0] == "TF0_0"
+    assert df_cv["name"].iloc[0] == "TF19_19"
+    import matplotlib
+    matplotlib.use("Agg")
+    fig, ax = epi.pl.var_dev(a, n=3, show=False)              # auto -> tf_activity_var
+    b = ad.AnnData(X=np.zeros((5, 1)))
+    with pytest.raises(KeyError):
+        epi.tl.var_deviations(b, verbose=False)
+
+
+def test_positive_tf_regulators_default_uses_tf_activity():
+    a = _toy_pair()
+    a.obsm["tf_activity"] = a.obsm["motif_deviations"].copy()
+    a.uns["tf_activity_names"] = a.uns["motif_deviations_names"]
+    a.obsm["motif_deviations"] = np.zeros_like(a.obsm["motif_deviations"])   # would give no regulators
+    tf = epi.tl.positive_tf_regulators(a, use_rep="X_lsi", k=20, knn_iteration=200,
+                                       cor_cutoff=None, verbose=False, delta_quantile=0.0)
+    assert "GATA1" in set(tf.loc[tf.TFRegulator == "YES", "GeneScoreMatrix_name"])
 
 
 # ---- parity against ArchR 1.0.3 (gates in tests/parity/var_dev_correlate) ---

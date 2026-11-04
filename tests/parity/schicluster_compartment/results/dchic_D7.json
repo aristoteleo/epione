@@ -1,0 +1,25 @@
+{
+  "D7": {
+    "files": 270,
+    "same_file_names": true,
+    "byte_identical_files": 242,
+    "D3_exact": true,
+    "D5_layout": true,
+    "D4": {
+      "sample_maha": 9.846208368213165e-13,
+      "sample_maha_tiny_both": true,
+      "pval": 1.1949796264580012e-10,
+      "pval_tiny_both": true,
+      "padj": 1.194977309678694e-10,
+      "padj_tiny_both": true
+    },
+    "padj_lt_0.1": [
+      5877,
+      5877
+    ],
+    "same_sig_set": true,
+    "seconds_epi": 5.1,
+    "seconds_R": 18.4,
+    "pass": true
+  }
+}

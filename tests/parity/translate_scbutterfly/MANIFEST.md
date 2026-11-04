@@ -94,7 +94,7 @@ Run on 2026-10-12 on the shared H100, seeds 0–2, interleaved default/fast per 
 
 The median ratio is 1.69 (gate ≥ 1.5). Default seed 2 stopped early at translator epoch 181; every other run used the full 100 + 100 + 200 epochs.
 
-**Metrics: FAIL**, 6 of 22 gated (metric, direction) pairs.
+**Metrics: FAIL**, 6 of 23 gated (metric, direction) pairs.
 
 | direction | metric | default | fast | \|Δ\| | tol | result |
 |---|---|---|---|---|---|---|
@@ -105,7 +105,7 @@ The median ratio is 1.69 (gate ≥ 1.5). Default seed 2 stopped early at transla
 | atac2rna | AMI | 0.7460 ± 0.0046 | 0.7097 ± 0.0090 | 0.0363 | 0.0300 | fail (fast worse) |
 | atac2rna | NMI | 0.7555 ± 0.0045 | 0.7224 ± 0.0086 | 0.0332 | 0.0300 | fail (fast worse) |
 
-The other 16 gated pairs pass. RNA→ATAC PCC, AUROC, MSE and CORR all agree to within 0.002.
+The other 17 gated pairs pass. RNA→ATAC PCC, AUROC, MSE and CORR all agree to within 0.002.
 
 The registered fast mode is therefore **not** equivalent to the default path: its ATAC→RNA predictions cluster worse but correlate better per feature.
 
@@ -132,14 +132,14 @@ It uses the same seeds, the same G3 metric rule and the same floors. The speed g
 
 For seed 2 the default run stopped early and the A1 run did not.
 
-**Metrics: FAIL**, 2 of 22 gated pairs.
+**Metrics: FAIL**, 2 of 23 gated pairs.
 
 | direction | metric | default | A1 | \|Δ\| | tol | result |
 |---|---|---|---|---|---|---|
 | atac2rna | ARI | 0.4499 ± 0.0203 | 0.3690 ± 0.0113 | 0.0808 | 0.0406 | fail |
 | atac2rna | AMI | 0.7460 ± 0.0046 | 0.7149 ± 0.0091 | 0.0311 | 0.0300 | fail |
 
-The other 20 pass, including atac2rna SPCC, CORR and NMI, and rna2atac MMD, which failed under G3.
+The other 21 pass, including atac2rna SPCC, CORR and NMI, and rna2atac MMD, which failed under G3.
 
 Both fast variants lower the Leiden ARI of ATAC→RNA predictions. Their common element is bf16 autocast, which is a likely cause but was not tested.
 
@@ -189,9 +189,9 @@ Changes:
 |---|---|
 | G0 preprocessing | **PASS**: ATAC max \|Δ\| 1.8e-7; RNA identical |
 | G1 metric implementation (3 seeds × 2 directions) | **PASS**: max \|Δ\| ≤ 2.7e-15 for PCC, SPCC, AUROC and the clustering metrics; ≤ 1.6e-10 for MSE and MAE; 5e-9 for CORR; 1.7e-7 for MMD; 8.5e-5 for LISI |
-| **G2 training parity, `shuffle=False` (A3)** | **PASS: 22/22 gated pairs** |
-| G2-shuffled (Epione default vs reference, for information) | 22/22 within tolerance |
-| G3 fast mode | speed PASS (1.69×); metrics FAIL (6/22); see above |
+| **G2 training parity, `shuffle=False` (A3)** | **PASS: 23/23 gated pairs** |
+| G2-shuffled (Epione default vs reference, for information) | 23/23 within tolerance |
+| G3 fast mode | speed PASS (1.69×); metrics FAIL (6/23); see above |
 
 G2, `shuffle=False`, mean over 3 seeds:
 
@@ -221,3 +221,11 @@ AMI, HOM and MAE pass as well; the JSON has every value.
 - Epione `shuffle=False`: 555, 514 and 511 s.
 
 The Epione default is about 3× faster than the reference.
+
+**Correction, 2026-10-13.** Earlier versions of this file, and of PR #64, counted 22 gated pairs. There are 23: 12 metrics × 2 directions, minus atac2rna AUROC. Recounted from the gate JSON:
+- G2: 23/23;
+- G2-shuffled: 23/23;
+- G3: 17/23 pass (6 fail);
+- A1: 21/23 pass (2 fail).
+
+No pass/fail outcome changes.

@@ -117,7 +117,7 @@ def _block_diffusion(
 
 def add_impute_weights(
     adata: AnnData,
-    use_rep: str = "X_iterative_lsi",
+    use_rep: str = "X_birmt",
     *,
     dims_to_use: Optional[Sequence[int]] = None,
     scale_dims: bool = False,

@@ -53,3 +53,99 @@ def pbmc10k_multiome(
     rna = ad.read_h5ad(paths["10x-Multiome-Pbmc10k-RNA.h5ad"])
     atac = ad.read_h5ad(paths["10x-Multiome-Pbmc10k-ATAC.h5ad"])
     return rna, atac
+
+
+TENX_BASE_URL = "https://cf.10xgenomics.com/samples/cell-arc/2.0.0/pbmc_granulocyte_sorted_10k/"
+
+PBMC10K_MULTIOME_10X = {
+    "pbmc_granulocyte_sorted_10k_filtered_feature_bc_matrix.h5":
+        "sha256:f6824171378787baab244f559b8b438f79db2eb39f78d17b2196f7ecd2c03549",
+    "pbmc_granulocyte_sorted_10k_per_barcode_metrics.csv":
+        "sha256:fd3e069b83e152145af234667b419c982968aca0df322a92adb71284d0d902cd",
+}
+
+
+def pbmc10k_multiome_10x(
+    data_dir: Optional[Union[str, os.PathLike]] = None,
+    *,
+    progressbar: bool = False,
+) -> Path:
+    """The cellranger-arc 2.0.0 output of the same 10x PBMC 10k Multiome sample.
+
+    Downloads the filtered feature-barcode matrix (``.h5``, 192 MB; Gene
+    Expression + Peaks) and ``per_barcode_metrics.csv`` (89 MB) from 10x
+    Genomics, verified against pinned sha256 sums, and returns the folder.
+    Read it with :func:`epione.io.read_10x_multiome`. The 2 GB fragment file
+    is not downloaded.
+
+    Arguments:
+        data_dir: Folder for the files. Defaults to
+            ``<pooch cache>/epione/pbmc10k_multiome_10x``.
+        progressbar: Show a download progress bar.
+
+    Returns:
+        The folder containing the two files.
+
+    Examples:
+        >>> rna, atac = epi.io.read_10x_multiome(epi.datasets.pbmc10k_multiome_10x())
+        >>> rna.shape, atac.shape
+        ((11898, 36601), (11898, 143887))
+    """
+    import pooch
+
+    if data_dir is None:
+        data_dir = Path(pooch.os_cache("epione")) / "pbmc10k_multiome_10x"
+    data_dir = Path(data_dir)
+    data_dir.mkdir(parents=True, exist_ok=True)
+    for fname, known_hash in PBMC10K_MULTIOME_10X.items():
+        pooch.retrieve(url=TENX_BASE_URL + fname, known_hash=known_hash, fname=fname,
+                       path=str(data_dir), progressbar=progressbar)
+    return data_dir
+
+
+PBMC3K_BASE_URL = "https://cf.10xgenomics.com/samples/cell-arc/2.0.0/pbmc_granulocyte_sorted_3k/"
+
+PBMC3K_ATAC = {
+    "fragments": ("pbmc_granulocyte_sorted_3k_atac_fragments.tsv.gz",
+                  "sha256:cb7725f828fe99c3660cdf24843347e91aec72507ae3ace3030a0c49e50352ee"),
+    "fragments_index": ("pbmc_granulocyte_sorted_3k_atac_fragments.tsv.gz.tbi",
+                        "sha256:365aa0ddb3d51e3618954752fd7e41a52c489591bd38c0c023e42475653fb7a2"),
+    "peaks": ("pbmc_granulocyte_sorted_3k_atac_peaks.bed",
+              "sha256:1b3fb82546659d51faf25957aec01abeb88b89d7c91f3019b3bce55f33a18ddb"),
+    "per_barcode_metrics": ("pbmc_granulocyte_sorted_3k_per_barcode_metrics.csv",
+                            "sha256:d8361253c64a67fd31ed9a226623d1d824b9acbc1bfe18c7c4b897de9d02c4f7"),
+}
+
+
+def pbmc3k_multiome_atac(
+    data_dir: Optional[Union[str, os.PathLike]] = None,
+    *,
+    progressbar: bool = False,
+) -> dict:
+    """ATAC files of the 10x Multiome PBMC 3k sample (cellranger-arc 2.0.0).
+
+    Downloads the fragments file (468 MB) with its tabix index, the called
+    peaks (2.3 MB) and the per-barcode metrics (with 10x's cell calls) from
+    10x Genomics, verified against pinned sha256 sums. A small bulk-like
+    ATAC sample used by the ChromBPNet tutorial.
+
+    Arguments:
+        data_dir: Folder for the files. Defaults to
+            ``<pooch cache>/epione/pbmc3k_multiome``.
+        progressbar: Show a download progress bar.
+
+    Returns:
+        ``{"fragments", "fragments_index", "peaks", "per_barcode_metrics"}``
+        -> local paths.
+    """
+    import pooch
+
+    if data_dir is None:
+        data_dir = Path(pooch.os_cache("epione")) / "pbmc3k_multiome"
+    data_dir = Path(data_dir)
+    data_dir.mkdir(parents=True, exist_ok=True)
+    out = {}
+    for key, (fname, known_hash) in PBMC3K_ATAC.items():
+        out[key] = Path(pooch.retrieve(url=PBMC3K_BASE_URL + fname, known_hash=known_hash,
+                                       fname=fname, path=str(data_dir), progressbar=progressbar))
+    return out

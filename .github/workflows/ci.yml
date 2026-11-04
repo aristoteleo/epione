@@ -47,3 +47,30 @@ jobs:
           MPLBACKEND: Agg
         run: |
           pytest tests/ -x --tb=short --timeout=120
+
+  torch-backend:
+    # The torch code paths behind every `device=` argument, run on the CPU
+    # (device="torch-cpu") against the NumPy / SciPy paths. CUDA-only tests
+    # skip here; there is no GPU on the runner.
+    name: torch backend on CPU (3.11)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install project with test extras and CPU torch
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e '.[test]'
+
+      - name: Run GPU-backend tests
+        env:
+          MPLBACKEND: Agg
+        run: |
+          pytest tests/test_gpu.py tests/test_gpu_torch.py --tb=short --timeout=300

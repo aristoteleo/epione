@@ -16,11 +16,16 @@ benchmark (clustering, regression, distribution, classification)::
                                   {"rna2atac": atac_p[test]}, labels="cell_type")
     epi.translate.summarize(res); epi.translate.plot_benchmark(res)
 
+Available methods: ``"scbutterfly"``, ``"babel"``, ``"scpair"``, ``"multidgd"`` and ``"jamie"`` (prepare
+the inputs each expects with ``prepare(..., method=...)``).
+
 Methods need PyTorch (``pip install epione[translate]``); preprocessing and
 metrics do not.
 """
-from ._prep import prepare, prepare_rna, prepare_atac, tfidf, chrom_blocks, peak_chromosomes
+from ._prep import prepare, prepare_rna, prepare_atac, tfidf, chrom_blocks, peak_chromosomes, size_normalize
+from ._prep import prepare_counts
 from ._base import TranslationModel, available_methods, fit, load
+
 from ._bench import METRICS, evaluate, benchmark, summarize, plot_benchmark
 from . import _metrics as metrics
 
@@ -33,6 +38,7 @@ __all__ = [
     "peak_chromosomes",
     "TranslationModel",
     "available_methods",
+    "size_normalize",
     "fit",
     "load",
     "METRICS",
@@ -41,4 +47,5 @@ __all__ = [
     "summarize",
     "plot_benchmark",
     "metrics",
+    "prepare_counts",
 ]

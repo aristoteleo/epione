@@ -1,0 +1,8 @@
+{
+ "variant": "A1 (reference cell attributes)",
+ "a_cell_embedding_maxabs": 0.0,
+ "c_neighbor_lists_identical": true,
+ "b_impute_nbr0_maxabs": 1.3113021850585938e-06,
+ "c_impute_nbr5_maxabs": 6.854534149169922e-07,
+ "G1b_pass": true
+}

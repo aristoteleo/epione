@@ -86,7 +86,7 @@ def test_harmony_anndata_api_and_mixing():
     from sklearn.neighbors import NearestNeighbors
 
     a = _two_batch_adata()
-    epi.tl.harmony(a, batch_key="Sample", verbose=False)
+    epi.tl.harmony(a, batch_key="Sample", use_rep="X_iterative_lsi", verbose=False)
     H = a.obsm["X_harmony"]
     assert H.shape == a.obsm["X_iterative_lsi"].shape
     assert a.uns["harmony"]["n_iter"] >= 1
@@ -108,19 +108,19 @@ def test_harmony_anndata_api_and_mixing():
 
 def test_harmony_is_seed_deterministic():
     a, b = _two_batch_adata(), _two_batch_adata()
-    epi.tl.harmony(a, seed=5, verbose=False)
-    epi.tl.harmony(b, seed=5, verbose=False)
+    epi.tl.harmony(a, use_rep="X_iterative_lsi", seed=5, verbose=False)
+    epi.tl.harmony(b, use_rep="X_iterative_lsi", seed=5, verbose=False)
     np.testing.assert_array_equal(a.obsm["X_harmony"], b.obsm["X_harmony"])
 
 
 def test_harmony_input_validation():
     a = _two_batch_adata()
     with pytest.raises(KeyError):
-        epi.tl.harmony(a, batch_key="nope", verbose=False)
+        epi.tl.harmony(a, batch_key="nope", use_rep="X_iterative_lsi", verbose=False)
     with pytest.raises(KeyError):
         epi.tl.harmony(a, use_rep="X_missing", verbose=False)
     with pytest.raises(ValueError):
-        epi.tl.harmony(a, lambda_=-1.0, verbose=False)
+        epi.tl.harmony(a, use_rep="X_iterative_lsi", lambda_=-1.0, verbose=False)
 
 
 # -- full ArchR Hematopoiesis parity (skips without the R reference) -------

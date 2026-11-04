@@ -82,6 +82,7 @@ def embedding(
     marker: Union[str, Sequence[str]] = '.',
     arrow_scale: float = 6,
     arrow_width: float = 0.005,
+    arrow_kwds: Optional[Mapping[str, Any]] = None,
     **kwargs,
 ) -> Union[Figure, Axes, None]:
     """
@@ -111,6 +112,9 @@ def embedding(
         Key to use for neighbors
     arrows : bool
         Whether to draw arrows (default: False)
+    arrow_kwds : dict, optional
+        Options for the corner coordinate arrows of ``frameon='small'``, passed to :func:`add_arrow`
+        (``loc``, ``length``, ``lw``, ``color``, ``pad``, ``x_label``, ``y_label``).
     arrows_kwds : dict, optional
         Keywords for arrow plotting
     groups : str, optional
@@ -135,8 +139,10 @@ def embedding(
         Include missing values in legend
     size : float or array, optional
         Point size
-    frameon : bool, optional
-        Draw frame around plot
+    frameon : {'small', True, False}
+        ``'small'`` (default): no frame, small coordinate arrows with labels ("UMAP 1", "UMAP 2") in a corner
+        (see :func:`add_arrow`; style via ``arrow_kwds``, e.g. ``dict(loc='lower right', length=0.6)``).
+        ``True``: normal axes frame. ``False``: no frame and no arrows.
     legend_fontsize : float, optional
         Font size for legend
     legend_fontweight : str or int
@@ -335,14 +341,11 @@ def embedding(
         if grid:
             ax = pl.subplot(grid[count], **args_3d)
             axs.append(ax)
-        if frameon ==False:
+        if frameon == 'small' and projection != '3d':
             ax.axis('off')
-            #from ..pl._single import add_arrow
-            add_arrow(ax,adata,basis,fontsize=legend_fontsize,arrow_scale=arrow_scale,arrow_width=arrow_width)
-        elif frameon == 'small':
+            add_arrow(ax, basis=basis, dims=dims, fontsize=legend_fontsize, **(arrow_kwds or {}))
+        elif frameon == False:  # noqa: E712
             ax.axis('off')
-            #from ..pl._single import add_arrow
-            add_arrow(ax,adata,basis,fontsize=legend_fontsize,arrow_scale=arrow_scale,arrow_width=arrow_width)
         
         # Handle frame
         if frameon == False:
@@ -423,7 +426,7 @@ def embedding(
         
         # Set axis labels
         name = _basis2name(basis)
-        axis_labels = [name + str(d + 1) for d in dims]
+        axis_labels = list(_axis_names(basis, dims)) if len(dims) == 2 else [name + str(d + 1) for d in dims]
         
         ax.set_xlabel(axis_labels[0], loc='left', fontsize=legend_fontsize)
         ax.set_ylabel(axis_labels[1], loc='bottom', fontsize=legend_fontsize)
@@ -939,106 +942,93 @@ def draw_graph(
         raise ValueError(f'Did not find {basis} in adata.obsm')
     return embedding(adata, basis, **kwargs)
 
+_BASIS_LABEL = {"umap": "UMAP", "tsne": "t-SNE", "pca": "PC", "diffmap": "DC", "draw_graph_fa": "FA",
+                "draw_graph_fr": "FR", "spectral": "Spectral", "lsi": "LSI", "iterative_lsi": "LSI", "birmt": "BiRMT",
+                "phate": "PHATE", "mde": "MDE"}
+
+
+def _axis_names(basis: str, dims=(0, 1)) -> Tuple[str, str]:
+    name = basis[2:] if basis.startswith("X_") else basis
+    pretty = _BASIS_LABEL.get(name.lower(), name.upper())
+    return f"{pretty} {dims[0] + 1}", f"{pretty} {dims[1] + 1}"
+
+
 def add_arrow(
     ax: Axes,
-    adata,
-    basis: str,
-    fontsize: int = 12,
+    adata=None,
+    basis: str = "X_umap",
+    fontsize: Optional[float] = None,
     x_label: Optional[str] = None,
     y_label: Optional[str] = None,
     arrow_scale: float = 5,
     arrow_width: float = 0.01,
+    *,
+    dims: Sequence[int] = (0, 1),
+    loc: Literal["lower left", "lower right", "upper left", "upper right"] = "lower left",
+    length: float = 0.45,
+    lw: float = 1.0,
+    color: ColorLike = "black",
+    pad: Optional[float] = None,
 ) -> None:
     """
-    Add coordinate arrows and labels to an embedding plot.
-    
+    Draw small coordinate arrows ("UMAP 1 ->", "UMAP 2 ^") in a corner of an embedding plot.
+
+    The arrows are drawn in axes coordinates, so they have the same physical length on both axes whatever the
+    data range or aspect ratio, and they do not move with the data. Used by ``frameon='small'`` in
+    :func:`embedding` / :func:`umap`; it can also be called on any matplotlib axes.
+
     Parameters
     ----------
     ax : matplotlib.axes.Axes
-        The matplotlib axes to add arrows to.
-    adata : AnnData
-        Annotated data matrix containing the embedding.
+        The axes to draw on.
+    adata : AnnData, optional
+        Unused; kept for backward compatibility with ``add_arrow(ax, adata, basis)``.
     basis : str
-        Name of the basis/embedding in adata.obsm.
-    fontsize : int
-        Font size for axis labels (default: 12).
-    x_label : str, optional
-        Label for x-axis. If None, uses basis+'1'.
-    y_label : str, optional
-        Label for y-axis. If None, uses basis+'2'.
-    arrow_scale : float
-        Scale factor for arrow size (default: 5).
-    arrow_width : float
-        Width of arrow lines (default: 0.01).
+        Embedding name, used for the default labels (``'X_umap'`` -> ``'UMAP 1'`` / ``'UMAP 2'``;
+        also t-SNE, PC, DC, FA/FR, LSI, BiRMT, PHATE, MDE; other names are upper-cased).
+    fontsize : float, optional
+        Label font size (default: ``rcParams['font.size']``).
+    x_label, y_label : str, optional
+        Override the labels.
+    arrow_scale, arrow_width : float
+        Ignored (old data-coordinate arrows); kept so old calls keep working.
+    dims : pair of int
+        Plotted components (0-based), for the label numbers.
+    loc : {'lower left', 'lower right', 'upper left', 'upper right'}
+        Corner of the axes.
+    length : float
+        Arrow length in inches (both arrows).
+    lw : float
+        Line width of the arrows.
+    color : color
+        Colour of arrows and labels.
+    pad : float, optional
+        Distance of the arrow origin from the corner in inches (default: room for the labels, 1.6 x font size).
     """
-    # Get basis name without 'X_' prefix
-    basis_name = basis.replace('X_', '') if basis.startswith('X_') else basis
-    
-    # Default labels
-    if x_label is None:
-        x_label = basis_name + '1'
-    if y_label is None:
-        y_label = basis_name + '2'
-    
-    # Get embedding data
-    if basis in adata.obsm:
-        embedding_data = adata.obsm[basis]
-    elif f'X_{basis}' in adata.obsm:
-        embedding_data = adata.obsm[f'X_{basis}']
-    else:
-        print(f"Warning: Could not find basis {basis} in adata.obsm")
-        return
-    
-    # Calculate ranges
-    x_range = (embedding_data[:, 0].max() - embedding_data[:, 0].min()) / 6
-    y_range = (embedding_data[:, 1].max() - embedding_data[:, 1].min()) / 6
-    x_min = embedding_data[:, 0].min()
-    y_min = embedding_data[:, 1].min()
-    
-    # Draw x-axis arrow
-    ax.arrow(
-        x=x_min - x_range/5,
-        y=y_min,
-        dx=x_range + x_range/arrow_scale,
-        dy=0,
-        width=arrow_width,
-        color="k",
-        head_width=y_range * 2/arrow_scale,
-        head_length=x_range * 2/arrow_scale,
-        overhang=0.5
-    )
-    
-    # Draw y-axis arrow
-    ax.arrow(
-        x=x_min,
-        y=y_min - y_range/5,
-        dx=0,
-        dy=y_range + y_range/arrow_scale,
-        width=arrow_width,
-        color="k",
-        head_width=x_range * 2/arrow_scale,
-        head_length=y_range * 2/arrow_scale,
-        overhang=0.5
-    )
-    
-    # Add labels
-    ax.text(
-        x=x_min,
-        y=y_min - y_range/2,
-        s=x_label,
-        fontsize=fontsize,
-        multialignment='center',
-        verticalalignment='center'
-    )
-    ax.text(
-        x=x_min - x_range/2,
-        y=y_min,
-        s=y_label,
-        fontsize=fontsize,
-        rotation='vertical',
-        multialignment='center',
-        horizontalalignment='center'
-    )
+    from matplotlib.transforms import offset_copy
+    if fontsize is None:
+        fontsize = rcParams["font.size"]
+    xl, yl = _axis_names(basis, dims)
+    x_label = xl if x_label is None else x_label
+    y_label = yl if y_label is None else y_label
+    bbox = ax.get_window_extent().transformed(ax.figure.dpi_scale_trans.inverted())
+    lx, ly = length / max(bbox.width, 1e-9), length / max(bbox.height, 1e-9)
+    right, top = "right" in loc, "upper" in loc
+    pad = fontsize * 1.6 / 72 if pad is None else pad
+    px, py = pad / max(bbox.width, 1e-9), pad / max(bbox.height, 1e-9)
+    # origin of the "L": arrows always point to +x and +y; ``loc`` only picks the corner
+    ox = 1 - px - lx if right else px
+    oy = 1 - py - ly if top else py
+    style = dict(arrowstyle="-|>,head_length=0.45,head_width=0.22", lw=lw, color=color, shrinkA=0, shrinkB=0)
+    kw = dict(xycoords="axes fraction", textcoords="axes fraction", annotation_clip=False)
+    ax.annotate("", xy=(ox + lx, oy), xytext=(ox, oy), arrowprops=style, **kw)
+    ax.annotate("", xy=(ox, oy + ly), xytext=(ox, oy), arrowprops=style, **kw)
+    off = fontsize * 0.35  # points
+    tx = offset_copy(ax.transAxes, fig=ax.figure, x=0, y=-off, units="points")
+    ax.text(ox + lx / 2, oy, x_label, transform=tx, fontsize=fontsize, color=color, ha="center", va="top")
+    ty = offset_copy(ax.transAxes, fig=ax.figure, x=-off, y=0, units="points")
+    ax.text(ox, oy + ly / 2, y_label, transform=ty, fontsize=fontsize, color=color, rotation=90,
+            ha="center", va="bottom", rotation_mode="anchor")
 
 # ---------------------------------------------------------------------------
 # sc-Hi-C cell-embedding scatter (moved from single/hic/_plot.py in v0.4 PR3)

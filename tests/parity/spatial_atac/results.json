@@ -1,0 +1,107 @@
+{
+ "rows": [
+  {
+   "seed": 2022,
+   "n_spots": 9196,
+   "max_abs_diff_emb": 0.0,
+   "max_abs_diff_alpha": 0.0,
+   "ARI_port_vs_official": 1.0,
+   "time_official_s": 859.5004868507385,
+   "time_port_s": 1547.3755457401276,
+   "official_ARI_ATAC_clusters": 0.2692016527874483,
+   "port_ARI_ATAC_clusters": 0.2692016527874483,
+   "official_NMI_ATAC_clusters": 0.3782705625447237,
+   "port_NMI_ATAC_clusters": 0.3782705625447237,
+   "official_ARI_RNA_clusters": 0.24524099239181976,
+   "port_ARI_RNA_clusters": 0.24524099239181976,
+   "official_NMI_RNA_clusters": 0.3805035908385493,
+   "port_NMI_RNA_clusters": 0.3805035908385493,
+   "official_moran_mean": 0.7016960286928186,
+   "port_moran_mean": 0.7016960286928186
+  },
+  {
+   "seed": 2023,
+   "n_spots": 9196,
+   "max_abs_diff_emb": 0.0,
+   "max_abs_diff_alpha": 0.0,
+   "ARI_port_vs_official": 1.0,
+   "time_official_s": 858.0844268798828,
+   "time_port_s": 1532.0956344604492,
+   "official_ARI_ATAC_clusters": 0.25220716650760094,
+   "port_ARI_ATAC_clusters": 0.25220716650760094,
+   "official_NMI_ATAC_clusters": 0.37358662922719454,
+   "port_NMI_ATAC_clusters": 0.37358662922719454,
+   "official_ARI_RNA_clusters": 0.25075919105233757,
+   "port_ARI_RNA_clusters": 0.25075919105233757,
+   "official_NMI_RNA_clusters": 0.3878452966111762,
+   "port_NMI_RNA_clusters": 0.3878452966111762,
+   "official_moran_mean": 0.6771832160854196,
+   "port_moran_mean": 0.6771832160854196
+  },
+  {
+   "seed": 2024,
+   "n_spots": 9196,
+   "max_abs_diff_emb": 0.0,
+   "max_abs_diff_alpha": 0.0,
+   "ARI_port_vs_official": 1.0,
+   "time_official_s": 856.965479850769,
+   "time_port_s": 1559.4623329639435,
+   "official_ARI_ATAC_clusters": 0.28334171544749986,
+   "port_ARI_ATAC_clusters": 0.28334171544749986,
+   "official_NMI_ATAC_clusters": 0.3914826228694501,
+   "port_NMI_ATAC_clusters": 0.3914826228694501,
+   "official_ARI_RNA_clusters": 0.251997871600752,
+   "port_ARI_RNA_clusters": 0.251997871600752,
+   "official_NMI_RNA_clusters": 0.391701643735452,
+   "port_NMI_RNA_clusters": 0.391701643735452,
+   "official_moran_mean": 0.6676035537417122,
+   "port_moran_mean": 0.6676035537417122
+  }
+ ],
+ "summary": {
+  "ARI_ATAC_clusters": {
+   "official_mean": 0.26825017824751635,
+   "official_sd": 0.01558906707512814,
+   "port_mean": 0.26825017824751635,
+   "delta": 0.0,
+   "tol": 0.03117813415025628,
+   "pass": true
+  },
+  "ARI_RNA_clusters": {
+   "official_mean": 0.24933268501496975,
+   "official_sd": 0.0035972272331630966,
+   "port_mean": 0.24933268501496975,
+   "delta": 0.0,
+   "tol": 0.02,
+   "pass": true
+  },
+  "NMI_ATAC_clusters": {
+   "official_mean": 0.38111327154712277,
+   "official_sd": 0.009280484522111639,
+   "port_mean": 0.38111327154712277,
+   "delta": 0.0,
+   "tol": 0.02,
+   "pass": true
+  },
+  "NMI_RNA_clusters": {
+   "official_mean": 0.3866835103950592,
+   "official_sd": 0.005688708779628958,
+   "port_mean": 0.3866835103950592,
+   "delta": 0.0,
+   "tol": 0.02,
+   "pass": true
+  },
+  "moran_mean": {
+   "official_mean": 0.6821609328399835,
+   "official_sd": 0.017582874057998948,
+   "port_mean": 0.6821609328399835,
+   "delta": 0.0,
+   "tol": 0.035165748115997895,
+   "pass": true
+  },
+  "G0_max_abs_diff_emb": 0.0,
+  "G0_pass": true,
+  "G2_min_ARI_port_vs_official": 1.0,
+  "G2_pass": true
+ }
+}

@@ -282,6 +282,14 @@ print('fraction with p < 0.01 — binomial: {:.3f}   dispersion: {:.3f}'.format(
 md(r"""
 ## Part 6 · TF binding scores
 
+> **Not the default any more.** Epione's default per-site binding score is
+> `epi.tl.tf_binding(adata, motif_sites)` (`method='occupancy'`, a thermodynamic
+> motif-accessibility score; see [t_tf_binding](t_tf_binding.ipynb)). On ENCODE ChIP-seq
+> ground truth in four cell lines it ranked bound motif sites better than PRINT
+> (median AUROC 0.89-0.91 vs 0.72-0.77) and runs ~70x faster. PRINT's score below
+> is unchanged and is also `epi.tl.tf_binding(..., method='print')`; it remains the
+> tool for footprint-shape questions and motif-free scans.
+
 `tf_binding_score` computes the footprint over each whole peak at the
 six scales PRINT's binding model uses, then scores the 201-bp multi-scale
 footprint around each site. Without motifs, every peak is tiled every
@@ -395,7 +403,7 @@ md(r"""
 | Inputs | fragments file + FASTA; no snapATAC2, no genome-wide bias file |
 | Tn5 bias | `epi.tl.tn5_bias(genome)` — PRINT CNN on demand, bit-identical to scPrinter |
 | Footprints | `epi.tl.multi_scale_footprint_region(..., bias=bias)` — learned null by default with PRINT bias |
-| Binding | `epi.tl.tf_binding_score(...)` → `TFBindingResult` (`.score`, `.sites`, `.to_frame()`) |
+| Binding | `epi.tl.tf_binding_score(...)` → `TFBindingResult` (`.score`, `.sites`, `.to_frame()`); the default per-site score is `epi.tl.tf_binding` ([t_tf_binding](t_tf_binding.ipynb)) |
 | Plots | `epi.pl.plot_multi_scale_footprint_region`, `epi.pl.plot_tf_binding_score` — evidence above score |
 | Exactness | `np.array_equal` against scPrinter's own functions on real data |
 

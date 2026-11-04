@@ -34,7 +34,7 @@ _SCORE_BIGWIG_ATTRS = {
 _PLOTTING_TOBIAS_ATTRS = {"plot_aggregate", "plot_aggregate_tobias"}
 # PRINT / scPrinter: pluggable Tn5 bias, learned null, TF binding score.
 _TN5_BIAS_ATTRS = {
-    "tn5_bias", "Tn5Bias", "PrintBias", "PrecomputedBias", "KmerBias",
+    "tn5_bias", "Tn5Bias", "PrintBias", "PrecomputedBias", "KmerBias", "ChromBPNetBias",
 }
 _PRINT_ATTRS = {
     "tf_binding_score", "TFBindingResult", "DispersionModel",
@@ -42,6 +42,40 @@ _PRINT_ATTRS = {
     "fetch_print_model", "PRINT_SCALES",
 }
 _PRINT_PLOT_ATTRS = {"plot_tf_binding_score"}
+# Thermodynamic occupancy: accessibility-gated Boltzmann binding, per-site score.
+_OCCUPANCY_ATTRS = {
+    "tf_occupancy", "OccupancyResult", "occupancy_from_counts",
+    "neighbourhood_logsumexp", "site_insertion_counts", "OCCUPANCY_DEFAULTS",
+}
+# Default per-site TF binding entry point (method='occupancy' | 'print').
+_TF_BINDING_ATTRS = {"tf_binding", "TF_BINDING_METHODS"}
+# HINT-ATAC (RGT rgt-hint): bias-corrected signal, HMM footprints, differential.
+_HINT_ATTRS = {
+    "HintBias", "HintHMM", "HintDifferentialResult", "fetch_hint_file",
+    "hint_differential", "hint_footprints", "hint_match_motifs", "hint_signal",
+    "load_hint_bias_table", "load_hint_hmm",
+}
+_HINT_PLOT_ATTRS = {"plot_hint_differential", "plot_hint_profile"}
+# SpatialGlue (AGPL-3.0 port; needs torch) -- spatial multi-omics integration.
+_SPATIALGLUE_ATTRS = {
+    "spatialglue", "spatialglue_preprocess", "spatialglue_graphs",
+    "lsi_spatialglue", "clr_normalize_each_cell",
+}
+
+# General spatial-domain models wrapped from omicverse (imported inside the call).
+_SPATIAL_OV_ATTRS = {"stagate", "graphst", "spaceflow", "cellcharter", "cast", "binary"}
+# Spatial-domain method ports (need torch; no torch_geometric). name -> module.
+_SPATIAL_PORT_ATTRS = {
+    "cosmos": "._cosmos",
+    "present": "._present",
+    "instinct": "._instinct",
+    "candies": "._candies",
+    "praga": "._praga",
+    "miso": "._miso",
+    "miso_features": "._miso",
+    "spamosaic": "._spamosaic",
+    "spamosaic_preprocess": "._spamosaic",
+}
 
 
 def __getattr__(name):
@@ -72,6 +106,27 @@ def __getattr__(name):
     if name in _PRINT_PLOT_ATTRS:
         mod = importlib.import_module("._print_plot", __name__)
         return getattr(mod, name)
+    if name in _OCCUPANCY_ATTRS:
+        mod = importlib.import_module("._occupancy", __name__)
+        return getattr(mod, name)
+    if name in _TF_BINDING_ATTRS:
+        mod = importlib.import_module("._tf_binding", __name__)
+        return getattr(mod, name)
+    if name in _HINT_ATTRS:
+        mod = importlib.import_module("._hint", __name__)
+        return getattr(mod, name)
+    if name in _HINT_PLOT_ATTRS:
+        mod = importlib.import_module("._hint_plot", __name__)
+        return getattr(mod, name)
+    if name in _SPATIALGLUE_ATTRS:
+        mod = importlib.import_module("._spatialglue", __name__)
+        return getattr(mod, name)
+    if name in _SPATIAL_OV_ATTRS:
+        mod = importlib.import_module("._spatial_ov", __name__)
+        return getattr(mod, name)
+    if name in _SPATIAL_PORT_ATTRS:
+        mod = importlib.import_module(_SPATIAL_PORT_ATTRS[name], __name__)
+        return getattr(mod, name)
     if name in _SCORE_BIGWIG_ATTRS:
         mod = importlib.import_module("._score_bigwig", __name__)
         return getattr(mod, name)
@@ -97,6 +152,7 @@ from ._plotting import (
 from ._reducedimension import lsi
 
 from ._iterative_lsi import iterative_lsi
+from ._birmt import birmt
 
 from ._integrate import integrate
 from ._transfer_labels import transfer_labels
@@ -105,6 +161,10 @@ from ._joint_embedding import joint_embedding
 from ._peak_to_gene import peak_to_gene
 
 from ._coaccessibility import coaccessibility
+from ._e2g import e2g_links, e2g_features, count_insertions, link_peaks_to_genes
+from ._contact import (
+    contact_links, contact_gene_score, fit_contact_gamma, powerlaw_contact,
+)
 
 from ._marker_features import find_marker_features
 
@@ -112,6 +172,7 @@ from ._motif_matrix import add_motif_matrix
 from ._motif_database import build_motif_database, query_motif_database
 from ._background_peaks import add_background_peaks
 from ._chromvar import compute_deviations
+from ._tf_activity import tf_activity, add_motif_occupancy
 from ._gene_score import add_gene_score_matrix
 from ._peak_anno_enrichment import (
     peak_anno_enrichment, custom_enrichment,
@@ -140,7 +201,18 @@ from ._differential import (
 )
 
 from ._harmony import harmony, run_harmony
+from ._ot_batch import ot_batch, batch_correct
 from ._module_score import add_module_score, confusion_matrix
+from ._bulk_projection import LSIModel, project_bulk_atac, deconvolve_bulk
+from ._multimodal import combined_dims, wnn, multivi
+from ._tsne import tsne
+from ._spatial import spatial_neighbors, spatial_smooth, spatial_domains, spatial_moran
+from ._aegle import aegle, aegle_embedding
+from ._cnv import (
+    cnv, cnv_make_windows, cnv_count_matrix, cnv_subclones,
+    cnv_karyotype_measures, cnv_burden,
+)
+from ._atac_models import scbasset, peakvi
 
 
 __all__ = [
@@ -161,24 +233,41 @@ __all__ = [
     "multi_scale_footprint", "MultiScaleFootprint",
     "footprint_score", "plot_multi_scale_footprint",
     "multi_scale_footprint_region", "plot_multi_scale_footprint_region",
-    "tn5_bias", "Tn5Bias", "PrintBias", "PrecomputedBias", "KmerBias",
+    "tn5_bias", "Tn5Bias", "PrintBias", "PrecomputedBias", "KmerBias", "ChromBPNetBias",
     "tf_binding_score", "TFBindingResult", "DispersionModel",
     "print_footprint_score", "print_footprint_pvalues",
     "fetch_print_model", "PRINT_SCALES", "plot_tf_binding_score",
+    "tf_occupancy", "OccupancyResult", "occupancy_from_counts",
+    "neighbourhood_logsumexp", "site_insertion_counts", "OCCUPANCY_DEFAULTS",
     "rank_sites_by_cut_density", "MultiScaleRegion",
+    "HintBias", "HintHMM", "HintDifferentialResult", "fetch_hint_file",
+    "hint_differential", "hint_footprints", "hint_match_motifs", "hint_signal",
+    "load_hint_bias_table", "load_hint_hmm",
+    "plot_hint_differential", "plot_hint_profile",
     "lsi",
     "iterative_lsi",
+    "birmt",
     "integrate",
     "transfer_labels",
     "joint_embedding",
     "peak_to_gene",
     "coaccessibility",
+    "contact_links",
+    "e2g_links",
+    "link_peaks_to_genes",
+    "e2g_features",
+    "count_insertions",
+    "contact_gene_score",
+    "fit_contact_gamma",
+    "powerlaw_contact",
     "find_marker_features",
     "add_motif_matrix",
     "build_motif_database",
     "query_motif_database",
     "add_background_peaks",
     "compute_deviations",
+    "tf_activity",
+    "add_motif_occupancy",
     "add_impute_weights",
     "impute_matrix",
     "peak_anno_enrichment", "custom_enrichment",
@@ -190,6 +279,8 @@ __all__ = [
     "peak_signal_matrix",
     "harmony",
     "run_harmony",
+    "ot_batch",
+    "batch_correct",
     "add_trajectory",
     "get_trajectory",
     "trajectory_heatmap_matrix",
@@ -200,4 +291,20 @@ __all__ = [
     "correlate_matrices",
     "positive_tf_regulators",
     "group_means",
+    "LSIModel",
+    "project_bulk_atac",
+    "deconvolve_bulk",
+    "combined_dims",
+    "wnn",
+    "multivi",
+    "tsne",
+    "spatial_neighbors", "spatial_smooth", "spatial_domains", "spatial_moran", "aegle", "aegle_embedding",
+    "spatialglue", "spatialglue_preprocess", "spatialglue_graphs",
+    "lsi_spatialglue", "clr_normalize_each_cell",
+    "stagate", "graphst", "spaceflow", "cellcharter", "cast", "binary",
+    *_SPATIAL_PORT_ATTRS,
+    "cnv", "cnv_make_windows", "cnv_count_matrix", "cnv_subclones",
+    "cnv_karyotype_measures", "cnv_burden",
+    "scbasset",
+    "peakvi",
 ]

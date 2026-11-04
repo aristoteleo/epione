@@ -1,0 +1,47 @@
+{
+  "T1": {
+    "identical_decay": true,
+    "identical_sparsity": true,
+    "n_bins": 132,
+    "seconds_epi_8proc": 6.050845146179199,
+    "seconds_ref_1proc": 43.88687300682068,
+    "pass": true
+  },
+  "T2": {
+    "cells": 8040,
+    "identical": true,
+    "cells_differing": 0,
+    "pass": true
+  },
+  "T3": {
+    "max_abs_err": 1.3322676295501878e-15,
+    "max_abs_err_from_published_decay": 4.440892098500626e-16,
+    "pass": true
+  },
+  "T4": {
+    "types": 35,
+    "bins": 24478,
+    "max_abs_err": 1.0658141036401503e-14,
+    "pass": true
+  },
+  "T4b": {
+    "qnorm_version": "1.0.0",
+    "max_abs_err": 0.0,
+    "pass": true
+  },
+  "T5": {
+    "groups_identical": {
+      "c0": true,
+      "c1": true,
+      "c7": true
+    },
+    "contacts_counted": {
+      "c0": 8468334,
+      "c1": 12069167,
+      "c7": 3547466
+    },
+    "seconds_epi_8proc": 5.551454305648804,
+    "seconds_ref_8proc": 10.283745527267456,
+    "pass": true
+  }
+}

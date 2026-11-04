@@ -155,7 +155,7 @@ def test_peak_to_gene_api_keys():
         total_features=500, sample_cells_pre=None, seed=0, verbose=False,
     )
     df = ep.tl.peak_to_gene(
-        ad_peak, rna=ad_rna, gene_annotation=gene_ann,
+        ad_peak, rna=ad_rna, gene_annotation=gene_ann, use_rep="X_iterative_lsi",
         n_metacells=50, k_neighbors=20, max_distance=100_000,
         seed=0, verbose=False,
     )

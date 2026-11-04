@@ -35,7 +35,7 @@ from ._peak_to_gene import (
 def coaccessibility(
     adata: AnnData,
     *,
-    use_rep: str = "X_iterative_lsi",
+    use_rep: str = "X_birmt",
     n_metacells: int = 500,
     k_neighbors: int = 100,
     max_distance: int = 250_000,
@@ -54,7 +54,7 @@ def coaccessibility(
     adata
         Cells × peaks AnnData. ``adata.var_names`` must be interval-style
         (``chr:start-end``) and ``adata.obsm[use_rep]`` must hold an embedding
-        (e.g. output of :func:`epione.tl.iterative_lsi`).
+        (default ``'X_birmt'``, the output of :func:`epione.tl.birmt`; ``'X_iterative_lsi'`` for :func:`epione.tl.iterative_lsi`).
     use_rep, n_metacells, k_neighbors, seed
         Same semantics as :func:`epione.tl.peak_to_gene`.
     max_distance
@@ -73,7 +73,7 @@ def coaccessibility(
     """
     if use_rep not in adata.obsm:
         raise KeyError(
-            f"adata.obsm[{use_rep!r}] not found – run iterative_lsi first."
+            f"adata.obsm[{use_rep!r}] not found – run epi.tl.birmt (default embedding, obsm['X_birmt']) or pass use_rep='X_iterative_lsi' after epi.tl.iterative_lsi."
         )
     emb = np.asarray(adata.obsm[use_rep])
 

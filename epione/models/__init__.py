@@ -12,6 +12,20 @@ Currently:
     scPrinter's sequence -> multi-scale footprint model, with cell-state
     LoRA. Model blocks and training targets match scPrinter exactly.
 
+``chrombpnet``
+    ChromBPNet's bias-factorised base-resolution accessibility model,
+    rewritten in PyTorch from the official TensorFlow code; official
+    ``.h5`` weights and ENCODE releases load without TensorFlow.
+
+``grelu``
+    A bridge to gReLU (Genentech): Epione models become gReLU models, so
+    variant-effect prediction, ISM and attributions run on them.
+
+``scbasset``
+    scBasset's sequence -> per-cell accessibility CNN, rewritten in
+    PyTorch from the official TensorFlow code; its last layer is a cell
+    embedding (``epi.tl.scbasset``).
+
 ``scooby``
     Single-cell sequence→profile prediction (Borzoi backbone, LoRA,
     cell-state-conditioned decoder). The target and fold-preparation
@@ -21,21 +35,33 @@ Currently:
 ``aceso``
     ACESO: genome-wide single-cell chromatin accessibility from a
     targeted spatial RNA panel (EpiAgent state space, panel-agnostic
-    scGPT state encoder, scooby decoder, end-to-end joint fine-tuning).
+    scGPT state encoder, AlphaGenome/Borzoi decoder with a linear
+    per-cell read-out, end-to-end joint fine-tuning).
+
+Pretrained weights of every family are listed and loaded through one
+registry, :mod:`epione.models.registry` (no torch needed to list):
+
+>>> epi.models.list_pretrained(organism="human")
+>>> net = epi.models.load_pretrained("chrombpnet_encode_k562", kind="bias")
 """
 from __future__ import annotations
 
 import importlib
 from typing import TYPE_CHECKING
 
-_SUBPACKAGES = ("aceso", "scooby", "seq2print")
+_SUBPACKAGES = ("aceso", "chrombpnet", "grelu", "registry", "scbasset", "scooby", "seq2print")
+_REGISTRY_API = ("ChecksumError", "PretrainedEntry", "fetch_pretrained", "get_pretrained",
+                 "list_pretrained", "load_pretrained", "pretrained_cache_dir", "register",
+                 "register_family", "unregister")
 
-__all__ = list(_SUBPACKAGES)
+__all__ = list(_SUBPACKAGES) + list(_REGISTRY_API)
 
 
 def __getattr__(name: str):
     if name in _SUBPACKAGES:
         return importlib.import_module(f".{name}", __name__)
+    if name in _REGISTRY_API:
+        return getattr(importlib.import_module(".registry", __name__), name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 

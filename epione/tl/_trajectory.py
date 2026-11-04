@@ -173,7 +173,7 @@ def add_trajectory(
     adata: AnnData,
     trajectory: Sequence[str],
     groupby: str = "Clusters",
-    use_rep: str = "X_iterative_lsi",
+    use_rep: str = "X_birmt",
     pre_filter_quantile: float = 0.9,
     post_filter_quantile: float = 0.9,
     use_all: bool = False,

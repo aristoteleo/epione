@@ -39,7 +39,7 @@ Contact matrices, normalization and a published case study.
 :link: single/basics
 :link-type: doc
 
-Example data, QC, dimensionality reduction, batch correction and label transfer.
+FASTQ to fragments, example data, QC, dimensionality reduction, batch correction and label transfer.
 :::
 
 :::{grid-item-card} Clusters and markers
@@ -63,11 +63,18 @@ Peak-to-gene links, TF motif activity, TF regulators and trajectories.
 TF footprinting, PRINT and sequence-to-profile deep learning models.
 :::
 
-:::{grid-item-card} SCENIC+
+:::{grid-item-card} Gene regulatory networks
 :link: single/scenic
 :link-type: doc
 
-The full SCENIC+ pipeline, from topics to eRegulons, with bit-exact parity to the reference implementation.
+SCENIC+ eRegulons (topics to eRegulons, bit-exact with the reference) and Pando TF x binding-site models.
+:::
+
+:::{grid-item-card} Multimodal analysis
+:link: single/multimodal
+:link-type: doc
+
+Joint embeddings, weighted nearest neighbours and deep generative latent spaces for paired RNA + ATAC cells.
 :::
 
 :::{grid-item-card} Cross-modality translation
@@ -82,6 +89,13 @@ Predict chromatin accessibility from gene expression and expression from accessi
 :link-type: doc
 
 Imputation and embedding of single-cell contact maps, and a Droplet Hi-C case study.
+:::
+
+:::{grid-item-card} Copy-number variation
+:link: single/cnv
+:link-type: doc
+
+Per-cell gains and losses from scATAC-seq read depth (epiAneufinder), subclones and karyograms.
 :::
 
 ::::

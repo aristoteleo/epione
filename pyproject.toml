@@ -46,6 +46,9 @@ dependencies = [
     'scanpy',
     'pyBigWig>=0.3',
     'pysam',
+    'pyarrow',       # epione.pp._fragment_io: vectorised fragment parsing
+    'numba',         # fragment-store / LSI kernels (already required by scanpy)
+    'isal',          # epione.pp._fragment_io: fast BGZF inflate (falls back to zlib)
     'pyranges',
     'pyfaidx',
     'biopython',     # epione.core.motifs: `from Bio import motifs`
@@ -58,6 +61,9 @@ dependencies = [
 [project.optional-dependencies]
 # Extras pulled in only when the matching feature is actually called.
 # Kept out of `dependencies` so `pip install epione` stays lightweight.
+cnv = [
+    'scikit-misc',   # epione.tl.cnv GC correction (same dloess code as R stats::loess)
+]
 diffexp = [
     'patsy',         # design matrices for edgepy backend
     'pydeseq2',
@@ -69,6 +75,7 @@ motif = [
     'torch',         # find_motifs_genome GPU PWM scan
     'mpmath',        # extreme-tail binomial
     'logomaker',     # PWM logos in epione.pl.homer_motif_table
+    'pychromvar',    # epi.tl.add_motif_matrix (CPU MOODS scan) / get_bg_peaks -> compute_deviations
 ]
 footprint = [
     'MOODS-python',
@@ -90,6 +97,12 @@ hic = [
     'cooltools>=0.7',
     'pairtools>=1.0',
     'bioframe',
+    'tables',        # epione.bulk.hic.h5_to_cool (HiCExplorer .h5 matrices)
+]
+higashi = [
+    # epione.single.hic impute_cells / embedding with method="higashi"
+    'torch>=2.0',
+    'cooler>=0.10',
 ]
 test = [
     'pytest>=7',
@@ -98,8 +111,8 @@ test = [
     'patsy',
     'pydeseq2',
     'inmoose',
-    # pychromvar is lazy-imported by tl._background_peaks and exercised by
-    # the existing tests/test_chromvar.py tests.
+    # pychromvar is lazy-imported by tl._background_peaks / tl._motif_matrix
+    # (also in the `motif` extra) and exercised by tests/test_chromvar.py.
     'pychromvar',
     # igraph + leidenalg drive the community-detection path used by
     # tl._coaccessibility (tests/test_coaccessibility.py).
@@ -110,22 +123,70 @@ test = [
     'cooltools>=0.7',
     'pairtools>=1.0',
     'bioframe',
+    'tables',        # epione.bulk.hic.h5_to_cool (tests/test_bulk_hic_hicexplorer.py)
     # Parquet engine for models.scooby.export_embedding, which writes
     # the embedding format upstream scooby reads
     # (tests/test_scooby_targets.py).
     'pyarrow',
+    # epi.tl.tsne (tests/test_multimodal.py).
+    'openTSNE>=1.0',
+    # epione.tl.cnv GC correction (tests/test_cnv.py).
+    'scikit-misc',
 ]
 translate = [
     # epione.translate methods (scButterfly, ...); prepare/metrics need none of these.
     'torch>=2.0',
+]
+spatial = [
+    # epione.tl.spatialglue (SpatialGlue port) and spatial_domains(method="mclust").
+    # Also epi.tl.cosmos / present / instinct / candies / praga / miso and
+    # spatial_domains(method=...): plain-torch layers (epione.tl._gnn), no
+    # torch_geometric; torch-sparse, if installed, is used only for PRESENT's
+    # METIS mini-batches (coordinate-bisection fallback otherwise).
+    'torch>=2.0',
+    'pymclustR>=0.2.1',
+    'scikit-misc',   # seurat_v3 highly-variable genes / peaks (PRESENT, CANDIES, PRAGA)
+    'leidenalg',     # PRESENT's Leiden resolution search
+]
+pando = [
+    # epione.grn.pando: the omicverse port of Pando (R) with its parity tests.
+    'pypando[plot]>=0.1.2',
+]
+grelu = [
+    # epione.models.grelu: variant effects / ISM / attributions via gReLU.
+    'grelu>=1.1',
 ]
 scenic = [
     # cisTarget feather databases (Arrow IPC) and pycistarget-format hdf5 I/O.
     'pyarrow',
     'tables',
 ]
+multimodal = [
+    # epi.tl.multivi, epi.tl.peakvi, epi.tl.scbasset (torch, via scvi-tools),
+    # epi.tl.tsne, epi.io.read_10x_multiome(backed=...)
+    'scvi-tools>=1.3',
+    'openTSNE>=1.0',
+    'mudataoom',
+    'pyccasc',       # epi.tl.integrate(method='cca') (imports as cca_py)
+]
+doublets = [
+    # epi.pp.scdblfinder / amulet / clamulet (scATAC mode of the omicverse scDblFinder port).
+    'pyscdblfinder>=0.3.0',
+    # epi.pp.archr_doublets: Louvain clustering inside the iterative LSI.
+    'igraph',
+]
+gpu = [
+    # torch backend of every `device=` argument (epi.tl.lsi / iterative_lsi /
+    # compute_deviations / add_motif_matrix / peak_to_gene, epi.pp.neighbors).
+    # Install a CUDA build of torch for your driver (https://pytorch.org).
+    # The optional backend="rapids" path additionally needs
+    # `pip install "rapids-singlecell[rapids-cu12]"` (glibc >= 2.28); it is
+    # deliberately not listed here.
+    'torch>=2.0',
+    'MOODS-python',  # log-odds matrices / thresholds for the GPU motif scan
+]
 full = [
-    'epione[diffexp,motif,footprint,upstream,scenic,translate]',
+    'epione[diffexp,motif,footprint,upstream,scenic,pando,translate,multimodal,doublets,higashi,cnv,spatial,gpu]',
 ]
 
 

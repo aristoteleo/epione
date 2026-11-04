@@ -1,6 +1,6 @@
 """Cell embedding from imputed sc-Hi-C matrices.
 
-Concatenates the upper triangle of every ``<cell>.npz`` written by
+Concatenates the upper triangle of every imputed ``<cell>.cool`` / ``<cell>.npz`` written by
 :func:`impute_cells`, runs PCA on the resulting cell × feature matrix,
 and stores the result on the input ``AnnData``. Standard scanpy
 ``sc.pp.neighbors`` / ``sc.tl.umap`` / ``sc.tl.leiden`` work directly on
@@ -29,7 +29,8 @@ def _features_from_npz(npz_path: Path, chromosomes: Sequence[str],
     ``.npz``, concatenate in ``chromosomes`` order, and return a 1-D
     feature vector. ``layout`` is the cached upper-tri indices per chrom.
     """
-    z = np.load(npz_path)
+    from ._imputed_io import ImputedCell
+    z = ImputedCell(npz_path)
     chunks = []
     for ch in chromosomes:
         if ch not in z.files:
@@ -38,9 +39,8 @@ def _features_from_npz(npz_path: Path, chromosomes: Sequence[str],
             # stays uniform across cells.
             chunks.append(np.zeros(layout[ch][3], dtype=np.float32))
             continue
-        P = z[ch]
         iu, ju = layout[ch][0], layout[ch][1]
-        chunks.append(P[iu, ju].astype(np.float32))
+        chunks.append(z.values(ch, iu, ju))
     return np.concatenate(chunks)
 
 
@@ -51,8 +51,34 @@ def embedding(
     chromosomes: Optional[Sequence[str]] = None,
     standardise: bool = True,
     random_state: int = 0,
+    method: str = "pca",
+    device=None,
+    higashi_params: Optional[dict] = None,
+    work_dir=None,
+    dim: int = 50,
+    dist: int = 1_000_000,
+    scale_factor: float = 100_000,
+    norm_sig: bool = False,
 ):
-    """PCA embedding of imputed sc-Hi-C contacts.
+    """Cell embedding: PCA on imputed contacts (default) or Higashi.
+
+    ``method="pca"`` (default) is described below. ``method="higashi"``
+    returns Higashi's stage-1 hypergraph cell embedding
+    (``obsm['X_higashi']``, ``higashi_params['dimensions']`` wide, also in
+    ``X``). It needs no prior :func:`impute_cells`; when
+    :func:`impute_cells` (``method="higashi"``) already trained a model
+    with the same settings that model is reused. ``n_components`` and
+    ``standardise`` are ignored for Higashi; ``random_state``, ``device``
+    and ``higashi_params`` are as in :func:`impute_cells`, and ``work_dir``
+    (optional) is where ``higashi_model.pt`` is saved.
+
+    ``method="schicluster"`` is scHiCluster's ``hicluster embedding``, the
+    usual choice at 100 kb, where whole upper triangles are too large: per
+    chromosome, the imputed contacts within ``dist`` of the diagonal are
+    scaled by ``scale_factor`` and reduced by a ``dim``-component truncated
+    SVD; the reductions are concatenated and reduced again
+    (``obsm['X_schicluster']``; ``norm_sig`` divides by the singular
+    values). The defaults are the CLI's.
 
     Arguments:
         adata: AnnData from :func:`load_cool_collection` after
@@ -72,6 +98,16 @@ def embedding(
         ``adata.obsm['X_pca']``, ``adata.varm['PCs']``,
         ``adata.uns['pca']`` (variance / explained-ratio).
     """
+    if method == "higashi":
+        from ._higashi_api import higashi_embedding
+        return higashi_embedding(adata, chromosomes=chromosomes, random_state=random_state, device=device,
+                                 higashi_params=higashi_params, work_dir=work_dir)
+    if method == "schicluster":
+        return _schicluster_embedding(adata, chromosomes=chromosomes, dim=dim, dist=dist,
+                                      scale_factor=scale_factor, norm_sig=norm_sig,
+                                      random_state=random_state)
+    if method != "pca":
+        raise ValueError(f"method must be 'pca', 'schicluster' or 'higashi', got {method!r}")
     from sklearn.decomposition import PCA
 
     info = adata.uns.get("hic", {})
@@ -106,7 +142,8 @@ def embedding(
     cell_ids = list(adata.obs_names)
     feats = []
     for cid in cell_ids:
-        npz_path = imputed_dir / f"{cid}.npz"
+        from ._imputed_io import imputed_path
+        npz_path = imputed_path(imputed_dir, cid)
         if not npz_path.exists():
             raise FileNotFoundError(
                 f"missing imputed file for cell {cid}: {npz_path}. "
@@ -144,4 +181,78 @@ def embedding(
     new.uns["hic"] = dict(info)
     new.uns["hic"]["embedding_chromosomes"] = list(chromosomes)
     new.uns["hic"]["n_features"] = int(X.shape[1])
+    return new
+
+
+def _band_indices(n: int, dist: int, resolution: int):
+    """Upper-triangle pixels within ``dist`` of the diagonal (scHiCluster ``make_idx``),
+    in row-major order, without enumerating the whole upper triangle."""
+    k = min(int(np.ceil(dist / resolution + 1)) - 1, n - 1)   # offsets d with 1 <= d < dist/res + 1
+    if k < 1:
+        return np.zeros(0, dtype=np.int64), np.zeros(0, dtype=np.int64)
+    lengths = np.minimum(k, n - 1 - np.arange(n))
+    iu = np.repeat(np.arange(n, dtype=np.int64), lengths)
+    starts = np.repeat(np.cumsum(lengths) - lengths, lengths)
+    ju = iu + 1 + (np.arange(iu.size, dtype=np.int64) - starts)
+    return iu, ju
+
+
+def _truncated_svd(M: np.ndarray, dim: int, norm_sig: bool, random_state):
+    """scHiCluster ``svd``: ARPACK truncated SVD, optionally divided by the singular values."""
+    from sklearn.decomposition import TruncatedSVD
+
+    dim = min(dim, M.shape[0] - 1, M.shape[1] - 1)
+    model = TruncatedSVD(n_components=dim, algorithm="arpack", random_state=random_state)
+    decomp = model.fit_transform(M)
+    if norm_sig:
+        keep = model.singular_values_ > 0
+        decomp = decomp[:, keep] / model.singular_values_[keep][None, :]
+    return decomp
+
+
+def _schicluster_embedding(adata, *, chromosomes, dim, dist, scale_factor, norm_sig,
+                           random_state):
+    """scHiCluster ``hicluster embedding`` on the imputed file of every cell.
+
+    Per chromosome: the imputed contacts within ``dist`` of the diagonal
+    (cells × pixels), multiplied by ``scale_factor``, reduced by a
+    ``dim``-component truncated SVD; the chromosome reductions are
+    concatenated and reduced again to ``dim`` components.
+    """
+    import anndata as ad
+    from ._imputed_io import ImputedCell, imputed_path
+
+    info = adata.uns.get("hic", {})
+    imputed_dir = info.get("imputed_dir")
+    if imputed_dir is None:
+        raise ValueError("adata.uns['hic']['imputed_dir'] not set; run impute_cells() first")
+    imputed_dir = Path(imputed_dir)
+    resolution = int(info["resolution"])
+    chromosomes = list(chromosomes) if chromosomes is not None else list(
+        info.get("impute_params", {}).get("chromosomes", info.get("chromosomes", [])))
+    n_bins = info.get("n_chrom_bins", {})
+    chromosomes = [c for c in chromosomes if int(n_bins.get(c, 0)) > 2]
+    idx = {c: _band_indices(int(n_bins[c]), int(dist), resolution) for c in chromosomes}
+    cells = list(adata.obs_names)
+    mats = {c: np.zeros((len(cells), idx[c][0].size), dtype=np.float32) for c in chromosomes}
+    for i, cid in enumerate(cells):
+        npz_path = imputed_path(imputed_dir, cid)
+        if not npz_path.exists():
+            raise FileNotFoundError(f"missing imputed file for cell {cid}: {npz_path}")
+        z = ImputedCell(npz_path)
+        for c in chromosomes:
+            if c in z.files:
+                mats[c][i] = z.values(c, *idx[c])
+    parts = []
+    for c in chromosomes:
+        M = mats.pop(c)
+        M *= np.float32(scale_factor)
+        parts.append(_truncated_svd(M, dim, norm_sig, random_state))
+    final = _truncated_svd(np.concatenate(parts, axis=1), dim, norm_sig, random_state)
+    new = ad.AnnData(X=final.astype(np.float32), obs=adata.obs.copy(), uns=dict(adata.uns))
+    new.obsm["X_schicluster"] = final.astype(np.float32)
+    new.uns["hic"] = dict(info)
+    new.uns["hic"]["embedding"] = {"method": "schicluster", "dim": int(dim), "dist": int(dist),
+                                   "scale_factor": float(scale_factor), "norm_sig": bool(norm_sig),
+                                   "chromosomes": chromosomes}
     return new

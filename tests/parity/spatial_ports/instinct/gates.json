@@ -1,0 +1,109 @@
+{
+ "seeds": [
+  1234,
+  1235,
+  1236,
+  1237,
+  1238
+ ],
+ "per_seed": {
+  "1234": {
+   "maxabs": {
+    "emb": 0.0
+   },
+   "ARI_port_vs_off": 1.0,
+   "ARI_truth_off": 0.26293280228906046,
+   "ARI_truth_port": 0.26293280228906046,
+   "NMI_truth_off": 0.45158117149811383,
+   "NMI_truth_port": 0.45158117149811383,
+   "sec_off": 10.344677889719605,
+   "sec_port": 36.40522632934153
+  },
+  "1235": {
+   "maxabs": {
+    "emb": 0.0
+   },
+   "ARI_port_vs_off": 1.0,
+   "ARI_truth_off": 0.27821826907170544,
+   "ARI_truth_port": 0.27821826907170544,
+   "NMI_truth_off": 0.46090304280778077,
+   "NMI_truth_port": 0.46090304280778077,
+   "sec_off": 10.473442830145359,
+   "sec_port": 29.238166181370616
+  },
+  "1236": {
+   "maxabs": {
+    "emb": 0.0
+   },
+   "ARI_port_vs_off": 1.0,
+   "ARI_truth_off": 0.2626877901630891,
+   "ARI_truth_port": 0.2626877901630891,
+   "NMI_truth_off": 0.4364138206839979,
+   "NMI_truth_port": 0.4364138206839979,
+   "sec_off": 12.866468124091625,
+   "sec_port": 28.38609954994172
+  },
+  "1237": {
+   "maxabs": {
+    "emb": 0.0
+   },
+   "ARI_port_vs_off": 1.0,
+   "ARI_truth_off": 0.3056240230212427,
+   "ARI_truth_port": 0.3056240230212427,
+   "NMI_truth_off": 0.4480142062286021,
+   "NMI_truth_port": 0.4480142062286021,
+   "sec_off": 11.25219246558845,
+   "sec_port": 32.14936050120741
+  },
+  "1238": {
+   "maxabs": {
+    "emb": 0.0
+   },
+   "ARI_port_vs_off": 1.0,
+   "ARI_truth_off": 0.25745686766525977,
+   "ARI_truth_port": 0.25745686766525977,
+   "NMI_truth_off": 0.4504429292316136,
+   "NMI_truth_port": 0.4504429292316136,
+   "sec_off": 11.1513787843287,
+   "sec_port": 56.861899129115045
+  }
+ },
+ "gates": {
+  "G0": {
+   "pass": true,
+   "tol": 0.0001
+  },
+  "G1": {
+   "pass": true,
+   "min_ARI": 1.0
+  },
+  "G2": {
+   "median_cross": 0.5221859888308181,
+   "median_seed2seed": 0.5221859888308181,
+   "pass": true
+  },
+  "G3": {
+   "median_cross": 0.5765722795697004,
+   "median_seed2seed": 0.5765722795697004,
+   "same_seed_median": 1.0,
+   "pass": true
+  },
+  "G4": {
+   "ARI_truth": {
+    "mean_off": 0.27338395044207153,
+    "sd_off": 0.01962204898024371,
+    "mean_port": 0.27338395044207153,
+    "tol": 0.03924409796048742,
+    "pass": true
+   },
+   "NMI_truth": {
+    "mean_off": 0.4494710340900216,
+    "sd_off": 0.008784948103410382,
+    "mean_port": 0.4494710340900216,
+    "tol": 0.02,
+    "pass": true
+   }
+  }
+ },
+ "PASS_required": true
+}

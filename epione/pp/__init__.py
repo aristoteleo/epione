@@ -2,6 +2,7 @@ from ._data import (
     import_fragments, make_peak_matrix, make_gene_matrix, add_tile_matrix,
     concat_samples,
 )
+from ._fragment_store import release_fragment_store
 from ._metric import (
     frag_size_distr, tsse, ensure_tabix_index,
     tss_enrichment,nucleosome_signal,select_features,
@@ -13,11 +14,17 @@ from ._qc import (
 from ._neighbors import (
     neighbors,
 )
+from ._doublets import (
+    archr_doublets, filter_doublets, scdblfinder, amulet, clamulet,
+    combine_doublet_scores, doublets,
+)
+from ._bayes_doublets import bayes_doublets, count_overlap_loci, loading_doublet_rate
 
 
 
 __all__ = [
     "import_fragments",
+    "release_fragment_store",
     "concat_samples",
     "frag_size_distr",
     "tsse",
@@ -31,4 +38,15 @@ __all__ = [
     "qc",
     "scrublet",
     "neighbors",
+    # doublets
+    "doublets",
+    "bayes_doublets",
+    "count_overlap_loci",
+    "loading_doublet_rate",
+    "archr_doublets",
+    "filter_doublets",
+    "scdblfinder",
+    "amulet",
+    "clamulet",
+    "combine_doublet_scores",
 ]

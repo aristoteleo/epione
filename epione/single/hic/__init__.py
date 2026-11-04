@@ -11,15 +11,52 @@ demux a multi-cell pairs file by barcode, build one ``.cool`` per
 celltype, and quantify celltype × celltype similarity via cis
 contact-vector correlation — the upstream of Chang 2024 Fig 1d/e/f.
 
+Higashi (Zhang, Zhou & Ma 2022, *Nat. Biotechnol.*) is available as an
+alternative imputation / embedding method: ``impute_cells(...,
+method="higashi")`` and ``embedding(..., method="higashi")`` train a
+PyTorch port of ma-compbio/Higashi (MIT) on all cells jointly — a
+hypergraph of cell and bin nodes scored by Hyper-SAGNN, a cell-dependent
+GNN, and k-nearest-cell imputation. It needs ``torch`` (a GPU is
+recommended). Defaults remain scHiCluster + PCA.
+
 Public API (flat — call as ``epi.single.hic.X``):
     * :func:`load_cool_collection`     — index per-cell ``.cool`` paths
     * :func:`load_scool_cells`         — index a multi-cell ``.scool`` bundle
     * :func:`impute_cell_chromosome`   — pure-numpy core (one matrix)
     * :func:`impute_cells`             — driver over a cell collection
+                                         (``method="schicluster"`` | ``"higashi"``)
     * :func:`embedding`                — PCA on flattened imputed contacts
+                                         (``method="pca"`` | ``"higashi"``)
     * :func:`demux_pairs_by_barcode`   — split multi-cell pairs by celltype
     * :func:`pseudobulk_by_celltype`   — demux + ``pairs_to_cool`` + balance
     * :func:`cluster_correlation`      — celltype × celltype Pearson r
+
+Compartments from raw contacts (scHiCluster + Human Cell Epigenome Atlas):
+    * :func:`cpg_ratio`                — per-bin CpG density (phasing track)
+    * :func:`contacts_to_scool`        — per-cell contact tables → raw ``.scool``
+    * :func:`load_contact_tables`      — index contact tables without binning
+    * :func:`gene_score`               — contacts inside each gene body (``hicluster gene-score``)
+
+Loops (scHiCluster calling + Human Cell Epigenome Atlas differential loops):
+    * :func:`call_loops`               — scHiCluster loop calling per cell group
+    * :func:`merge_loops`              — union of several groups' loops
+    * :func:`loop_anova`               — per-pixel ANOVA of Q / E / T across groups
+    * :func:`loop_values`              — cool values at each loop
+    * :func:`differential_loops`       — ANOVA p / FDR at loops + HCEA selection
+    * :func:`specific_loops`           — group-specific loops by fold change
+    * :func:`loop_apa`                 — aggregate peak analysis
+    * :func:`compartment_scores`       — scHiCluster single-cell score
+    * :func:`merge_cells`              — raw pseudobulk ``.cool`` per group
+    * :func:`compartment_model`        — fit the HCEA PCA model on merged contacts
+    * :func:`project_compartments`     — score each pseudobulk on that model
+    * :func:`compartment_saddle`       — saddle matrix + AA/BB/AB/BA strength
+    * :func:`oe_correlation`           — O/E and correlation matrix of one chromosome
+
+Contact decay (scHiCluster + Human Cell Epigenome Atlas):
+    * :func:`contact_decay`            — per-cell contact-distance histogram
+    * :func:`decay_ratio`              — log2 short/long contact ratio per cell
+    * :func:`compartment_contact_hist` — contacts by distance × compartment score
+    * :func:`quantile_normalize`       — qnorm-style quantile normalisation
 """
 from __future__ import annotations
 
@@ -29,6 +66,29 @@ from ._embed import embedding
 from ._demux import demux_pairs_by_barcode, pseudobulk_by_celltype
 from ._correlation import cluster_correlation, cell_celltype_correlation
 from ._scgad import scgad_score, load_refflat_genes
+from ._gene_score import gene_score
+from ._loop import (
+    call_loops, loop_anova, merge_loops, loop_values, differential_loops, specific_loops, loop_apa,
+)
+from ._compartment import (
+    cpg_ratio,
+    contacts_to_scool,
+    load_contact_tables,
+    compartment_scores,
+    merge_cells,
+    compartment_model,
+    project_compartments,
+    compartment_saddle,
+    oe_correlation,
+    write_bedgraph,
+)
+from ._decay import (
+    contact_decay,
+    decay_bins,
+    decay_ratio,
+    compartment_contact_hist,
+    quantile_normalize,
+)
 # Plotting helpers live in :mod:`epione.pl` since v0.4 (PR 3); import
 # them from there so ``epi.single.hic.plot_*`` still resolves.
 from epione.pl._embedding import plot_embedding
@@ -45,7 +105,30 @@ __all__ = [
     "cluster_correlation",
     "cell_celltype_correlation",
     "scgad_score",
+    "gene_score",
+    "call_loops",
+    "loop_anova",
+    "merge_loops",
+    "loop_values",
+    "differential_loops",
+    "specific_loops",
+    "loop_apa",
     "load_refflat_genes",
+    "cpg_ratio",
+    "contacts_to_scool",
+    "load_contact_tables",
+    "compartment_scores",
+    "merge_cells",
+    "compartment_model",
+    "project_compartments",
+    "compartment_saddle",
+    "oe_correlation",
+    "write_bedgraph",
+    "contact_decay",
+    "decay_bins",
+    "decay_ratio",
+    "compartment_contact_hist",
+    "quantile_normalize",
     "plot_embedding",
     "plot_cell_contacts",
     "plot_correlation_heatmap",

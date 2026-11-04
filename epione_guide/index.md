@@ -54,6 +54,7 @@ Report issues or contribute on GitHub.
 :maxdepth: 1
 
 installation
+gpu
 user_guide/index
 tutorials/index
 ```
@@ -80,6 +81,8 @@ tutorials/single/clusters
 tutorials/single/regulation
 tutorials/single/footprints
 tutorials/single/scenic
+tutorials/single/multimodal
+tutorials/single/spatial
 tutorials/single/translation
 tutorials/single/hic
 ```

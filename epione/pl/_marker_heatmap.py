@@ -993,7 +993,7 @@ def prepare_peak2gene_heatmap(
 
     params = dict(adata.uns.get(key + "_params", {}))
     links = adata.uns[key] if links is None else links
-    use_rep = use_rep or params.get("use_rep", "X_iterative_lsi")
+    use_rep = use_rep or params.get("use_rep", "X_birmt")
     n_metacells = n_metacells or params.get("n_metacells", 500)
     k_neighbors = k_neighbors or params.get("k_neighbors", 100)
     seed = params.get("seed", 1) if seed is None else seed

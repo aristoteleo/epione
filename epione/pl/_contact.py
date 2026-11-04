@@ -112,7 +112,7 @@ def plot_contact_matrix(
     )
     ax.set_xlabel(f"{chrom} position (bp)")
     ax.set_ylabel(f"{chrom} position (bp)")
-    ax.set_title(title or f"{Path(cool_path).name} — {region}")
+    ax.set_title(f"{Path(cool_path).name} — {region}" if title is None else title)
     if colorbar:
         fig.colorbar(img, ax=ax, shrink=0.8,
                      label="log contact" if log else "contact")
@@ -205,7 +205,7 @@ def plot_decay_curve(
               color=color, lw=1.4)
     ax.set_xlabel("genomic distance (bp)")
     ax.set_ylabel("mean contact" + (" (balanced)" if balance else " (raw)"))
-    ax.set_title(title or f"P(s) — {Path(cool_path).name}")
+    ax.set_title(f"P(s) — {Path(cool_path).name}" if title is None else title)
     for sp in ("top", "right"):
         ax.spines[sp].set_visible(False)
     return fig, ax, df
@@ -313,7 +313,7 @@ def plot_cell_contacts(
             (or :func:`load_scool_cells`).
         cell_id: row in ``adata.obs_names``.
         chromosome: e.g. ``'chr1'``.
-        use_imputed: read the imputed ``.npz`` (requires
+        use_imputed: read the imputed ``.cool`` / ``.npz`` (requires
             :func:`epione.single.hic.impute_cells` to have run).
             ``False`` reads raw counts from the original ``.cool``
             for comparison.
@@ -337,7 +337,9 @@ def plot_cell_contacts(
                 "use_imputed=False or run epione.single.hic.impute_cells "
                 "first"
             )
-        z = np.load(Path(imputed_dir) / f"{cell_id}.npz")
+        from epione.single.hic._imputed_io import ImputedCell
+        from epione.single.hic._imputed_io import imputed_path
+        z = ImputedCell(imputed_path(imputed_dir, cell_id))
         if chromosome not in z.files:
             raise KeyError(
                 f"chromosome {chromosome!r} not in imputed file for "
@@ -492,7 +494,7 @@ def plot_compartments(
     ax.axhline(0, color="black", lw=0.5)
     ax.set_xlabel(f"{chromosome} (Mb)")
     ax.set_ylabel(track_column)
-    ax.set_title(title or f"compartments — {chromosome}")
+    ax.set_title(f"compartments — {chromosome}" if title is None else title)
     for sp in ("top", "right"):
         ax.spines[sp].set_visible(False)
     return fig, ax
@@ -617,7 +619,7 @@ def plot_contact_triangle(
     # actual visual aspect via ``figsize``.
     ax.set_xlabel(f"{chrom} position (bp)")
     ax.set_ylabel("contact distance (bp)")
-    ax.set_title(title or f"{Path(cool_path).name} — {region}")
+    ax.set_title(f"{Path(cool_path).name} — {region}" if title is None else title)
     for sp in ("top", "right"):
         ax.spines[sp].set_visible(False)
     if colorbar:
@@ -643,7 +645,8 @@ def plot_insulation(
     """Per-bin insulation-score line plot for one chromosome.
 
     Renders the diamond-insulation score from :func:`epione.bulk.hic.insulation`
-    as a line; optionally drops vertical ticks at the called TAD
+    as a line (or, for a ``method="hicexplorer"`` table, the mean
+    TAD-separation score, or one window with ``window_bp``); optionally drops vertical ticks at the called TAD
     boundaries (red by default). Designed to stack on top of a
     contact-pyramid panel in figures of the Maziak 2026 / Chang 2024
     style.
@@ -666,16 +669,21 @@ def plot_insulation(
     """
     import matplotlib.pyplot as plt
 
-    cols = [c for c in insulation_df.columns
-            if c.startswith("log2_insulation_score_")]
+    hicx = "tad_separation_score" in insulation_df.columns
+    prefix = "tad_separation_score_" if hicx else "log2_insulation_score_"
+    cols = [c for c in insulation_df.columns if c.startswith(prefix)]
     if not cols:
         raise KeyError(
-            "insulation_df missing log2_insulation_score_* columns"
+            "insulation_df missing log2_insulation_score_* / tad_separation_score columns"
         )
     avail = [int(c.rsplit("_", 1)[-1]) for c in cols]
-    if window_bp is None:
-        window_bp = min(avail)
-    score_col = f"log2_insulation_score_{int(window_bp)}"
+    if hicx and window_bp is None:
+        # HiCExplorer calls boundaries on the mean over windows; plot that
+        score_col = "tad_separation_score"
+    else:
+        if window_bp is None:
+            window_bp = min(avail)
+        score_col = f"{prefix}{int(window_bp)}"
 
     sub = insulation_df.loc[insulation_df["chrom"] == chromosome].copy()
     if sub.empty:
@@ -699,7 +707,8 @@ def plot_insulation(
     if boundaries:
         if boundaries_df is None:
             from ..bulk.hic._insulation import tad_boundaries
-            boundaries_df = tad_boundaries(insulation_df, window_bp=window_bp)
+            boundaries_df = (tad_boundaries(insulation_df) if hicx
+                             else tad_boundaries(insulation_df, window_bp=window_bp))
         bsub = boundaries_df[boundaries_df["chrom"] == chromosome]
         if region_start is not None:
             bsub = bsub[bsub["end"] > region_start]
@@ -711,8 +720,12 @@ def plot_insulation(
                   color="#c13e3e", lw=0.6, alpha=0.85)
 
     ax.set_xlabel(f"{chromosome} (Mb)")
-    ax.set_ylabel(f"log2 insulation\n(window {int(window_bp)/1000:.0f} kb)")
-    ax.set_title(title or f"insulation — {chromosome}")
+    if hicx:
+        ax.set_ylabel("TAD-separation\nscore" + ("" if window_bp is None
+                                                 else f" ({int(window_bp)/1000:.0f} kb)"))
+    else:
+        ax.set_ylabel(f"log2 insulation\n(window {int(window_bp)/1000:.0f} kb)")
+    ax.set_title(f"insulation — {chromosome}" if title is None else title)
     for sp in ("top", "right"):
         ax.spines[sp].set_visible(False)
     return fig, ax
@@ -921,8 +934,9 @@ def plot_correlation_heatmap(
                 v = M[i, j]
                 if not np.isfinite(v):
                     continue
-                rel = (v - vmin) / max(vmax - vmin, 1e-9)
-                color = "white" if (rel < 0.2 or rel > 0.8) else "black"
+                # dark text on light cells, white text on dark cells
+                r, g, b, _ = img.cmap(img.norm(v))
+                color = "white" if (0.299 * r + 0.587 * g + 0.114 * b) < 0.5 else "black"
                 ax.text(j, i, format(v, annot_fmt),
                         ha="center", va="center",
                         color=color, fontsize=annot_fontsize)

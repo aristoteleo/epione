@@ -1,0 +1,8 @@
+{
+ "variant": "original (Epione preprocessing)",
+ "a_cell_embedding_maxabs": 0.08011960983276367,
+ "c_neighbor_lists_identical": false,
+ "b_impute_nbr0_maxabs": 0.0059015750885009766,
+ "c_impute_nbr5_maxabs": 0.0037345290184020996,
+ "G1b_pass": false
+}
