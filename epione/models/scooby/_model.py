@@ -12,6 +12,10 @@ and the next ``.to(device)`` fails with
 
     NotImplementedError: Cannot copy out of meta tensor; no data!
 
+Flashzoi checkpoints (``flashed`` Borzoi, flash_attn MHA with rotary
+embeddings) have the same issue for the rotary ``inv_freq`` buffer, which is
+recomputed with the module's own ``_compute_inv_freq``.
+
 Neither ``low_cpu_mem_usage=False`` nor ``_fast_init=False`` avoids it
 (checked against transformers 4.56.2 / borzoi-pytorch 0.4.2). The
 tables are deterministic — ``get_positional_embed(4096,
@@ -53,6 +57,11 @@ def materialize_meta_buffers(model, device: Optional[Any] = None) -> int:
     device = torch.device(device) if device is not None else torch.device("cpu")
     n = 0
     for module in model.modules():
+        # Flashzoi (flashed Borzoi): flash_attn's RotaryEmbedding keeps inv_freq non-persistent too
+        inv = module._buffers.get("inv_freq")
+        if inv is not None and inv.is_meta and hasattr(module, "_compute_inv_freq"):
+            module._buffers["inv_freq"] = module._compute_inv_freq(device)
+            n += 1
         buf = module._buffers.get("positions")
         if buf is None or not buf.is_meta:
             continue

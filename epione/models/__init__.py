@@ -32,6 +32,12 @@ Currently:
     layers work without torch; the model layers need a torch
     environment.
 
+``aceso``
+    ACESO: genome-wide single-cell chromatin accessibility from a
+    targeted spatial RNA panel (EpiAgent state space, panel-agnostic
+    scGPT state encoder, AlphaGenome/Borzoi decoder with a linear
+    per-cell read-out, end-to-end joint fine-tuning).
+
 Pretrained weights of every family are listed and loaded through one
 registry, :mod:`epione.models.registry` (no torch needed to list):
 
@@ -43,7 +49,7 @@ from __future__ import annotations
 import importlib
 from typing import TYPE_CHECKING
 
-_SUBPACKAGES = ("chrombpnet", "grelu", "registry", "scbasset", "scooby", "seq2print")
+_SUBPACKAGES = ("aceso", "chrombpnet", "grelu", "registry", "scbasset", "scooby", "seq2print")
 _REGISTRY_API = ("ChecksumError", "PretrainedEntry", "fetch_pretrained", "get_pretrained",
                  "list_pretrained", "load_pretrained", "pretrained_cache_dir", "register",
                  "register_family", "unregister")
