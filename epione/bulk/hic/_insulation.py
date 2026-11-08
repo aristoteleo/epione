@@ -122,6 +122,15 @@ def insulation(
     else:
         window_bp = [int(w) for w in window_bp]
 
+    if ignore_diags is None:
+        # Read it from the balancing weights' attributes ourselves: cooltools
+        # 0.7.1 does this through ``Cooler._load_attrs``, which cooler 0.12
+        # removed, and then reports the value as missing.
+        with clr.open("r") as grp:
+            w = grp["bins"].get("weight")
+            if w is not None and "ignore_diags" in w.attrs:
+                ignore_diags = int(w.attrs["ignore_diags"])
+
     df = cooltools.insulation(
         clr=clr,
         window_bp=window_bp,

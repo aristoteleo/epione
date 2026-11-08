@@ -149,3 +149,54 @@ def pbmc3k_multiome_atac(
         out[key] = Path(pooch.retrieve(url=PBMC3K_BASE_URL + fname, known_hash=known_hash,
                                        fname=fname, path=str(data_dir), progressbar=progressbar))
     return out
+
+
+PBMC10K_ATAC = {
+    "fragments": (TENX_BASE_URL, "pbmc_granulocyte_sorted_10k_atac_fragments.tsv.gz",
+                  "sha256:5075e32a0e9c6dded35b060bf90d6144375b150e131ffb0be121a93e3b5e1e38"),
+    "fragments_index": (TENX_BASE_URL, "pbmc_granulocyte_sorted_10k_atac_fragments.tsv.gz.tbi",
+                        "sha256:3a516291d0e6e5ddf9f651f470b6312b83eeb26f153ea12cfa9d082760a5e7f5"),
+    "peaks": (TENX_BASE_URL, "pbmc_granulocyte_sorted_10k_atac_peaks.bed",
+              "sha256:3975a4057f9caa3fb69ddaecc6ae9e530e77551717a1464c2d93ac9d73cb60ab"),
+    "atac": (GLUE_BASE_URL, "10x-Multiome-Pbmc10k-ATAC.h5ad",
+             PBMC10K_MULTIOME["10x-Multiome-Pbmc10k-ATAC.h5ad"]),
+}
+
+
+def pbmc10k_multiome_atac(
+    data_dir: Optional[Union[str, os.PathLike]] = None,
+    *,
+    progressbar: bool = False,
+) -> dict:
+    """ATAC fragments and cell types of the 10x Multiome PBMC 10k sample.
+
+    Downloads, verified against pinned sha256 sums:
+
+    * the cellranger-arc 2.0.0 fragments file (2.4 GB) with its tabix index
+      and called peaks, from 10x Genomics;
+    * scGLUE's ATAC AnnData of the same cells (154 MB), whose
+      ``obs["cell_type"]`` holds the Seurat-WNN cell types (19 types, 9,631
+      cells; barcodes match the fragments file).
+
+    Deep enough (215 M fragments in cells) for footprinting per cell type;
+    used by the PRINT and seq2PRINT tutorials.
+
+    Arguments:
+        data_dir: Folder for the files. Defaults to
+            ``<pooch cache>/epione/pbmc10k_multiome``.
+        progressbar: Show a download progress bar.
+
+    Returns:
+        ``{"fragments", "fragments_index", "peaks", "atac"}`` -> local paths.
+    """
+    import pooch
+
+    if data_dir is None:
+        data_dir = Path(pooch.os_cache("epione")) / "pbmc10k_multiome"
+    data_dir = Path(data_dir)
+    data_dir.mkdir(parents=True, exist_ok=True)
+    out = {}
+    for key, (base, fname, known_hash) in PBMC10K_ATAC.items():
+        out[key] = Path(pooch.retrieve(url=base + fname, known_hash=known_hash, fname=fname,
+                                       path=str(data_dir), progressbar=progressbar))
+    return out

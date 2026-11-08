@@ -8,6 +8,28 @@ The format roughly follows Keep a Changelog.
 ## Unreleased
 
 ### Added
+- seq2PRINT motif effects: `epi.models.seq2print.delta_effects` (scPrinter's `seq2print_delta`: plant a
+  motif's consensus in background sequences and average the change in predicted footprints at every
+  size, in -log10 p, and in log coverage), `plant_motif`, `zscore2pval`, and `Seq2PRINT.collapse(state)`
+  (a LoRA model folded to one cell state, scPrinter's `collapse`).
+- `epi.pl.plot_seqlogo` / `pfm_information`: dependency-free sequence logos for attribution tracks and
+  motif PFMs.
+- seq2PRINT sequence TF binding scores: `epi.models.seq2print.tf_binding` (scPrinter's
+  `seq_tfbs_seq2print`: DeepLIFT/SHAP attributions of the coverage and TF-footprint outputs, through
+  gReLU, read by scPrinter's published TF-binding networks, now in the model registry as
+  `seq2print_tfbs_count` / `seq2print_tfbs_footprint`), `TFBindingTracks.site_scores`,
+  `one_hot_regions`.
+- gReLU bridge: seq2PRINT head `footprint_tf` (scPrinter's footprint attribution target);
+  `epi.models.grelu.modisco` (TF-MoDISco patterns from saved attributions, named by TOMTOM);
+  `attributions` accepts one-hot numpy arrays, unknown bases and `batch_size`.
+- `epi.datasets.pbmc10k_multiome_atac`: 10x PBMC 10k Multiome fragments with Seurat-WNN cell types.
+- Tutorials: `t_seq2print` rewritten on PBMC cell types (bulk model, LoRA per cell type, TF binding at
+  marker promoters and per TF across cell types, after scPrinter's PBMC tutorial); new
+  `t_sequence_attribution` (attributions and TF-MoDISco motifs for ChromBPNet and seq2PRINT states);
+  `t_print_footprint` and `t_tf_binding` rewritten on PBMC cell types (the K562 ChIP-seq
+  evaluation of the occupancy score is now `tests/parity/tf_binding/`). Validation and parity
+  cells of the PRINT, seq2PRINT, ChromBPNet, scooby and gReLU tutorials moved to
+  `tests/parity/<tool>/`.
 - `epi.pl.add_arrow` (now exported) draws small corner coordinate arrows ("UMAP 1 →", "UMAP 2 ↑") in axes
   coordinates: equal physical length on both axes whatever the data range, labels from the basis and plotted
   components (UMAP, t-SNE, PC, LSI, BiRMT, ...), `loc` = any corner (arrows always point to +x/+y), `length`, `lw`,
@@ -61,6 +83,9 @@ The format roughly follows Keep a Changelog.
   by gene scores co-embedded with snRNA-seq through `epi.tl.integrate(method='cca')`).
 
 ### Fixed
+- `epi.bulk.hic.insulation` with cooler 0.12: `ignore_diags` is read from the balancing weights'
+  attributes by epione (cooltools 0.7.1 used `Cooler._load_attrs`, which cooler 0.12 removed, and
+  reported the value as missing).
 - `impute_cells` wrote empty matrices with scHiCluster ≥ 1.3, which saves `.npz` instead of HDF; failures
   were silenced. It now reads both formats and warns when a cell fails.
 - `epi.pl` contact plots: `title=''` hides the default title.

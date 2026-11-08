@@ -1,8 +1,8 @@
-"""Generate t_tf_binding.ipynb (Epione's default per-site TF binding score).
+"""Generate t_tf_binding.ipynb (per-site TF binding across PBMC cell types).
 
-Writing the notebook from a script keeps the JSON well-formed and the
-cell list reviewable. Execute afterwards with
-``jupyter nbconvert --to notebook --execute --inplace``.
+Execute with ``jupyter nbconvert --to notebook --execute --inplace``: about
+4 minutes on 16 CPU cores, 1 minute once the peaks are cached.
+The ChIP-seq evaluation of the score is in tests/parity/tf_binding.
 """
 import pathlib
 
@@ -20,60 +20,49 @@ def code(src):
 
 
 md(r"""
-# Which motif sites are bound? The default TF binding score
+# Which motif sites are bound, in which cell type?
 
-A motif match in open chromatin is only a *candidate* binding site. `epi.tl.tf_binding`
-scores every candidate for occupancy by its factor. Since 2026-10 its default is
-`method='occupancy'` (`epi.tl.tf_occupancy`). It is a **thermodynamically weighted
-motif-accessibility score**, not a footprint:
+A motif match in open chromatin is a *candidate* binding site.
+`epi.tl.tf_binding` scores every candidate for occupancy by its factor, in
+every cell type. Its default (`method='occupancy'`) is a thermodynamic
+motif-accessibility score:
 
-$$\text{score}_i = \log \sum_{j:\,|c_j-c_i|\le 150} \underbrace{(1 + n_j + 2\,n_j^{\text{short}})}_{\text{accessibility}}\;\underbrace{e^{\beta s_j}}_{\text{Boltzmann affinity}}$$
+$$\text{score}_i = \log \sum_{j:\,|c_j-c_i|\le 150} \underbrace{(1 + n_j + 2\,n_j^{\text{short}})}_{\text{accessibility}}\;\underbrace{e^{\beta s_j}}_{\text{motif affinity}}$$
 
-* $s_j$ — the PWM log-odds of site $j$ (in nats), $\beta = 0.5$ an effective inverse temperature.
-  A site is wrapped in a nucleosome, free, or bound; with the factor scarce, occupancy is
-  accessibility × Boltzmann weight (Berg & von Hippel 1987; Granek & Clarke 2005; Wasson & Hartemink 2009).
-* $n_j$ — Tn5 insertions within ±50 bp of the site; $n_j^{\text{short}}$ those from
-  sub-nucleosomal fragments (≤ 120 bp), which come from nucleosome-free DNA.
-* the sum runs over the same motif's sites within ±150 bp: a ChIP peak only resolves
-  occupancy to about a fragment's length.
+* $n_j$: Tn5 insertions within ±50 bp of site $j$; $n_j^{\text{short}}$ those from
+  sub-nucleosomal fragments (≤ 120 bp), which come from nucleosome-free DNA;
+* $s_j$: the motif's log-odds score at the site, $\beta = 0.5$;
+* the sum runs over the same motif's sites within ±150 bp.
 
-There is no training, no per-site fit and no Tn5 bias model, so it runs in one pass over
-the fragments. A footprint (protection) term was tested while the score was designed and
-did not improve the ranking of ChIP-bound sites, so it is not part of the score.
-PRINT's footprint-based probability (Hu *et al.* 2025) is still there, unchanged and
-bit-identical to scPrinter, as `method='print'` / `epi.tl.tf_binding_score` — see
-[t_print_footprint](t_print_footprint.ipynb).
+With the factor scarce, occupancy is accessibility times the Boltzmann weight of
+binding. There is no training and no Tn5 bias model, so the score runs in one pass
+over the fragments file, in seconds. Against ENCODE ChIP-seq it ranks bound sites
+better than footprint scores (median AUROC 0.89-0.91 in four cell types, PRINT
+0.72-0.77; `tests/parity/tf_binding/`).
 
-**Evidence.** Median per-TF AUROC on ENCODE snATAC (accessible motif matches, bound = site
-inside the factor's ENCODE ChIP-seq peak); GM12878, HepG2 and MCF-7 were held out after the
-constants were frozen on K562:
+This tutorial applies it to the 10x PBMC 10k Multiome sample, the data of
+[t_print_footprint](t_print_footprint.ipynb) and [t_seq2print](t_seq2print.ipynb):
 
-| | occupancy (default) | TOBIAS | Tn5 count ±100 bp | PRINT | HINT-ATAC |
-|---|---|---|---|---|---|
-| K562 (design, 88 TFs) | **0.890** | 0.851 | 0.845 | 0.725 | 0.644 |
-| GM12878 (36 TFs) | **0.911** | 0.895 | 0.905 | 0.774 | 0.651 |
-| HepG2 (131 TFs) | **0.909** | 0.898 | 0.904 | 0.747 | 0.673 |
-| MCF-7 (38 TFs) | **0.887** | 0.843 | 0.847 | 0.725 | 0.644 |
-
-On GM12878 (both) and HepG2 (Tn5) the margin over TOBIAS / the plain count is within
-bootstrap noise; over PRINT and HINT it is large everywhere.
-
-This notebook reproduces the comparison on a small, public slice: chromosome 19 of the
-same ENCODE K562 snATAC data and six K562 ChIP-seq sets.
+1. candidate sites of 17 TFs in peaks of seven cell types;
+2. scores per cell type, at equal sequencing depth;
+3. which factor is bound in which cell type;
+4. the sites a factor binds in one cell type and not another, and the genes
+   they sit next to.
 """)
 
 md("## Part 1 · Setup")
+
 code(r"""
 %matplotlib inline
-import os, sys, pathlib, time
+import os, sys, pathlib, re, gzip, time, warnings
+warnings.filterwarnings('ignore', module='tqdm')
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import anndata as ad
-from sklearn.metrics import roc_auc_score
 
 
-def _find_repo(start):  # works from the source tree or a pip install
+def _find_repo(start):
     p = pathlib.Path(start).resolve()
     for cand in (p, *p.parents):
         if (cand / 'epione' / '__init__.py').exists():
@@ -88,200 +77,280 @@ if CODE is not None:
 
 import epione as epi
 
-# Inputs: `python t_tf_binding_data.py OUT_DIR --fasta GRCh38.fa` (next to this notebook)
-DATA  = pathlib.Path(os.environ.get('EPIONE_TFB_DATA', 'k562_chr19'))
-FRAG, FASTA = DATA / 'fragments.chr19.tsv.gz', DATA / 'chr19.fa'
-for p in (FRAG, FASTA, DATA / 'peaks.chr19.bed', DATA / 'motifs.jaspar'):
-    if not p.exists():
-        raise FileNotFoundError(f'{p} - run t_tf_binding_data.py first')
+# EPIONE_TUTORIAL_DATA picks the folder; the default is epione's pooch cache.
+DATA = os.environ.get('EPIONE_TUTORIAL_DATA')
+files = epi.datasets.pbmc10k_multiome_atac(pathlib.Path(DATA) / 'pbmc10k_multiome' if DATA else None)
+FASTA = str(epi.data.hg38.fasta)
+WORK = files['fragments'].parent / 'tf_binding_work'; WORK.mkdir(exist_ok=True)
 N_JOBS = int(os.environ.get('SLURM_CPUS_PER_TASK', 8))
 
-C = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#8a5cd0']
-INK, INK2, MUTED, GRID = '#0b0b0b', '#52514e', '#898781', '#e1e0d9'
-plt.rcParams.update({
-    'figure.facecolor': '#fcfcfb', 'axes.facecolor': '#fcfcfb', 'savefig.facecolor': '#fcfcfb',
-    'axes.edgecolor': '#c3c2b7', 'axes.linewidth': 0.8, 'axes.labelcolor': INK2,
-    'axes.titlesize': 11, 'axes.titleweight': 'bold', 'axes.titlecolor': INK,
-    'axes.spines.top': False, 'axes.spines.right': False,
-    'xtick.color': MUTED, 'ytick.color': MUTED, 'xtick.labelsize': 9, 'ytick.labelsize': 9,
-    'grid.color': GRID, 'grid.linewidth': 0.6, 'legend.frameon': False,
-    'legend.fontsize': 9, 'font.size': 10, 'lines.linewidth': 2.0, 'figure.dpi': 110,
-})
+epi.pl.plot_set()
+TYPES = ['CD14 Mono', 'CD16 Mono', 'DC', 'B', 'CD4 T', 'CD8 T', 'NK']
+# the same colour per cell type as t_print_footprint and t_seq2print (from epi.pl.sc_color)
+TCOL = dict(zip(TYPES, ['#EF7B77', '#941456', '#FCBC10', '#279AD7', '#368650', '#7CBB5F', '#5E4D9A']))
 """)
 
 md(r"""
-## Part 2 · Cells, peaks and candidate sites
+## Part 2 · Cells and cell types
 
-Two ENCODE K562 snATAC runs pooled into one pseudobulk; MACS3 peaks (1 kb around each
-summit). Candidate sites are MOODS matches of six JASPAR 2024 motifs inside the peaks
-(`epi.tl.hint_match_motifs`, false-positive rate 5e-5); its `score` column is the log2-odds
-the occupancy score uses. Sites closer than 100 bp to a peak edge are dropped, because PRINT
-cannot score them and we compare the two on the same sites.
+scGLUE's copy of this sample carries Seurat-WNN cell types (from RNA and ATAC
+together). We merge them into seven groups and drop the small T-cell subsets
+(MAIT, γδ T) and progenitors. `tf_binding` reads the fragments file named in
+`adata.uns['files']`, so an AnnData with cell barcodes and labels is all it needs.
 """)
-code(r"""
-cells = open(DATA / 'cells.txt').read().split()
-adata = ad.AnnData(obs=pd.DataFrame({'all': pd.Categorical(['all'] * len(cells))}, index=cells))
-adata.uns['files'] = {'fragments': str(FRAG)}
-peaks = pd.read_csv(DATA / 'peaks.chr19.bed', sep='\t', header=None, names=['chrom', 'start', 'end'])
-print(f'{adata.n_obs:,} cells, {len(peaks):,} peaks on chr19')
 
-hits = epi.tl.hint_match_motifs(peaks, DATA / 'motifs.jaspar', FASTA, fpr=5e-5)
-hits['tf'] = hits['name'].str.split('.').str[-1]
-# peak of each site, and PRINT's context rule (centre > 100 bp from the region edges)
-centre = (hits.start + hits.end) // 2
-k = np.searchsorted(peaks.start.values, centre.values, side='right') - 1
-rel = centre.values - peaks.start.values[k]
-sites = hits[(rel > 100) & (rel <= 900)].drop_duplicates(['tf', 'start', 'end']).reset_index(drop=True)
-sites.groupby('tf').size().rename('sites').to_frame().T
+code(r"""
+COARSE = {'CD14 Mono': 'CD14 Mono', 'CD16 Mono': 'CD16 Mono', 'cDC': 'DC', 'pDC': 'DC',
+          'Naive B': 'B', 'Intermediate B': 'B', 'Memory B': 'B', 'Plasma': 'B',
+          'CD4 Naive': 'CD4 T', 'CD4 TCM': 'CD4 T', 'CD4 TEM': 'CD4 T', 'Treg': 'CD4 T',
+          'CD8 Naive': 'CD8 T', 'CD8 TEM_1': 'CD8 T', 'CD8 TEM_2': 'CD8 T', 'NK': 'NK'}
+obs = ad.read_h5ad(files['atac'], backed='r').obs[['cell_type', 'nCount_ATAC']].copy()
+obs['celltype'] = obs['cell_type'].map(COARSE)
+obs = obs[obs['celltype'].notna()]
+obs['celltype'] = pd.Categorical(obs['celltype'], TYPES)
+adata = ad.AnnData(obs=obs)
+adata.uns['files'] = {'fragments': str(files['fragments'])}
+depth = obs.groupby('celltype', observed=True)['nCount_ATAC'].agg(cells='size', counts='sum')
+depth['counts'] = (depth['counts'] / 1e6).round(1)
+depth = depth.rename(columns={'counts': 'ATAC counts in peaks (M)'})
+depth.T
 """)
 
 md(r"""
-## Part 3 · The default score
+## Part 3 · Peaks and candidate sites
 
-One call. `motif_key` names the column that says which factor a site belongs to;
-`score_key` (default `'score'`) is the PWM log-odds.
+Peaks are called in each cell type and merged (`epi.single.call_peaks`, cached).
+Candidate sites are matches of 17 JASPAR 2024 motifs in the peaks, found with MOODS
+(`epi.tl.hint_match_motifs`, false-positive rate 5 × 10⁻⁵); the `score` column is the
+log2-odds the occupancy score uses. The panel covers the main lineages:
+
+* myeloid: C/EBPα and β, PU.1 (SPI1), IRF8, KLF4, MAFB;
+* B cells: EBF1, PAX5, OCT2 (POU2F2);
+* T cells: TCF7, LEF1, GATA3, RUNX3;
+* NK and cytotoxic T cells: T-bet (TBX21), EOMES;
+* bound in every cell type: CTCF, NRF1.
 """)
+
 code(r"""
-t0 = time.perf_counter()
-occ = epi.tl.tf_binding(adata, sites, motif_key='tf', n_jobs=N_JOBS)
-t_occ = time.perf_counter() - t0
-print(f'{len(sites):,} sites scored in {t_occ:.1f} s on {N_JOBS} workers')
-occ.to_frame()[['chrom', 'start', 'end', 'tf', 'score', 'n_insertions', 'n_short', 'occupancy_score']].head()
+%%time
+peak_file = WORK / 'peaks_celltype.tsv'
+if peak_file.exists():
+    peaks = pd.read_csv(peak_file, sep='\t')
+else:
+    peaks = epi.single.call_peaks(adata, groupby='celltype', genome=epi.data.hg38, inplace=False,
+                                  verbose=False)
+    peaks.to_csv(peak_file, sep='\t', index=False)
+
+MEME = WORK / 'JASPAR2024_CORE_vertebrates_non-redundant_pfms_meme.txt'
+if not MEME.exists():
+    import urllib.request
+    urllib.request.urlretrieve('https://jaspar.elixir.no/download/data/2024/CORE/' + MEME.name, MEME)
+jaspar = {}
+for k, v in epi.models.grelu.read_meme(MEME).items():       # 'MA0102.5 CEBPA' -> [4, w]
+    jaspar.setdefault(k.split()[1].upper(), v)
+
+PANEL = {'myeloid': ['CEBPA', 'CEBPB', 'SPI1', 'IRF8', 'KLF4', 'MAFB'],
+         'B cell': ['EBF1', 'PAX5', 'POU2F2'],
+         'T cell': ['TCF7', 'LEF1', 'GATA3', 'RUNX3'],
+         'NK / cytotoxic': ['TBX21', 'EOMES'],
+         'every cell': ['CTCF', 'NRF1']}
+TFS = [tf for tfs in PANEL.values() for tf in tfs]
+sites = epi.tl.hint_match_motifs(peaks[['chrom', 'start', 'end']],
+                                 {tf: (jaspar[tf] * 100).round().tolist() for tf in TFS},
+                                 FASTA, fpr=5e-5)
+sites = (sites.rename(columns={'name': 'tf'}).drop_duplicates(['tf', 'chrom', 'start', 'end'])
+              .reset_index(drop=True))
+print(f'{len(peaks):,} peaks, {len(sites):,} candidate sites')
+sites['tf'].value_counts().reindex(TFS).rename('sites').to_frame().T
 """)
 
 md(r"""
-## Part 4 · Ground truth and the comparison
+## Part 4 · Scores per cell type, at equal depth
 
-A site counts as bound if its centre lies in the factor's ENCODE conservative IDR ChIP-seq
-peak. Against it we rank the same sites by: the default score; PRINT's binding probability
-(`method='print'`, PRINT CNN bias, the published dispersion and binding models); the plain
-Tn5 insertion count within ±100 bp (accessibility alone); and the PWM score alone.
+One call scores every site in every group. The score grows with the number of
+cuts at a site, so before comparing cell types, look at a factor that binds its
+sites in all of them: at full depth, CTCF's mean score follows each cell type's
+depth.
 """)
-code(r"""
-def in_chip(tf, centres):
-    ch = pd.read_csv(DATA / 'chip' / f'{tf}.bed', sep='\t', header=None, usecols=[1, 2]).sort_values(1)
-    s, e = ch[1].values, np.maximum.accumulate(ch[2].values)
-    j = np.searchsorted(s, centres, side='right') - 1
-    return (j >= 0) & (e[np.maximum(j, 0)] > centres)
 
-sites['centre'] = (sites.start + sites.end) // 2
-sites['bound'] = False
-for tf, ix in sites.groupby('tf').indices.items():
-    sites.loc[ix, 'bound'] = in_chip(tf, sites.centre.values[ix])
-sites.groupby('tf').bound.agg(['size', 'sum', 'mean']).rename(columns={'size': 'sites', 'sum': 'bound', 'mean': 'fraction'}).T.round(3)
-""")
 code(r"""
-t0 = time.perf_counter()
-prt = epi.tl.tf_binding(adata, sites, method='print', regions=peaks, groupby='all',
-                        bias=epi.tl.tn5_bias(str(FASTA)), keep_tracks=False, verbose=False)
-t_print = time.perf_counter() - t0
-key = prt.sites.assign(p=prt.score[0]).drop_duplicates(['center', 'strand']).set_index(['center', 'strand']).p
-sites['print'] = key.reindex(pd.MultiIndex.from_arrays([sites.centre, sites.strand])).values
-n100, _ = epi.tl.site_insertion_counts(str(FRAG), cells, np.zeros(len(cells), int), 1,
-                                       sites.chrom.values, sites.centre.values, window=100, n_jobs=N_JOBS)
-sites['tn5_100'] = n100[0]
-sites['occupancy'] = occ.score[0]
-print(f'PRINT: {t_print:.0f} s   default: {t_occ:.1f} s   ({t_print / t_occ:.0f}x)   unscored by PRINT: {sites["print"].isna().sum()}')
+%%time
+full = epi.tl.tf_binding(adata, sites, motif_key='tf', groupby='celltype', n_jobs=N_JOBS, verbose=False)
+ctcf = (sites['tf'] == 'CTCF').to_numpy()
+pd.DataFrame({'ATAC counts in peaks (M)': depth['ATAC counts in peaks (M)'],
+              'mean CTCF score': pd.Series(full.score[:, ctcf].mean(1), index=full.groups)}
+             ).reindex(TYPES).T.round(2)
 """)
 
 md(r"""
-Two ablations of the default, recomputed from the same counts with
-`epi.tl.occupancy_from_counts`: the site on its own (no neighbourhood sum) and no motif
-term ($\beta = 0$, accessibility only but with the short-fragment weighting and the sum).
+So each cell type is compared at the depth of the shallowest one: random cells are
+drawn from every cell type until it has as many ATAC counts in peaks as the NK
+cells. Every score below comes from these depth-matched pseudobulks.
 """)
-code(r"""
-site_only, _ = epi.tl.occupancy_from_counts(sites, occ.n_all, occ.n_short, motif_key='tf', radius=0)
-no_pwm, _ = epi.tl.occupancy_from_counts(sites, occ.n_all, occ.n_short, motif_key='tf', beta=0.0)
-sites['site only'], sites['no PWM'] = site_only[0], no_pwm[0]
 
-METHODS = {'occupancy': 'occupancy (default)', 'print': 'PRINT', 'tn5_100': 'Tn5 count ±100 bp',
-           'score': 'PWM only', 'site only': 'occupancy, site only', 'no PWM': 'occupancy, β = 0'}
-auc = pd.DataFrame({lab: {tf: roc_auc_score(g.bound, g[col]) for tf, g in sites.groupby('tf')}
-                    for col, lab in METHODS.items()})
-auc.loc['median'] = auc.median()
-auc.round(3)
-""")
 code(r"""
-order = list(METHODS.values())
-cols = {'occupancy (default)': C[0], 'PRINT': C[1], 'Tn5 count ±100 bp': C[2], 'PWM only': C[3],
-        'occupancy, site only': '#9cc2ec', 'occupancy, β = 0': '#a7d9c4'}
-tfs = auc.index[:-1]
-fig, ax = plt.subplots(figsize=(8.8, 3.8))
-w = 0.13
-for k, m in enumerate(order):
-    x = np.arange(len(tfs)) + (k - (len(order) - 1) / 2) * w
-    ax.bar(x, auc.loc[tfs, m] - 0.5, w, bottom=0.5, color=cols[m], label=f'{m}  (median {auc.loc["median", m]:.3f})')
-ax.set_xticks(np.arange(len(tfs)), tfs)
-ax.set_ylim(0.45, 1.0); ax.axhline(0.5, color=MUTED, lw=0.8)
-ax.set_ylabel('AUROC, ChIP-bound vs unbound'); ax.grid(axis='y')
-ax.set_title('K562 chr19: ranking accessible motif sites by ChIP occupancy')
-ax.legend(ncol=2, loc='upper left', bbox_to_anchor=(0, -0.12))
+%%time
+target = obs.groupby('celltype', observed=True)['nCount_ATAC'].sum().min()
+rng = np.random.default_rng(0)
+keep = []
+for t in TYPES:
+    idx = obs.index[obs['celltype'] == t].to_numpy()
+    rng.shuffle(idx)
+    cs = np.cumsum(obs.loc[idx, 'nCount_ATAC'].to_numpy())
+    keep.extend(idx[:np.searchsorted(cs, target) + 1])
+matched = adata[keep].copy()
+occ = epi.tl.tf_binding(matched, sites, motif_key='tf', groupby='celltype', n_jobs=N_JOBS, verbose=False)
+S = pd.DataFrame(occ.score.T, columns=occ.groups)[TYPES]       # sites x cell types
+print(f'{target / 1e6:.1f} M counts per cell type;',
+      {t: int(n) for t, n in matched.obs['celltype'].value_counts().reindex(TYPES).items()}, 'cells')
+occ.to_frame()[['chrom', 'start', 'end', 'tf', 'score', 'group', 'n_insertions', 'occupancy_score']].head()
+""")
+
+md(r"""
+## Part 5 · Which factor is bound where
+
+A factor's mean score in a cell type mixes two things: how bound its sites are,
+and how open that cell type's peaks are in general (monocytes open many more
+distal elements than T cells, so every factor scores higher there). Removing both
+the cell type's mean over all candidate sites and each site's mean over cell types
+leaves what is specific to the factor:
+""")
+
+code(r"""
+C = S.sub(S.mean(1), axis=0)                                  # each site, relative to its mean
+C = C - C.mean(0)                                             # each cell type, relative to all sites
+M = C.groupby(sites['tf'].to_numpy()).mean().reindex(TFS)
+
+fig, ax = plt.subplots(figsize=(7.2, 7))
+vm = np.abs(M.to_numpy()).max()
+im = ax.imshow(M.to_numpy(), cmap='RdBu_r', vmin=-vm, vmax=vm, aspect='auto')
+ax.set_xticks(range(len(TYPES)), TYPES, rotation=40, ha='right')
+ax.set_yticks(range(len(TFS)), TFS)
+for i in range(len(TFS)):
+    for j in range(len(TYPES)):
+        ax.text(j, i, f'{M.iat[i, j]:+.2f}', ha='center', va='center', fontsize=8,
+                color='w' if abs(M.iat[i, j]) > 0.6 * vm else 'k')
+y = 0
+for lin, tfs in PANEL.items():
+    ax.axhline(y - 0.5, color='w', lw=3)
+    ax.text(len(TYPES) - 0.35, y + (len(tfs) - 1) / 2, lin, va='center', fontsize=10)
+    y += len(tfs)
+fig.colorbar(im, ax=ax, shrink=0.6, pad=0.2, label='mean score, relative')
+ax.set_title('Factor-specific binding, depth-matched cell types')
 plt.show()
 """)
 
 md(r"""
-Read the bars per factor, not only the medians. CTCF is the exception on this slice: its
-long, deeply protected footprint is exactly what PRINT models, and PRINT ranks CTCF sites
-best. For the other factors footprints carry little beyond accessibility and the motif, and
-the default is ahead of PRINT by a wide margin. The two ablations show what each piece buys:
-the motif term matters most for CTCF, REST and MAFK and is neutral (within 0.01) for GABPA,
-NRF1 and USF1; the neighbourhood sum helps for five of the six. Timings were taken on a shared
-node, so read the PRINT/default ratio as an order of magnitude (same-node benchmarks: ~70x). Six factors on one chromosome are an
-illustration; the evidence table at the top is the evaluation.
+Each lineage's factors are bound in that lineage:
+
+* **myeloid**: C/EBPα and β are the strongest signal of the panel (+0.70 to +1.10 in
+  the two monocyte types, −0.33 to −0.64 in lymphocytes); PU.1 (SPI1) is bound in
+  monocytes and DCs (+0.34 to +0.43) and not in T and NK cells (about −0.37); MAFB
+  slightly in monocytes;
+* **B cells**: OCT2 (POU2F2, +0.26) and EBF1 (+0.18) are highest in B cells;
+* **T cells**: TCF7 and LEF1 in CD4 and CD8 T cells (+0.26 to +0.30), GATA3 most in
+  CD4 T cells (+0.13);
+* **NK and cytotoxic T cells**: T-bet (TBX21) and EOMES in NK cells (+0.52, +0.43)
+  and, less, in CD8 T cells (+0.21, +0.17).
+
+Not every factor separates. PAX5 (2,482 sites, a long, degenerate motif) and IRF8
+barely differ between cell types. The two controls, CTCF and NRF1, are not flat
+either: they sit lower in myeloid cells and higher in lymphocytes, as does KLF4,
+whose GC-rich motif sits mostly in promoters. Myeloid cells open many distal
+elements, so relative to all candidate sites their constitutive sites rank lower.
+Read a factor's row against these controls.
 """)
 
 md(r"""
-## Part 5 · What the score is doing
+## Part 6 · Sites bound in one cell type and not another
 
-Both axes matter. For CTCF, the fraction of ChIP-bound sites rises with accessibility *and*
-with motif strength; the default score's contour lines (straight lines of slope $-1/\beta$ in
-these coordinates, before the neighbourhood sum) cut across both, which is why it beats
-either axis alone.
+The heatmap averages thousands of sites. Site by site, compare two cell types:
+each dot is one motif site, its position the score in the two cell types. A
+difference of 1 is an e-fold (2.7×) difference in occupancy; the percentages count
+sites beyond ±1. CTCF, bound everywhere, is the control: one CTCF panel for each
+pair of cell types compared.
 """)
+
 code(r"""
-tf = 'CTCF'
-g = sites[sites.tf == tf]
-xa = np.log1p(occ.n_all[0][g.index] + 2 * occ.n_short[0][g.index])
-ys = g.score.values * np.log(2)
-xb = np.quantile(xa, np.linspace(0, 1, 13)); yb = np.quantile(ys, np.linspace(0, 1, 11))
-H = np.full((len(yb) - 1, len(xb) - 1), np.nan)
-ix = np.clip(np.searchsorted(xb, xa, side='right') - 1, 0, len(xb) - 2)
-iy = np.clip(np.searchsorted(yb, ys, side='right') - 1, 0, len(yb) - 2)
-for a in range(H.shape[1]):
-    for b in range(H.shape[0]):
-        m = (ix == a) & (iy == b)
-        if m.sum() >= 10:
-            H[b, a] = g.bound.values[m].mean()
-fig, ax = plt.subplots(figsize=(6.2, 4.4))
-im = ax.pcolormesh(xb, yb, H, cmap='Blues', vmin=0, vmax=1, shading='flat')
-xx = np.linspace(xb[0], xb[-1], 50)
-for c in np.quantile(xa + 0.5 * ys, [0.5, 0.75, 0.9]):
-    ax.plot(xx, (c - xx) / 0.5, color=C[1], lw=1.4, ls='--')
-ax.set_xlim(xb[0], xb[-1]); ax.set_ylim(yb[0], yb[-1])
-ax.set_xlabel('log(1 + n + 2 n_short)   (accessibility, ±50 bp)')
-ax.set_ylabel('PWM log-odds (nats)')
-ax.set_title(f'{tf}: fraction ChIP-bound per bin')
-fig.colorbar(im, ax=ax, label='fraction bound'); ax.text(xb[0] + 0.1, yb[-1] - 0.6, '-- iso-score lines', color=C[1], fontsize=9)
+PAIRS = [('CEBPA', 'CD4 T', 'CD14 Mono'), ('POU2F2', 'CD4 T', 'B'), ('EBF1', 'CD4 T', 'B'),
+         ('TCF7', 'NK', 'CD4 T'), ('TBX21', 'CD4 T', 'NK'),
+         ('CTCF', 'CD4 T', 'CD14 Mono'), ('CTCF', 'CD4 T', 'B'), ('CTCF', 'NK', 'CD4 T')]
+fig, axes = plt.subplots(2, 4, figsize=(15, 7.8), layout='constrained')
+for ax, (tf, a, b) in zip(axes.ravel(), PAIRS):
+    m = (sites['tf'] == tf).to_numpy()
+    x, y = S.loc[m, a].to_numpy(), S.loc[m, b].to_numpy()
+    ax.scatter(x, y, s=2, lw=0, alpha=0.3, color=TCOL[b], rasterized=True)
+    lo, hi = np.percentile(np.r_[x, y], [0.5, 99.9])
+    ax.plot([lo, hi], [lo, hi], color='k', lw=0.6)
+    ax.set_xlim(lo, hi); ax.set_ylim(lo, hi); ax.set_aspect('equal')
+    ax.set_xlabel(a); ax.set_ylabel(b)
+    ax.set_title(f'{tf}: {m.sum():,} sites\n{np.mean(y - x > 1):.0%} higher in {b}, '
+                 f'{np.mean(x - y > 1):.0%} in {a}', fontsize=10)
+fig.suptitle('Occupancy score per motif site, one cell type against another (equal depth)')
 plt.show()
 """)
 
 md(r"""
-## Part 6 · Groups and runtime
+The site-level picture agrees, measured against CTCF for the same two cell types
+(where 11-23% of sites differ by more than an e-fold each way):
 
-`groupby` gives one score per pseudobulk (here the two ENCODE runs), from one pass over the
-fragments. Within a group, compare sites of one factor: the score is a log-occupancy up to a
-per-factor constant (the chemical potential), so its absolute level is not a probability.
+* **CEBPA**: 65% of its sites are more bound in CD14 monocytes than in CD4 T cells,
+  6% the other way;
+* **POU2F2** and **EBF1**: 28% and 25% more bound in B cells than in CD4 T cells,
+  10-11% the other way;
+* **TCF7**: 22% more bound in CD4 T cells than in NK cells and 10% the other way,
+  although CTCF leans towards CD4 T cells only slightly (17% vs 11%);
+* **T-bet (TBX21)**: 27% more bound in NK cells than in CD4 T cells and 11% the
+  other way, against CTCF's lean the other way.
+
+The stripes are sites with few cuts: at 7.5 M counts per cell type, many sites have
+0, 1 or 2 insertions in one of the two, and the score takes a few discrete values.
+
+Which genes do these sites regulate? A first answer is the nearest protein-coding
+gene (GENCODE v41 TSS, within 50 kb). For each factor, the 300 sites most bound in
+its cell type relative to the other cell type, and the genes most often nearest:
 """)
+
 code(r"""
-adata.obs['run'] = pd.Categorical([c.split('#')[0] for c in adata.obs_names])
-t0 = time.perf_counter()
-by_run = epi.tl.tf_binding(adata, sites, motif_key='tf', groupby='run', n_jobs=N_JOBS, verbose=False)
-print(f'{len(by_run.groups)} groups in {time.perf_counter() - t0:.1f} s:', by_run.groups)
-r = np.corrcoef(by_run.score)[0, 1]
-print(f'per-site score correlation between the two runs: r = {r:.3f}')
-pd.DataFrame({'method': ['tf_binding (occupancy, default)', "tf_binding(method='print')"],
-              'wall time (s)': [round(t_occ, 1), round(t_print, 1)],
-              'sites': [len(sites), len(sites)]})
+%%time
+rows = []
+with gzip.open(str(epi.data.hg38.annotation), 'rt') as fh:          # GENCODE v41, downloaded once
+    for line in fh:
+        if '\tgene\t' in line and 'gene_type=protein_coding' in line:
+            f = line.split('\t')
+            rows.append((f[0], int(f[3]) - 1 if f[6] == '+' else int(f[4]) - 1,
+                         re.search(r'gene_name=([^;]+)', f[8]).group(1)))
+tss = pd.DataFrame(rows, columns=['chrom', 'tss', 'gene']).sort_values(['chrom', 'tss'])
+
+centre = ((sites['start'] + sites['end']) // 2).to_numpy()
+sites['gene'], sites['distance'] = None, np.inf
+for ch, g in tss.groupby('chrom'):
+    m = (sites['chrom'] == ch).to_numpy()
+    if m.any():
+        t = g['tss'].to_numpy()
+        j = np.clip(np.searchsorted(t, centre[m]), 1, len(t) - 1)
+        j = np.where(np.abs(t[j - 1] - centre[m]) <= np.abs(t[j] - centre[m]), j - 1, j)
+        sites.loc[m, 'gene'] = g['gene'].to_numpy()[j]
+        sites.loc[m, 'distance'] = np.abs(t[j] - centre[m])
+
+table = {}
+for tf, a, b in PAIRS[:5]:
+    m = (sites['tf'] == tf).to_numpy() & (sites['distance'] < 50_000).to_numpy()
+    d = (S.loc[m, b] - S.loc[m, a]).sort_values(ascending=False)
+    genes = sites.loc[d.index[:300], 'gene'].value_counts()
+    table[f'{tf}, {b} vs {a}'] = ', '.join(genes.index[:15])
+with pd.option_context('display.max_colwidth', None):
+    display(pd.Series(table, name='nearest genes of the 300 most cell-type-specific sites').to_frame())
+""")
+
+md(r"""
+The nearest genes of each factor's most cell-type-specific sites include markers
+of that cell type: *TLR4*, *LITAF* and *SIGLEC10* for C/EBPα in monocytes; *FCRL3*,
+*FCRL5* and *CD82* for OCT2 and *TNFRSF13C* (BAFF receptor), *CLEC17A* and *CCR6*
+for EBF1 in B cells; *CD40LG*, *TSHZ2* and *RCAN3* for TCF7 in CD4 T cells; *GZMB*,
+*IL12RB2*, *KIR3DL1* and *PYHIN1* for T-bet in NK cells. The nearest gene is only a
+first guess at a site's target; [t_peak_to_gene](t_peak_to_gene.ipynb) links peaks
+to genes with expression.
 """)
 
 md(r"""
@@ -289,18 +358,19 @@ md(r"""
 
 | | |
 |---|---|
-| Call | `epi.tl.tf_binding(adata, motif_sites, motif_key=..., groupby=...)` |
-| Score | log Σ over the factor's sites within ±150 bp of accessibility × exp(β · PWM) |
-| Needs | fragments file + motif matches with PWM scores; no bias model, no training |
-| Not | a footprint: protection terms did not help on ChIP ground truth |
-| PRINT | `method='print'` / `epi.tl.tf_binding_score`, unchanged ([t_print_footprint](t_print_footprint.ipynb)) |
-| Aggregate footprints | `epi.tl.get_footprints`, `epi.tl.multi_scale_footprint_region` ([t_footprint](t_footprint.ipynb)) |
+| Call | `epi.tl.tf_binding(adata, motif_sites, motif_key='tf', groupby='celltype')`: one score per site and cell type, in seconds |
+| Score | log Σ over the factor's sites within ±150 bp of accessibility × exp(β · motif score); no training, no bias model |
+| Depth | scores grow with depth: compare cell types at matched depth (Part 4) |
+| Here | 17 factors, 289k candidate sites, seven PBMC cell types; lineage factors are bound in their lineages (Parts 5-6) |
+| Evaluation | ChIP-seq AUROC in four ENCODE cell types: `tests/parity/tf_binding/` |
+| Footprints | PRINT's footprint-based score is `method='print'` ([t_print_footprint](t_print_footprint.ipynb)); from sequence, per cell type: [t_seq2print](t_seq2print.ipynb) |
 """)
 
-nb = nbf.v4.new_notebook()
-nb["cells"] = CELLS
-nb["metadata"] = {"kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"},
-                  "language_info": {"name": "python"}}
+nb = nbf.v4.new_notebook(cells=CELLS)
+nb.metadata.update({
+    "kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"},
+    "language_info": {"name": "python", "version": "3.11"},
+})
 out = pathlib.Path(__file__).with_name("t_tf_binding.ipynb")
-nbf.write(nb, out)
-print("wrote", out)
+nbf.write(nb, str(out))
+print(f"wrote {out} ({len(CELLS)} cells)")
