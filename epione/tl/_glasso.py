@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# Translation of glasso.f from the CRAN package glasso 1.11 (J. Friedman, T. Hastie,
+# R. Tibshirani), whose DESCRIPTION states License: GPL-2.
 """Graphical lasso, ported line by line from the R package ``glasso`` 1.11.
 
 ``glasso.f`` (J. Friedman, T. Hastie, R. Tibshirani; GPL-2) is translated

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later AND MIT
+# Port of cicero 1.3.9 (Monocle 3 branch), (c) 2018 Hannah Pliner and Cole Trapnell, MIT
+# (see epione/tl/_licenses/CICERO.LICENSE).
 """Cicero: cis-co-accessibility networks from single-cell chromatin accessibility.
 
 Port of the R package **cicero** for Monocle 3 (Pliner et al., *Mol Cell* 2018;

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Translation of parts of the igraph C core 0.10 (as vendored in R igraph 2.1.4), (c) The igraph
+# development team; igraph_qsort from FreeBSD qsort.c, BSD-3-Clause.
 """Louvain community detection exactly as R ``igraph::cluster_louvain`` runs it.
 
 Port of ``igraph_community_multilevel`` (igraph C core 0.10, vendored in the R
@@ -15,7 +18,7 @@ with the pieces its result depends on:
   Cicero's ``make_sparse_matrix`` (zero-weight self loops included).
 
 With an :class:`epione.tl._rrng.RRandom` stream, CCAN memberships equal R's
-draw for draw (GPL-2, as igraph).
+draw for draw (GPL-2.0-or-later, as igraph).
 """
 from __future__ import annotations
 
