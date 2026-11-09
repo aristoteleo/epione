@@ -1,12 +1,13 @@
 # Gene regulation
 
-Peak-to-gene links, TF motif activity, TF regulators and trajectories.
+Peak-to-gene links, Cicero co-accessibility, TF motif activity, TF regulators and trajectories.
 
 ```{toctree}
 :maxdepth: 1
 :titlesonly: true
 
 t_peak_to_gene
+t_cicero
 t_tf_activity
 t_chromvar
 t_tf_regulators

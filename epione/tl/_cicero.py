@@ -34,6 +34,7 @@ agree with R only in distribution).
 from __future__ import annotations
 
 import math
+import platform
 import re
 import warnings
 from concurrent.futures import ThreadPoolExecutor
@@ -447,15 +448,95 @@ class _WindowIndex:
         return (self.bp1[peaks] + self.bp2[peaks]) / 2
 
 
+# ---- R's long double (x87, 64-bit significand) accumulation, compiled -----------------------
+# R's cov() accumulates double products in LDOUBLE. On x86-64 that is the x87 80-bit format, which
+# LLVM exposes as `x86_fp80`; a numba intrinsic performs exactly the instructions GCC emits for
+# `sum += prod` (fpext, x87 fadd, i.e. one rounding to 64 bits). The running sum is carried as
+# hi + lo doubles: hi = fptrunc(sum), lo = fptrunc(sum - hi), both exact because sum has 64
+# significant bits, so the reconstruction hi + lo is the exact 80-bit value (ITERATION_LOG iter 5).
+_FP80_OK = (platform.machine().lower() in ("x86_64", "amd64")
+            and np.finfo(np.longdouble).nmant == 63)
+
+if _FP80_OK:
+    from llvmlite import ir as _ir
+    from numba import types as _nbtypes
+    from numba.extending import intrinsic as _intrinsic
+
+    class _X86FP80(_ir.Type):
+        def _to_string(self):
+            return "x86_fp80"
+
+        def __eq__(self, other):
+            return isinstance(other, _X86FP80)
+
+        def __hash__(self):
+            return hash("x86_fp80")
+
+    _FP80 = _X86FP80()
+
+    @_intrinsic
+    def _ld_add(typingctx, hi, lo, x):
+        sig = _nbtypes.UniTuple(_nbtypes.float64, 2)(_nbtypes.float64, _nbtypes.float64, _nbtypes.float64)
+
+        def codegen(context, builder, signature, args):
+            h, l, xv = args
+            a = builder.fadd(builder.fpext(h, _FP80), builder.fpext(l, _FP80))   # exact
+            a = builder.fadd(a, builder.fpext(xv, _FP80))                          # one x87 rounding
+            h2 = builder.fptrunc(a, _ir.DoubleType())
+            l2 = builder.fptrunc(builder.fsub(a, builder.fpext(h2, _FP80)), _ir.DoubleType())
+            return context.make_tuple(builder, signature.return_type, (h2, l2))
+
+        return sig, codegen
+
+    @njit(cache=True, nogil=True)
+    def _cov_ld_core(d):
+        n, p = d.shape
+        m = p * (p + 1) // 2
+        hi = np.zeros(m)
+        lo = np.zeros(m)
+        for k in range(n):                       # R: for (k = 0; k < n; k++) sum += (x-xm)*(y-ym)
+            idx = 0
+            for i in range(p):
+                di = d[k, i]
+                for j in range(i, p):
+                    hi[idx], lo[idx] = _ld_add(hi[idx], lo[idx], di * d[k, j])
+                    idx += 1
+        return hi, lo
+
+
 def _r_cov(v: np.ndarray) -> np.ndarray:
     """``stats::cov`` of the columns of ``v`` (n x p) exactly as R's C code
     (``cov_na_1``): two-pass long-double means, products in double, long-double
     sequential sums, ``sum / (n - 1)`` rounded to double.
 
-    Acceleration (E, ITERATION_LOG iter 1): only the upper triangle is formed
-    (R also computes ``j <= i`` and mirrors) and the running long-double sums
-    are updated one row at a time -- the same additions in the same order.
+    Acceleration (E): only the upper triangle is formed (R also computes
+    ``j <= i`` and mirrors; iter 1) and, on x86-64, the long-double running sums
+    are compiled x87 additions (iter 5) -- the same additions in the same order.
     """
+    v = np.asarray(v, dtype=np.float64)
+    n, p = v.shape
+    vl = v.astype(_LD)
+    tmp = np.cumsum(vl, axis=0)[-1] / n
+    tmp = tmp + np.cumsum(vl - tmp, axis=0)[-1] / n
+    d = np.ascontiguousarray(v - tmp.astype(np.float64))
+    i0, i1 = np.triu_indices(p)
+    if _FP80_OK:
+        hi, lo = _cov_ld_core(d)
+        acc = hi.astype(_LD) + lo.astype(_LD)        # exact 80-bit value
+    else:                                            # numpy long double (R's LDOUBLE on this platform)
+        prods = d[:, i0] * d[:, i1]
+        acc = np.zeros(len(i0), dtype=_LD)
+        for k in range(n):
+            acc += prods[k]
+    out = np.empty((p, p), dtype=np.float64)
+    vals = (acc / (n - 1)).astype(np.float64)
+    out[i0, i1] = vals
+    out[i1, i0] = vals
+    return out
+
+
+def _r_cov_numpy(v: np.ndarray) -> np.ndarray:
+    """Reference implementation of :func:`_r_cov` with numpy long double only (tests)."""
     v = np.asarray(v, dtype=np.float64)
     n, p = v.shape
     vl = v.astype(_LD)
@@ -463,9 +544,9 @@ def _r_cov(v: np.ndarray) -> np.ndarray:
     tmp = tmp + np.cumsum(vl - tmp, axis=0)[-1] / n
     d = v - tmp.astype(np.float64)
     i0, i1 = np.triu_indices(p)
-    prods = d[:, i0] * d[:, i1]                      # double products, n x p(p+1)/2
+    prods = d[:, i0] * d[:, i1]
     acc = np.zeros(len(i0), dtype=_LD)
-    for k in range(n):                               # sequential, as R's for (k ...) sum += ...
+    for k in range(n):
         acc += prods[k]
     out = np.empty((p, p), dtype=np.float64)
     vals = (acc / (n - 1)).astype(np.float64)

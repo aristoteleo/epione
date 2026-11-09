@@ -102,7 +102,16 @@ def test_r_cov_is_sequential_long_double():
     for k in range(n):
         acc += np.outer(d[k], d[k])
     np.testing.assert_array_equal(got, (acc / (n - 1)).astype(float))
+    np.testing.assert_array_equal(C._r_cov_numpy(v), got)
     assert np.allclose(got, np.cov(v, rowvar=False), rtol=1e-12)
+
+
+def test_r_cov_compiled_x87_equals_numpy_long_double():
+    rng = np.random.default_rng(7)
+    for n, p in ((3235, 40), (25, 200), (2, 3)):
+        v = rng.poisson(0.4, size=(n, p)) / rng.uniform(0.3, 3, size=(n, 1))
+        v[:, 0] = 0.0                                                  # constant column
+        np.testing.assert_array_equal(C._r_cov(v), C._r_cov_numpy(v))
 
 
 def test_generate_windows_matches_r_seq():
