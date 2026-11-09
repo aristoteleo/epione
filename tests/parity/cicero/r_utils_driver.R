@@ -59,3 +59,7 @@ for (g in c(0, 500)) {
 d <- df_for_coords(c(pk, "chr1:2,039-30,239", "chrX:28884:101293", "chr18-8,575,097-8,839,855"))
 fwrite(d, file.path(out, "dfc.tsv"), sep = "\t")
 cat("utils done\n")
+
+# informational (not a pre-registered gate): find_overlapping_ccans on R's CCANs of F1, seed 42
+cc <- read.delim(file.path(ref, "ccan_seed42.tsv"), stringsAsFactors = FALSE)
+fwrite(find_overlapping_ccans(cc), file.path(out, "foccans.tsv"), sep = "\t")

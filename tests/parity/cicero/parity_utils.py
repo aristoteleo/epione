@@ -103,7 +103,14 @@ def main(argv=None):
     pdf_ = epi.tl.df_for_coords(pk + ["chr1:2,039-30,239", "chrX:28884:101293", "chr18-8,575,097-8,839,855"])
     G["24"] = {"pass": bool((pdf_[["chr", "Peak"]].to_numpy() == rdf[["chr", "Peak"]].to_numpy()).all()
                             and (pdf_[["bp1", "bp2"]].to_numpy() == rdf[["bp1", "bp2"]].to_numpy()).all())}
-    res = {"gates": G, "all_pass": all(v["pass"] for v in G.values())}
+    # informational (not pre-registered): find_overlapping_ccans on R's CCANs (F1, seed 42)
+    info = {}
+    if (d / "foccans.tsv").exists() and (d.parent / "F1_seed42" / "ccan_seed42.tsv").exists():
+        cc = pd.read_csv(d.parent / "F1_seed42" / "ccan_seed42.tsv", sep="\t")
+        r = pd.read_csv(d / "foccans.tsv", sep="\t")
+        p = epi.tl.find_overlapping_ccans(cc)
+        info["find_overlapping_ccans_identical"] = bool(len(p) == len(r) and (p.values == r.values).all())
+    res = {"gates": G, "all_pass": all(v["pass"] for v in G.values()), "informational": info}
     txt = json.dumps(res, indent=1, default=lambda o: o.item() if hasattr(o, "item") else str(o))
     Path(out).write_text(txt)
     print(txt)

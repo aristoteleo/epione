@@ -1105,14 +1105,15 @@ def find_overlapping_ccans(ccan_assignments: pd.DataFrame, min_overlap: int = 1)
     df["bp1"] = c["bp1"].astype(float).to_numpy()
     df["bp2"] = c["bp2"].astype(float).to_numpy()
     info = df.groupby("CCAN", sort=True).agg(chr=("chr", "first"), bp1=("bp1", "min"), bp2=("bp2", "max"))
+    ids = info.index.to_numpy()
+    c, s0, e0 = info["chr"].to_numpy(), info["bp1"].to_numpy(), info["bp2"].to_numpy()
     rows = []
-    for a, ra in info.iterrows():
-        for b, rb in info.iterrows():
-            if a == b or ra.chr != rb.chr:
-                continue
-            ov = min(ra.bp2, rb.bp2) - max(ra.bp1, rb.bp1) + 1
-            if ov >= min_overlap:
-                rows.append((a, b))
+    for qa in range(len(ids)):
+        same = np.flatnonzero(c == c[qa])
+        ov = np.minimum(e0[same], e0[qa]) - np.maximum(s0[same], s0[qa]) + 1
+        hit = same[ov >= min_overlap]
+        hit = hit[np.lexsort((hit, -e0[hit], s0[hit]))]          # findOverlaps hit order (NCList)
+        rows.extend((ids[qa], ids[h]) for h in hit if h != qa)
     return pd.DataFrame(rows, columns=["CCAN1", "CCAN2"]).drop_duplicates().reset_index(drop=True)
 
 
