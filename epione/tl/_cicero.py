@@ -54,6 +54,8 @@ __all__ = [
     "assemble_connections", "run_cicero", "generate_ccans", "find_overlapping_ccans",
     "annotate_cds_by_site", "build_gene_activity_matrix", "normalize_gene_activities",
     "generate_windows", "cicero_connections_to_celloracle", "CiceroModel",
+    "make_atac_cds", "df_for_coords", "aggregate_nearby_peaks", "aggregate_by_cell_bin",
+    "compare_connections", "find_overlapping_coordinates",
 ]
 
 _LD = np.longdouble
@@ -63,6 +65,29 @@ _LD = np.longdouble
 def _log(silent: bool, *msg):
     if not silent:
         print(*msg, flush=True)
+
+
+# R sorts character vectors (factor levels, sort(), reshape2::dcast, plyr::ddply) with the
+# locale's collation. The reference ran in en_US.UTF-8 (glibc >= 2.28): punctuation first, in
+# the order below, then digits, then letters case-insensitively, lowercase first on ties.
+# data.table (assemble_connections) always uses byte order instead.
+_R_PUNCT = "_-,;:!?.'\"()[]{}@*/\\&#%`^+<=>|~$"
+_R_RANK = {c: i for i, c in enumerate(_R_PUNCT)}
+_R_RANK.update({c: 100 + i for i, c in enumerate("0123456789")})
+_R_RANK.update({c: 200 + i for i, c in enumerate("abcdefghijklmnopqrstuvwxyz")})
+
+
+def _r_collate_key(x) -> tuple:
+    s = str(x)
+    prim = tuple(_R_RANK.get(c.lower(), 1000 + ord(c)) for c in s)
+    tert = tuple(1 if c.isupper() else 0 for c in s)
+    return (prim, tert)
+
+
+def _r_sorted(values) -> np.ndarray:
+    """``sort(unique(x))`` of a character vector as R does it in en_US.UTF-8."""
+    u = pd.unique(np.asarray(values, dtype=object))
+    return np.array(sorted(u, key=_r_collate_key), dtype=object)
 
 
 def _r_mean(x) -> float:
@@ -375,11 +400,11 @@ def _read_genomic_coords(genomic_coords) -> pd.DataFrame:
 def generate_windows(window: float, genomic_coords) -> pd.DataFrame:
     """Overlapping genomic windows of size ``window`` every ``window / 2`` bp
     (R ``generate_windows``; chromosomes in sorted order as ``plyr::ddply``
-    returns them -- byte order, i.e. R's C-locale collation)."""
+    returns them, i.e. R's en_US.UTF-8 collation)."""
     chr_maxes = _read_genomic_coords(genomic_coords)
     out = []
     by = window / 2
-    for chrom in sorted(chr_maxes["V1"].unique()):
+    for chrom in _r_sorted(chr_maxes["V1"]):
         length = float(chr_maxes.loc[chr_maxes["V1"] == chrom, "V2"].iloc[0])
         nseq = int(math.floor((length - 1) / by + 1e-10))      # R seq(from = 1, to, by)
         starts = 1 + np.arange(nseq + 1) * by
@@ -1116,8 +1141,8 @@ def build_gene_activity_matrix(adata: AnnData, cicero_cons_info: pd.DataFrame, s
 
     Returns
     -------
-    AnnData cells x genes (genes in byte-sorted order, as R's factor levels
-    in the C locale). R returns the transpose (genes x cells).
+    AnnData cells x genes (genes in R's factor-level order, en_US.UTF-8
+    collation). R returns the transpose (genes x cells).
     """
     if gene_col not in adata.var.columns:
         raise ValueError(f"adata.var must have a column {gene_col!r} (gene name of promoter peaks, NaN elsewhere)")
@@ -1187,8 +1212,8 @@ def build_gene_activity_matrix(adata: AnnData, cicero_cons_info: pd.DataFrame, s
     order_rows = pd.Index(prom_unique).get_indexer(promoter_safe)
     distal_scores = distal_scores[order_rows]
     prom_scores = (distal_scores + prom_acc).tocsr()               # promoter_safe x cells
-    genes = np.array(sorted(pd.unique(ppt["gene"]), key=lambda s: s.encode()), dtype=object)
-    peaks_lv = np.array(sorted(pd.unique(ppt["peak"]), key=lambda s: s.encode()), dtype=object)
+    genes = _r_sorted(ppt["gene"])
+    peaks_lv = _r_sorted(ppt["peak"])
     gi = pd.Index(genes).get_indexer(ppt["gene"].to_numpy())
     pj = pd.Index(peaks_lv).get_indexer(ppt["peak"].to_numpy())
     pg = sp.csr_matrix((np.ones(len(gi)), (gi, pj)), shape=(len(genes), len(peaks_lv)))
@@ -1262,3 +1287,220 @@ def normalize_gene_activities(activity_matrices, cell_num_genes):
         off += a.n_obs
         outs.append(AnnData(X=blk, obs=pd.DataFrame(index=a.obs_names.copy()), var=pd.DataFrame(index=genes.copy())))
     return outs[0] if single else outs
+
+
+# ============================================================================ utilities
+def df_for_coords(coord_strings) -> pd.DataFrame:
+    """Coordinate strings -> DataFrame ``chr``, ``bp1``, ``bp2``, ``Peak`` -- R ``df_for_coords``.
+
+    Separators ``:``, ``-`` and ``_`` are accepted; commas are removed
+    (``"chr18:8,575,097-8,839,855"`` is fine).
+    """
+    cs = pd.Series(list(coord_strings) if not isinstance(coord_strings, str) else [coord_strings]).astype(str)
+    cs = cs.str.replace(",", "", regex=False)
+    df = _split_peak_names(cs)
+    df["Peak"] = cs.to_numpy()
+    df["bp1"] = df["bp1"].astype(np.float64)
+    df["bp2"] = df["bp2"].astype(np.float64)
+    return df
+
+
+def make_atac_cds(input, binarize: bool = False) -> AnnData:
+    """Sparse (peak, cell, count) triplets -> AnnData -- R ``make_atac_cds``.
+
+    ``input`` is a DataFrame with three columns (peak like ``chr10_100013372_100013596``,
+    cell, count) or the path of such a tab-separated file without header.
+    Duplicate (peak, cell) entries are summed, as ``Matrix::sparseMatrix`` does.
+
+    Returns cells x peaks AnnData; peaks ordered by chromosome (``"chr"``
+    removed, byte order as R's radix ``order()``) and start, as R; ``var`` has ``site_name``, ``chr``
+    (without ``"chr"``, as R), ``bp1``, ``bp2``, ``num_cells_expressed``;
+    ``obs`` has ``num_genes_expressed`` and ``Size_Factor``.
+    """
+    if isinstance(input, (str, bytes)) or hasattr(input, "__fspath__"):
+        df = pd.read_csv(input, sep="\t", header=None)
+    elif isinstance(input, (pd.DataFrame, np.ndarray)):
+        df = pd.DataFrame(input)
+    else:
+        raise TypeError("Input must be file path, matrix, or data.frame")
+    if df.shape[1] != 3:
+        raise ValueError("input must have exactly three columns")
+    df = df.copy()
+    df.columns = ["site_name", "cell_name", "read_count"]
+    if not pd.api.types.is_numeric_dtype(df["read_count"]):
+        raise ValueError("read_count (third column) must be numeric")
+    sites = _r_sorted(df["site_name"].astype(str))
+    cells = _r_sorted(df["cell_name"].astype(str))
+    si = pd.Index(sites).get_indexer(df["site_name"].astype(str))
+    ci = pd.Index(cells).get_indexer(df["cell_name"].astype(str))
+    x = df["read_count"].to_numpy(dtype=np.float64)
+    if binarize:
+        x = (x > 0).astype(np.float64)
+    M = sp.coo_matrix((x, (ci, si)), shape=(len(cells), len(sites))).tocsr()   # cells x sites, duplicates summed
+    M.sum_duplicates()
+    coords = _split_peak_names(sites)
+    chr_ = coords["chr"].str.replace("chr", "", regex=False).to_numpy()
+    bp1 = coords["bp1"].astype(np.float64).to_numpy()
+    bp2 = coords["bp2"].astype(np.float64).to_numpy()
+    chr_key = np.array([c.encode() for c in chr_], dtype=object)            # order() of >1 key: radix, C locale
+    order = sorted(range(len(sites)), key=lambda i: (chr_key[i], bp1[i]))   # stable, like R's radix order()
+    order = np.asarray(order, dtype=np.int64)
+    M = M[:, order]
+    var = pd.DataFrame({"site_name": sites[order], "chr": chr_[order], "bp1": bp1[order], "bp2": bp2[order]},
+                       index=pd.Index(sites[order].astype(str)))
+    var["num_cells_expressed"] = np.asarray((M > 0).sum(axis=0)).ravel()
+    obs = pd.DataFrame({"cells": cells}, index=pd.Index(cells.astype(str)))
+    obs["num_genes_expressed"] = np.asarray((M > 0).sum(axis=1)).ravel()
+    sf = _estimate_sf(M)
+    if sf is not None:
+        obs["Size_Factor"] = sf
+    return AnnData(X=M, obs=obs, var=var)
+
+
+def _reduce_ranges(chr_, start, end, min_gapwidth):
+    """``GenomicRanges::reduce(min.gapwidth)``: merge ranges whose gap is < min_gapwidth.
+    Returns (bin name per input range)."""
+    n = len(chr_)
+    names = np.empty(n, dtype=object)
+    df = pd.DataFrame({"chr": chr_, "s": start, "e": end, "i": np.arange(n)})
+    for c, g in df.groupby("chr", sort=False):
+        g = g.sort_values(["s", "e"], kind="stable")
+        s = g["s"].to_numpy()
+        e = g["e"].to_numpy()
+        idx = g["i"].to_numpy()
+        grp_start = s[0]
+        grp_end = e[0]
+        members = [idx[0]]
+        for k in range(1, len(s)):
+            if s[k] - grp_end - 1 < min_gapwidth:
+                grp_end = max(grp_end, e[k])
+                members.append(idx[k])
+            else:
+                nm = f"{c}_{int(grp_start)}_{int(grp_end)}"
+                names[members] = nm
+                grp_start, grp_end, members = s[k], e[k], [idx[k]]
+        names[members] = f"{c}_{int(grp_start)}_{int(grp_end)}"
+    return names
+
+
+def aggregate_nearby_peaks(adata: AnnData, distance: int = 1000, layer: Optional[str] = None) -> AnnData:
+    """Collapse peaks closer than ``distance`` bp by summing them -- R ``aggregate_nearby_peaks``.
+
+    Peaks are merged like ``GenomicRanges::reduce(min.gapwidth = distance)``
+    (overlapping, adjacent or separated by fewer than ``distance`` bp); the
+    merged feature is named ``chr_start_end``. Returns cells x merged-peaks
+    AnnData (features in R's factor-level order, cells in input order).
+    """
+    c = df_for_coords(adata.var_names)
+    bins = _reduce_ranges(c["chr"].to_numpy(), c["bp1"].to_numpy(), c["bp2"].to_numpy(), distance)
+    levels = _r_sorted(bins)
+    bi = pd.Index(levels).get_indexer(bins)
+    X = _sparse_x(adata, layer)
+    A = sp.csr_matrix((np.ones(len(bins)), (np.arange(len(bins)), bi)), shape=(len(bins), len(levels)))
+    out = (X @ A).tocsr()
+    var = pd.DataFrame({"site_name": levels}, index=pd.Index(levels.astype(str)))
+    return AnnData(X=out, obs=adata.obs.copy(), var=var)
+
+
+def aggregate_by_cell_bin(adata: AnnData, group_col: str, layer: Optional[str] = None) -> AnnData:
+    """Sum cells per group -- R ``aggregate_by_cell_bin``.
+
+    Returns groups x peaks AnnData (groups and peaks sorted as
+    ``reshape2::dcast`` returns them, en_US.UTF-8 collation) with ``obs['n']`` (cells per group),
+    the per-group means of the numeric ``obs`` columns, and recomputed
+    ``num_genes_expressed`` (``min_expr = 0.1``) and ``Size_Factor``.
+    """
+    if group_col not in adata.obs.columns:
+        raise ValueError("group_col is missing from your pData table")
+    X = _sparse_x(adata, layer)
+    grp = adata.obs[group_col].astype(str).to_numpy()
+    levels = _r_sorted(grp)
+    gi = pd.Index(levels).get_indexer(grp)
+    G = sp.csr_matrix((np.ones(len(gi)), (gi, np.arange(len(gi)))), shape=(len(levels), adata.n_obs))
+    agg = (G @ X).tocsr()                                            # groups x peaks
+    names0 = adata.var_names.astype(str).to_numpy()
+    peak_order = np.array(sorted(range(len(names0)), key=lambda i: _r_collate_key(names0[i])), dtype=np.int64)
+    agg = agg[:, peak_order]
+    obs = pd.DataFrame(index=pd.Index(levels.astype(str), name=None))
+    obs[group_col] = levels
+    num = adata.obs.select_dtypes(include=[np.number])
+    for col in num.columns:
+        obs[col] = num.groupby(grp)[col].mean().reindex(levels).to_numpy()
+    obs["n"] = np.bincount(gi, minlength=len(levels))
+    obs["num_genes_expressed"] = np.asarray((agg > 0.1).sum(axis=1)).ravel()
+    sf = _estimate_sf(agg)
+    if sf is not None:
+        obs["Size_Factor"] = sf
+    names = adata.var_names.to_numpy()[peak_order]
+    var = pd.DataFrame({"site_name": names}, index=pd.Index(names.astype(str)))
+    var["num_cells_expressed"] = np.asarray((agg > 0.1).sum(axis=0)).ravel()
+    var["use_for_ordering"] = False
+    return AnnData(X=agg, obs=obs, var=var)
+
+
+def _overlap_lists(q_chr, q_s, q_e, s_chr, s_s, s_e, maxgap):
+    """For each query, subject indices overlapping it (``findOverlaps(maxgap)``, IRanges
+    >= 2.10 semantics: gap <= maxgap; maxgap = 0 also accepts adjacent ranges), in
+    NCList traversal order (start, end decreasing, index)."""
+    out = [np.empty(0, dtype=np.int64) for _ in range(len(q_s))]
+    s_chr = np.asarray(s_chr)
+    q_chr = np.asarray(q_chr)
+    for c in pd.unique(q_chr):
+        si = np.flatnonzero(s_chr == c)
+        if not len(si):
+            continue
+        o = si[np.lexsort((si, -s_e[si], s_s[si]))]
+        ss = s_s[o]
+        span = float(np.max(s_e[si] - s_s[si])) if len(si) else 0.0
+        for q in np.flatnonzero(q_chr == c):
+            lo = np.searchsorted(ss, q_s[q] - maxgap - 1 - span, side="left")
+            hi = np.searchsorted(ss, q_e[q] + maxgap + 1, side="right")
+            cand = o[lo:hi]
+            cand = cand[(s_e[cand] >= q_s[q] - maxgap - 1) & (s_s[cand] <= q_e[q] + maxgap + 1)]
+            out[q] = cand
+    return out
+
+
+def compare_connections(conns1: pd.DataFrame, conns2: pd.DataFrame, maxgap: int = 0) -> np.ndarray:
+    """Is each pair of ``conns1`` present in ``conns2``? -- R ``compare_connections``.
+
+    The first two columns of both tables are peak coordinates; a pair counts
+    as present if one row of ``conns2`` (either orientation) overlaps both of
+    its peaks within ``maxgap`` bp. Returns a boolean array.
+    """
+    c2 = conns2.iloc[:, :2].copy()
+    c2.columns = ["Peak1", "Peak2"]
+    c2r = c2[["Peak2", "Peak1"]].copy()
+    c2r.columns = ["Peak1", "Peak2"]
+    c2 = pd.concat([c2, c2r], ignore_index=True).astype(str).drop_duplicates().reset_index(drop=True)
+    a1, a2 = df_for_coords(c2["Peak1"]), df_for_coords(c2["Peak2"])
+    b1, b2 = df_for_coords(conns1["Peak1"].astype(str)), df_for_coords(conns1["Peak2"].astype(str))
+    ol1 = _overlap_lists(b1["chr"].to_numpy(), b1["bp1"].to_numpy(), b1["bp2"].to_numpy(),
+                         a1["chr"].to_numpy(), a1["bp1"].to_numpy(), a1["bp2"].to_numpy(), maxgap)
+    ol2 = _overlap_lists(b2["chr"].to_numpy(), b2["bp1"].to_numpy(), b2["bp2"].to_numpy(),
+                         a2["chr"].to_numpy(), a2["bp1"].to_numpy(), a2["bp2"].to_numpy(), maxgap)
+    return np.array([len(x) > 0 and len(np.intersect1d(x, y)) > 0 for x, y in zip(ol1, ol2)], dtype=bool)
+
+
+def find_overlapping_coordinates(coord_list, coord, maxgap: int = 0) -> list:
+    """Peaks of ``coord_list`` overlapping ``coord`` -- R ``find_overlapping_coordinates``.
+
+    ``coord`` is one coordinate string (returns the overlapping peaks) or a
+    list (returns, per query, its overlapping peaks or ``None`` when there
+    is none, concatenated -- R returns ``NA`` there).
+    """
+    cl = list(coord_list)
+    c = df_for_coords(cl)
+    cs = c["chr"].to_numpy()
+    s0 = c["bp1"].to_numpy()
+    e0 = c["bp2"].to_numpy()
+    single = isinstance(coord, str)
+    qs = [coord] if single else list(coord)
+    q = df_for_coords([x.replace(",", "") for x in qs])
+    ol = _overlap_lists(q["chr"].to_numpy(), q["bp1"].to_numpy(), q["bp2"].to_numpy(), cs, s0, e0, maxgap)
+    if single:
+        return [cl[i] for i in ol[0]]
+    out = []
+    for hits in ol:
+        out.extend([cl[i] for i in hits] if len(hits) else [None])
+    return out

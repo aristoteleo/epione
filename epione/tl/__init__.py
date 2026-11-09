@@ -165,7 +165,8 @@ from ._cicero import (
     make_cicero_cds, estimate_distance_parameter, generate_cicero_models,
     assemble_connections, run_cicero, generate_ccans, find_overlapping_ccans,
     annotate_cds_by_site, build_gene_activity_matrix, normalize_gene_activities,
-    cicero_connections_to_celloracle,
+    cicero_connections_to_celloracle, make_atac_cds, df_for_coords, aggregate_nearby_peaks,
+    aggregate_by_cell_bin, compare_connections, find_overlapping_coordinates,
 )
 from ._glasso import glasso
 from ._e2g import e2g_links, e2g_features, count_insertions, link_peaks_to_genes
@@ -270,6 +271,12 @@ __all__ = [
     "build_gene_activity_matrix",
     "normalize_gene_activities",
     "cicero_connections_to_celloracle",
+    "make_atac_cds",
+    "df_for_coords",
+    "aggregate_nearby_peaks",
+    "aggregate_by_cell_bin",
+    "compare_connections",
+    "find_overlapping_coordinates",
     "glasso",
     "contact_links",
     "e2g_links",

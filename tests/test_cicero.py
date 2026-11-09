@@ -233,3 +233,62 @@ def test_full_parity_gates(fx, tmp_path):
     deterministic = [g for g in res["gates"] if g not in ("16", "17", "1a_bins", "1b_windows")]
     failed = [g for g in deterministic if not res["gates"][g].get("pass", True)]
     assert not failed, {g: res["gates"][g] for g in failed}
+
+
+# ---------------------------------------------------------------- exported utilities (addendum gates 19-24)
+def test_df_for_coords_r_examples():
+    d = epi.tl.df_for_coords(["chr1:2,039-30,239", "chrX:28884:101293", "chr18_10025_10225"])
+    assert d["chr"].tolist() == ["chr1", "chrX", "chr18"]
+    assert d["bp1"].tolist() == [2039.0, 28884.0, 10025.0]
+    assert d["bp2"].tolist() == [30239.0, 101293.0, 10225.0]
+    assert d["Peak"].tolist() == ["chr1:2039-30239", "chrX:28884:101293", "chr18_10025_10225"]
+
+
+def test_r_collation_matches_r_en_us():
+    # sort() output of R 4.3.3 in en_US.UTF-8 on the same inputs
+    got = C._r_sorted(["ab", "Ab", "aB", "AB", "a_b", "a-b", "a.b", "a1", "A1", "a10", "a2", "b", "B", "_a", "a"])
+    assert list(got) == ["_a", "a", "a_b", "a-b", "a.b", "a1", "A1", "a10", "a2", "ab", "aB", "Ab", "AB", "b", "B"]
+    got = C._r_sorted(["chr18_11604_13986", "chr18_1160405_1160905", "chr1-5", "chr1_5", "chr1.5", "chr15"])
+    assert list(got) == ["chr1_5", "chr1-5", "chr1.5", "chr15", "chr18_11604_13986", "chr18_1160405_1160905"]
+
+
+def test_make_atac_cds_reproduces_r_order(f1):
+    ad, _ = f1
+    coo = ad.X.tocoo()
+    trip = pd.DataFrame({"peak": ad.var_names[coo.col], "cell": ad.obs_names[coo.row], "count": coo.data * 3})
+    trip = trip.sample(frac=1.0, random_state=0)                       # input order must not matter
+    cds = epi.tl.make_atac_cds(trip, binarize=True)
+    assert list(cds.var_names) == list(ad.var_names)                   # R's make_atac_cds order (fixture F1)
+    assert list(cds.obs_names) == sorted(ad.obs_names, key=C._r_collate_key)
+    assert (abs(cds[ad.obs_names].X - ad.X)).max() == 0
+    assert cds.var["chr"].iloc[0] == "18"                               # R strips "chr" in fData
+
+
+def test_aggregate_nearby_peaks_bins(f1):
+    ad, _ = f1
+    for dist, n_r in ((1000, 4984), (10000, 1690)):                    # R: nrow(aggregate_nearby_peaks(...))
+        a = epi.tl.aggregate_nearby_peaks(ad, distance=dist)
+        assert a.n_vars == n_r
+        assert np.asarray(a.X.sum()).item() == np.asarray(ad.X.sum()).item()
+
+
+def test_compare_connections_and_find_overlaps():
+    conns = pd.DataFrame({"Peak1": ["chr1_100_200", "chr1_100_200", "chr2_5_10"],
+                          "Peak2": ["chr1_1000_1100", "chr1_5000_5100", "chr2_50_60"]})
+    alt = pd.DataFrame({"a": ["chr1_1050_1060", "chr2_61_70"], "b": ["chr1_150_160", "chr2_11_20"]})
+    assert epi.tl.compare_connections(conns, alt).tolist() == [True, False, True]   # reversed + adjacent hits
+    assert epi.tl.compare_connections(conns, alt, maxgap=10000).tolist() == [True, True, True]
+    pk = ["chr1_100_200", "chr1_300_400", "chr2_1_50"]
+    assert epi.tl.find_overlapping_coordinates(pk, "chr1:150-350") == ["chr1_100_200", "chr1_300_400"]
+    assert epi.tl.find_overlapping_coordinates(pk, ["chr1:1,000-2,000", "chr2:10-20"]) == [None, "chr2_1_50"]
+
+
+@pytest.mark.skipif(PARITY_DIR is None, reason="set EPIONE_CICERO_PARITY_DIR to the R dumps")
+def test_utilities_parity_gates(tmp_path):
+    sys.path.insert(0, str(HERE))
+    import parity_utils
+    d = Path(PARITY_DIR) / "ref" / "F1_utils"
+    if not d.exists():
+        pytest.skip("no utilities dump")
+    res = parity_utils.main([str(d), str(tmp_path / "u.json")])
+    assert res["all_pass"], res["gates"]
