@@ -191,7 +191,7 @@ def main(argv=None):
     if (ref / "sampled_windows.tsv").exists() and want(5):
         sw = pd.read_csv(ref / "sampled_windows.tsv", sep="\t")
         t0 = time.perf_counter()
-        dps, det = C.estimate_distance_parameter(cds_inj, genomic_coords=genome, sample_windows=sw["win"].tolist(),
+        dps, det = C.estimate_distance_parameter(cds_inj, genomic_coords=genome, sample_windows=sw["win"].tolist(), n_jobs=a.threads,
                                                  return_details=True)
         T["estimate_distance_parameter_injected"] = time.perf_counter() - t0
         r_ok = sw[sw["status"] == "ok"]["dp"].to_numpy(dtype=float)
@@ -203,7 +203,7 @@ def main(argv=None):
 
     # gates 1b, 6, 7, 8-11, 13: full pipeline in rrng mode
     t0 = time.perf_counter()
-    dps_py, det_py = C.estimate_distance_parameter(cds, genomic_coords=genome, random_state=RRandom(a.seed),
+    dps_py, det_py = C.estimate_distance_parameter(cds, genomic_coords=genome, random_state=RRandom(a.seed), n_jobs=a.threads,
                                                    return_details=True)
     T["estimate_distance_parameter"] = time.perf_counter() - t0
     mean_py = C._r_mean(dps_py)

@@ -422,22 +422,31 @@ class _WindowIndex:
         return (self.bp1[peaks] + self.bp2[peaks]) / 2
 
 
-def _r_cov(v: np.ndarray, chunk: int = 256) -> np.ndarray:
-    """``stats::cov`` of the columns of ``v`` (n x p) exactly as R's C code:
-    two-pass long-double means, double products, long-double sequential sums."""
+def _r_cov(v: np.ndarray) -> np.ndarray:
+    """``stats::cov`` of the columns of ``v`` (n x p) exactly as R's C code
+    (``cov_na_1``): two-pass long-double means, products in double, long-double
+    sequential sums, ``sum / (n - 1)`` rounded to double.
+
+    Acceleration (E, ITERATION_LOG iter 1): only the upper triangle is formed
+    (R also computes ``j <= i`` and mirrors) and the running long-double sums
+    are updated one row at a time -- the same additions in the same order.
+    """
     v = np.asarray(v, dtype=np.float64)
     n, p = v.shape
     vl = v.astype(_LD)
     tmp = np.cumsum(vl, axis=0)[-1] / n
     tmp = tmp + np.cumsum(vl - tmp, axis=0)[-1] / n
-    xm = tmp.astype(np.float64)
-    d = v - xm
-    acc = np.zeros((1, p, p), dtype=_LD)
-    for a in range(0, n, chunk):
-        blk = d[a:a + chunk]
-        prods = (blk[:, :, None] * blk[:, None, :]).astype(_LD)      # double products, exact in ld
-        acc = np.add.reduce(np.concatenate([acc, prods], axis=0), axis=0, keepdims=True)  # sequential
-    return (acc[0] / (n - 1)).astype(np.float64)
+    d = v - tmp.astype(np.float64)
+    i0, i1 = np.triu_indices(p)
+    prods = d[:, i0] * d[:, i1]                      # double products, n x p(p+1)/2
+    acc = np.zeros(len(i0), dtype=_LD)
+    for k in range(n):                               # sequential, as R's for (k ...) sum += ...
+        acc += prods[k]
+    out = np.empty((p, p), dtype=np.float64)
+    vals = (acc / (n - 1)).astype(np.float64)
+    out[i0, i1] = vals
+    out[i1, i0] = vals
+    return out
 
 
 @njit(cache=True, nogil=True)
@@ -526,6 +535,7 @@ def estimate_distance_parameter(
     rng: str = "R",
     sample_windows: Optional[Sequence[int]] = None,
     return_details: bool = False,
+    n_jobs: int = 1,
 ):
     """Distance-penalty scaling parameter on random windows -- R ``estimate_distance_parameter``.
 
@@ -541,6 +551,8 @@ def estimate_distance_parameter(
     :func:`make_cicero_cds` (``random_state=s`` == ``set.seed(s)`` right
     before the R call). ``sample_windows`` injects the sequence of sampled
     window numbers (1-based, as R's ``sample()`` returns) instead of drawing.
+    ``n_jobs > 1`` runs the per-window bisections in threads (identical result:
+    which windows are used depends only on cheap checks, see ITERATION_LOG).
 
     Returns
     -------
@@ -557,10 +569,14 @@ def estimate_distance_parameter(
     kind = gen = None
     if sample_windows is None:
         kind, gen = _make_rng(random_state, rng)
-    dps: List[float] = []
+    # Pass 1 (sequential, cheap): replay R's loop. A window yields a value iff it has
+    # 2..max_elements sites and at least one pair farther than distance_constraint
+    # (find_distance_parameter's only non-numeric return is "No long edges"), so the
+    # set and order of windows used is known before any glasso is fitted.
     rows = []
+    n_ok = 0
     it = 0
-    while sample_num > len(dps) and it < max_sample_windows:
+    while sample_num > n_ok and it < max_sample_windows:
         if sample_windows is not None and it >= len(sample_windows):
             break
         it += 1
@@ -568,21 +584,37 @@ def estimate_distance_parameter(
         w = grs.iloc[win - 1]
         peaks = index.peaks(w.chrom, w.start, w.end)
         npk = len(peaks)
-        status, dp = "ok", np.nan
         if npk <= 1:
             status = "le1"
         elif npk > max_elements:
             status = "gt_max"
+        elif (_dist_mat(index.mean_bp(peaks)) > distance_constraint).sum() / 2 < 1:
+            status = "No long edges"
         else:
-            mbp = index.mean_bp(peaks)
-            res = _find_distance_parameter(_dist_mat(mbp), _window_cov(index, peaks), mbp, maxit, 0, s,
-                                           distance_constraint, distance_parameter_convergence)
-            if isinstance(res, str):
-                status = res
-            else:
-                dp = res
-                dps.append(res)
-        rows.append((it, win, npk, status, dp))
+            status = "ok"
+            n_ok += 1
+        rows.append([it, win, npk, status, np.nan])
+    # Pass 2: the bisection per distinct window (deterministic -> computed once, E),
+    # optionally in threads (numba glasso and numpy release the GIL).
+    todo = sorted({r[1] for r in rows if r[3] == "ok"})
+
+    def solve(win):
+        w = grs.iloc[win - 1]
+        peaks = index.peaks(w.chrom, w.start, w.end)
+        mbp = index.mean_bp(peaks)
+        return _find_distance_parameter(_dist_mat(mbp), _window_cov(index, peaks), mbp, maxit, 0, s,
+                                        distance_constraint, distance_parameter_convergence)
+
+    if n_jobs is not None and n_jobs > 1 and len(todo) > 1:
+        with ThreadPoolExecutor(max_workers=n_jobs) as ex:
+            solved = dict(zip(todo, ex.map(solve, todo)))
+    else:
+        solved = {win: solve(win) for win in todo}
+    dps: List[float] = []
+    for r in rows:
+        if r[3] == "ok":
+            r[4] = solved[r[1]]
+            dps.append(r[4])
     if len(dps) < sample_num:
         warnings.warn(f"Could not calculate sample_num distance_parameters ({len(dps)} were calculated) "
                       "- see documentation details")
@@ -796,7 +828,8 @@ def run_cicero(
         Seed of the window sampling (``random_state=s`` == ``set.seed(s)``
         before ``run_cicero`` in R).
     n_jobs
-        Threads for the window models (identical results).
+        Threads for the distance-parameter windows and the window models
+        (identical results for any value).
 
     Returns
     -------
@@ -807,7 +840,8 @@ def run_cicero(
     _log(silent, "Calculating distance_parameter value")
     dps = estimate_distance_parameter(cds, window=window, maxit=100, sample_num=sample_num,
                                       distance_constraint=250000, distance_parameter_convergence=1e-22,
-                                      genomic_coords=genomic_coords, random_state=random_state, rng=rng)
+                                      genomic_coords=genomic_coords, random_state=random_state, rng=rng,
+                                      n_jobs=n_jobs)
     mean_dp = _r_mean(dps)
     _log(silent, "Running models")
     models = generate_cicero_models(cds, distance_parameter=mean_dp, window=window,
