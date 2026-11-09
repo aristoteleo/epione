@@ -42,9 +42,9 @@ co-accessible sites) and gene-activity scores.
 
 `epione.tl` contains a port of the R package (Monocle 3 branch, v1.3.9) that matches R on the
 pre-registered gates in `tests/parity/cicero/MANIFEST.md`: same aggregation bins and sampled
-windows (R's random-number generator is reproduced bit for bit), the same distance parameter, and
-co-accessibility values within 5e-16 of R on Cicero's example data and on a 16,787-cell
-heart multiome. Input is an AnnData with **cells in rows and peaks in columns**.
+windows (R's random-number generator is reproduced bit for bit), the same distance parameter,
+co-accessibility values within 1e-15 of R and identical CCANs, on Cicero's example data and on a
+16,787-cell heart multiome. Input is an AnnData with **cells in rows and peaks in columns**.
 
 | R (cicero) | Python (`epione.tl`) |
 |---|---|
@@ -228,9 +228,10 @@ md(r"""
 ccan_assigns <- generate_ccans(conns)
 ```
 Louvain communities of the graph of pairs above a cutoff; the cutoff is chosen by a bisection on
-the number of CCANs, as in R. Louvain is randomised: R draws from its own generator,
-python-igraph from Python's, so memberships agree with R in distribution (ARI 0.94–1.0 against R
-across seeds on this data, the same spread R shows against itself).
+the number of CCANs, as in R. Louvain is randomised; the default `rng="R"` runs a port of
+igraph's Louvain on R's random stream, so `random_state=42` returns the same table as
+`set.seed(42); generate_ccans(conns)` in R. `rng="igraph"` uses python-igraph instead (faster on
+very large graphs, same result only in distribution).
 """)
 code(r"""
 ccans = epi.tl.generate_ccans(conns, random_state=42)
@@ -339,8 +340,8 @@ md(r"""
   sums whatever is in `X`.
 - **Random numbers.** `random_state=s` equals `set.seed(s)` right before the R function. To mimic
   one `set.seed()` for a whole R script, create `epi.tl._rrng.RRandom(s)` once and pass the same
-  object to `make_cicero_cds` and `run_cicero`. `rng="numpy"` gives results that agree with R only
-  in distribution. `generate_ccans` (Louvain) never matches R draw for draw.
+  object to `make_cicero_cds`, `run_cicero` and `generate_ccans`. `rng="numpy"` (aggregation,
+  windows) and `rng="igraph"` (Louvain) give results that agree with R only in distribution.
 - **Peak order.** glasso visits the sites of a window in the order of `adata.var`, and with
   `thr = 1e-4` the result depends (slightly) on that order. Sort peaks by position — as
   `make_atac_cds` does — to reproduce R.
