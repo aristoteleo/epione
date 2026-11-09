@@ -222,3 +222,37 @@ notes: |
   from 1.27 s to 0.21 s and run_cicero from 32.6 s to 11.6 s with 8 threads (generate_cicero_models
   20.3 s -> 2.8 s), with outputs bit-identical to iterations 0-4.
 ```
+
+---
+
+## iter 7 — 2026-11-09 16:05:00
+
+```yaml
+iter: 7
+status: ACCEPT
+action: equivalence_louvain_on_r_rng
+playbook_section: null
+admissibility: exact
+admissibility_evidence: |
+  Equivalence step for the last stochastic output. R's cluster_louvain is igraph C core 0.10's
+  igraph_community_multilevel drawing from R's unif_rand() through R igraph's 30-bit RNG bridge.
+  Ported: the multilevel algorithm (louvain.c), igraph's bounded integers (Lemire, 32-bit),
+  vector shuffle, the undirected edge store and igraph_incident order, igraph_qsort (FreeBSD; its
+  order of equal keys fixes the order in which link weights are summed), and
+  graph_from_adjacency_matrix on make_sparse_matrix (zero-weight self loops included). A second
+  difference surfaced in find_ccan_cutoff: R 4.x round(x, 3) is not the correctly rounded decimal
+  (round(0.10549999999999999656, 3) = 0.106); fround.c ported. With both, generate_ccans() gives
+  the identical table (cutoff, peaks, CCAN ids) as R for seeds 42, 2017, 7, 11, 23 on F1 and F2.
+wall_clock_mean_s: 5.1898
+wall_clock_stddev_s: 0.0588
+wall_clock_runs_s: [5.2451, 5.128, 5.1963]
+warmup_run_s: 5.1803
+speedup_vs_previous: 1.00
+speedup_vs_baseline: 9.45
+parity_metric: 1.0
+parity_delta_vs_baseline: 0.0
+parity_passes: true
+notes: |
+  Gate 16 (CCAN ARI vs R, seed 42) moves from 0.935 (F1, FAIL) / 0.995 (F2) to 1.0 / 1.0 with
+  identical tables; python-igraph remains available as rng = "igraph".
+```

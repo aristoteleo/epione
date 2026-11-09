@@ -989,42 +989,69 @@ def cicero_connections_to_celloracle(conns: pd.DataFrame, path: Optional[str] = 
 
 
 # ============================================================================ CCANs
-def _ccan_graph(conns: pd.DataFrame, coaccess_cutoff: float):
-    import igraph as ig
+def _ccan_graph_data(conns: pd.DataFrame, coaccess_cutoff: float):
+    """``make_ccan_graph``: pairs with ``coaccess > cutoff``; vertices in
+    ``make_sparse_matrix`` order (first appearance in Peak1, then Peak2)."""
     co = conns["coaccess"].to_numpy(dtype=np.float64)
     keep = ~np.isnan(co) & (co > coaccess_cutoff)
     if keep.sum() == 0:
         raise ValueError("No connections for graph")
     p1 = np.asarray(conns["Peak1"].astype(str))[keep]
     p2 = np.asarray(conns["Peak2"].astype(str))[keep]
-    w = co[keep]
-    peaks = pd.unique(np.concatenate([p1, p2]))      # make_sparse_matrix vertex order
+    peaks = pd.unique(np.concatenate([p1, p2]))
     pid = pd.Index(peaks)
-    i = pid.get_indexer(p1)
-    j = pid.get_indexer(p2)
+    return peaks, pid.get_indexer(p1), pid.get_indexer(p2), co[keep]
+
+
+def _louvain_membership(conns, cutoff, kind, gen):
+    """0-based Louvain membership of the CCAN graph and its vertex names."""
+    peaks, i, j, w = _ccan_graph_data(conns, cutoff)
+    if kind == "R":
+        from ._louvain_r import IgraphRRng, ccan_graph_edges, community_multilevel
+        edges, ew = ccan_graph_edges(i, j, w, len(peaks))
+        return peaks, community_multilevel(len(peaks), edges, ew, IgraphRRng(gen))
+    import igraph as ig
     a, b = np.minimum(i, j), np.maximum(i, j)
     e = pd.DataFrame({"a": a, "b": b, "w": w}).drop_duplicates(["a", "b"], keep="first")
     e = e[e.a != e.b]
     g = ig.Graph(n=len(peaks), edges=list(zip(e.a.to_numpy(), e.b.to_numpy())), directed=False)
     g.es["weight"] = e.w.to_numpy()
-    g.vs["name"] = list(peaks)
-    return g
+    return peaks, np.asarray(g.community_multilevel(weights="weight").membership)
 
 
-def _louvain(g):
-    return g.community_multilevel(weights="weight")
-
-
-def _number_of_ccans(conns, cutoff):
-    cl = _louvain(_ccan_graph(conns, cutoff))
-    return int((np.asarray(cl.sizes()) > 2).sum())
+def _number_of_ccans(conns, cutoff, kind, gen):
+    _, m = _louvain_membership(conns, cutoff, kind, gen)
+    return int((np.bincount(m) > 2).sum())
 
 
 def _r_round(x: float, digits: int) -> float:
-    return round(float(x), digits)
+    """R 4.x ``round(x, digits)`` (``src/nmath/fround.c``): the nearer of
+    floor/ceil(x * 10^d) / 10^d, ties to the odd-floor side -- not always the
+    correctly rounded decimal (``round(0.10549999999999999656, 3)`` is 0.106)."""
+    x = float(x)
+    if math.isnan(x) or math.isinf(x) or x == 0.0 or digits > 323:
+        return x
+    if digits < -308:
+        return 0.0
+    if digits == 0:
+        return float(round(x))                        # nearbyint: ties to even
+    dig = int(math.floor(digits + 0.5))
+    sgn = 1.0
+    if x < 0.0:
+        sgn, x = -1.0, -x
+    if math.log10(2.0) * (0.5 + (math.frexp(x)[1] - 1)) + dig > 15:
+        return sgn * x
+    pow10 = float(10 ** dig)
+    x10 = x * pow10
+    i10 = math.floor(x10)
+    xd = i10 / pow10
+    xu = math.ceil(x10) / pow10
+    du = xu - x
+    dd = x - xd
+    return sgn * (xu if (du < dd or (math.fmod(i10, 2.0) == 1.0 and du == dd)) else xd)
 
 
-def _find_ccan_cutoff(conns: pd.DataFrame, tolerance_digits: int) -> float:
+def _find_ccan_cutoff(conns: pd.DataFrame, tolerance_digits: int, kind, gen) -> float:
     co = conns["coaccess"].to_numpy(dtype=np.float64)
     conns = conns[~(co <= 0)]                         # R keeps NA rows (dropped later in the graph)
     tolerance = 10 ** -tolerance_digits
@@ -1032,11 +1059,11 @@ def _find_ccan_cutoff(conns: pd.DataFrame, tolerance_digits: int) -> float:
     top = float(np.nanmax(conns["coaccess"].to_numpy(dtype=np.float64)))
     while (top - bottom) > tolerance:
         test_val = bottom + _r_round((top - bottom) / 2, tolerance_digits + 1)
-        n1 = _number_of_ccans(conns, test_val)
+        n1 = _number_of_ccans(conns, test_val, kind, gen)
         next_step = test_val
         while True:
             next_step = next_step + (top - bottom) / 10
-            n2 = _number_of_ccans(conns, next_step)
+            n2 = _number_of_ccans(conns, next_step, kind, gen)
             if n2 != n1:
                 break
         if n1 > n2:
@@ -1047,8 +1074,8 @@ def _find_ccan_cutoff(conns: pd.DataFrame, tolerance_digits: int) -> float:
 
 
 def generate_ccans(connections_df: pd.DataFrame, coaccess_cutoff_override: Optional[float] = None,
-                   tolerance_digits: int = 2, *, random_state: Optional[int] = 0,
-                   silent: bool = False) -> pd.DataFrame:
+                   tolerance_digits: int = 2, *, random_state: Union[int, RRandom, None] = 0,
+                   rng: str = "R", silent: bool = False) -> pd.DataFrame:
     """Cis-co-accessibility networks -- R ``generate_ccans``.
 
     Edges with ``coaccess > cutoff`` form a graph; Louvain communities with
@@ -1056,8 +1083,12 @@ def generate_ccans(connections_df: pd.DataFrame, coaccess_cutoff_override: Optio
     cutoff is found by the same bisection on the number of CCANs as R
     (``find_ccan_cutoff``).
 
-    ``random_state`` seeds python-igraph's Louvain (R draws from its own RNG,
-    so memberships agree with R in distribution, see the parity report).
+    ``rng="R"`` (default) runs a port of igraph's Louvain (C core 0.10, as in
+    R igraph 2.x) on R's random stream: ``random_state=s`` reproduces
+    ``set.seed(s); generate_ccans(...)`` draw for draw (pass an
+    :class:`RRandom` to continue a stream). ``rng="igraph"`` uses
+    python-igraph's ``community_multilevel`` (faster on very large graphs,
+    agrees with R in distribution only).
 
     Returns
     -------
@@ -1069,25 +1100,35 @@ def generate_ccans(connections_df: pd.DataFrame, coaccess_cutoff_override: Optio
             raise ValueError(f"connections_df must have a column {c!r}")
     if coaccess_cutoff_override is not None and not (0 <= coaccess_cutoff_override <= 1):
         raise ValueError("coaccess_cutoff_override must be between 0 and 1 (or NULL)")
-    import random
+    if rng == "igraph":
+        import random
 
-    import igraph as ig
-    state = random.Random(random_state) if random_state is not None else random.Random()
-    ig.set_random_number_generator(state)
+        import igraph as ig
+        kind, gen = "igraph", None
+        state = random.Random(random_state if not isinstance(random_state, RRandom) else 0)
+        ig.set_random_number_generator(state)
+    elif rng == "R":
+        kind, gen = "R", (random_state if isinstance(random_state, RRandom)
+                          else RRandom(0 if random_state is None else int(random_state)))
+    else:
+        raise ValueError("rng must be 'R' or 'igraph'")
     try:
         if coaccess_cutoff_override is not None:
             cutoff = float(coaccess_cutoff_override)
         else:
-            cutoff = _find_ccan_cutoff(connections_df, tolerance_digits)
+            cutoff = _find_ccan_cutoff(connections_df, tolerance_digits, kind, gen)
         _log(silent, f"Coaccessibility cutoff used: {cutoff}")
-        g = _ccan_graph(connections_df, cutoff)
-        cl = _louvain(g)
+        peaks, memb = _louvain_membership(connections_df, cutoff, kind, gen)
     finally:
-        ig.set_random_number_generator(random)
-    memb = np.asarray(cl.membership) + 1
+        if rng == "igraph":
+            import random
+
+            import igraph as ig
+            ig.set_random_number_generator(random)
+    memb = memb + 1
     sizes = np.bincount(memb)
     keep = sizes[memb] > 2
-    df = pd.DataFrame({"Peak": np.asarray(g.vs["name"], dtype=object)[keep], "CCAN": memb[keep]})
+    df = pd.DataFrame({"Peak": np.asarray(peaks, dtype=object)[keep], "CCAN": memb[keep]})
     df.index = df["Peak"].to_numpy()
     df.attrs["coaccess_cutoff"] = cutoff
     return df

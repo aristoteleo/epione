@@ -56,6 +56,9 @@ for nm in ("unnorm_ga", "ga"):
     d[f"r_{nm}"] = M[gi]
 cc = pd.read_csv(ref / "ccan_cutoffs.tsv", sep="\t")
 d["r_ccan_cutoff"] = cc["cutoff"].to_numpy()[:1]
+c42 = pd.read_csv(ref / "ccan_seed42.tsv", sep="\t")
+d["r_ccan42_peak"] = c42["Peak"].astype(str).to_numpy()
+d["r_ccan42_ccan"] = c42["CCAN"].to_numpy()
 d = {k: (v.astype(str) if getattr(v, 'dtype', None) == object else v) for k, v in d.items()}
 np.savez_compressed(out, **d)
 print(out, {k: v.shape for k, v in d.items() if hasattr(v, "shape")})

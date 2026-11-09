@@ -193,6 +193,11 @@ def test_celloracle_format(conns, tmp_path):
 def test_generate_ccans(conns, ref):
     cc = epi.tl.generate_ccans(conns, random_state=SEED, silent=True)
     assert cc.attrs["coaccess_cutoff"] == ref["r_ccan_cutoff"][0]              # 0.46, as R
+    # set.seed(42); generate_ccans(conns) in R: identical table (Louvain on R's RNG stream)
+    assert (cc["Peak"].to_numpy() == ref["r_ccan42_peak"]).all()
+    assert (cc["CCAN"].to_numpy() == ref["r_ccan42_ccan"]).all()
+    alt = epi.tl.generate_ccans(conns, coaccess_cutoff_override=0.46, rng="igraph", random_state=1, silent=True)
+    assert alt["CCAN"].nunique() > 50
     assert list(cc.columns) == ["Peak", "CCAN"]
     assert (cc.groupby("CCAN").size() > 2).all()
     ov = epi.tl.find_overlapping_ccans(cc)
@@ -251,6 +256,12 @@ def test_df_for_coords_r_examples():
     assert d["bp1"].tolist() == [2039.0, 28884.0, 10025.0]
     assert d["bp2"].tolist() == [30239.0, 101293.0, 10225.0]
     assert d["Peak"].tolist() == ["chr1:2039-30239", "chrX:28884:101293", "chr18_10025_10225"]
+
+
+def test_r_round_matches_r():
+    # R 4.3.3: round(x, 3) for x = (0.421 - 0.21) / 2 is 0.106, not the correctly rounded 0.105
+    assert C._r_round((0.42099999999999999 - 0.20999999999999999) / 2, 3) == 0.106
+    assert C._r_round(0.15, 1) == 0.1 and C._r_round(0.0105, 3) == 0.011 and C._r_round(2.5, 0) == 2.0
 
 
 def test_r_collation_matches_r_en_us():

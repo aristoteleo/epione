@@ -276,7 +276,14 @@ def main(argv=None):
                   for i, s1 in enumerate(seeds) for s2 in seeds[i + 1:]]
         med_rr = float(np.median(ari_rr)) if ari_rr else 1.0
         thr = 0.95 if med_rr >= 0.95 else float(min(ari_rr))
-        G["16"] = {"ari_py_vs_r_seed": dict(zip(map(str, seeds), map(float, ari_py))),
+        ident = {}
+        for s in seeds:                       # same seed in R and Python: identical CCAN tables?
+            rt = pd.read_csv(ref / f"ccan_seed{s}.tsv", sep="\t")
+            pt = C.generate_ccans(rc, random_state=int(s), silent=True)
+            ident[str(s)] = bool(len(pt) == len(rt) and (pt["Peak"].to_numpy() == rt["Peak"].to_numpy()).all()
+                                 and (pt["CCAN"].to_numpy() == rt["CCAN"].to_numpy()).all())
+        G["16"] = {"identical_tables_same_seed": ident,
+                   "ari_py_vs_r_seed": dict(zip(map(str, seeds), map(float, ari_py))),
                    "ari_py_vs_r_first_seed": float(ari_py[0]), "r_vs_r_median": med_rr, "r_vs_r_min": float(min(ari_rr)) if ari_rr else 1.0,
                    "threshold_applied": thr, "n_ccan_py": int(pyc["CCAN"].nunique()),
                    "n_ccan_r": int(rfix[seeds[0]]["CCAN"].nunique()), "pass": bool(ari_py[0] >= thr)}
