@@ -42,6 +42,20 @@ Modes for the random parts: **rrng** (Python uses `RRandom(seed)`, the bit-exact
 If the median R-vs-R ARI across seeds {2017, 7, 11, 23} is itself below 0.95, gate 16 becomes
 ARI(Py, R) ≥ the minimum R-vs-R ARI. This rule is fixed here, before any Python result exists.
 
+### Addendum 1 — pre-registered before porting the remaining exported utilities
+
+The coverage audit (`AUDIT.md`) listed six more exported R functions. Gates for them were added
+here and committed **before** their Python code; gates 1–18 are unchanged.
+
+| # | Output | Fixture | Class | Metric | Threshold |
+|---|---|---|---|---|---|
+| 19 | `make_atac_cds` | F1 | det.-strict | peak / cell order, values, `chr bp1 bp2`, `num_genes_expressed` | exact |
+| 20 | `aggregate_nearby_peaks` (distance 1000, 10000) | F1 | det.-strict | merged names, summed matrix | exact |
+| 21 | `aggregate_by_cell_bin` (group = `timepoint`) | F1 | det.-standard | summed matrix, `Size_Factor`, `num_genes_expressed` | 1e-8 |
+| 22 | `compare_connections` (maxgap 0, 1000) | F1 | det.-strict | logical vector | exact |
+| 23 | `find_overlapping_coordinates` (single / multiple query, maxgap 0, 500) | F1 | det.-strict | returned peaks | exact |
+| 24 | `df_for_coords` | F1 + R help examples | det.-strict | `chr bp1 bp2 Peak` | exact |
+
 ## Results
 
 (appended after the runs; thresholds above unchanged)

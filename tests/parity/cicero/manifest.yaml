@@ -77,3 +77,15 @@ acceleration:
 audit_class: null
 created_by: Claude (agent) for steorra
 created_at: 2026-11-09
+
+# ---------------------------------------------------------------------------------------------
+# ADDENDUM 1 (2026-11-09, committed before the Python code of these functions was written).
+# The coverage audit listed six more exported R utilities; they are ported with these gates.
+# Gates 1-18 above are unchanged.
+addendum_1_outputs:
+  - {id: 19, name: make_atac_cds,               fixtures: [F1], class: deterministic-strict,   metric: "identical peak order, cell order, matrix values, var chr/bp1/bp2, obs num_genes_expressed", threshold: exact}
+  - {id: 20, name: aggregate_nearby_peaks,      fixtures: [F1], class: deterministic-strict,   metric: "distance 1000 and 10000: identical merged-peak names, cells and summed matrix", threshold: exact}
+  - {id: 21, name: aggregate_by_cell_bin,       fixtures: [F1], class: deterministic-standard, metric: "group = timepoint of cell_data: summed matrix, Size_Factor, num_genes_expressed", threshold: 1.0e-8}
+  - {id: 22, name: compare_connections,         fixtures: [F1], class: deterministic-strict,   metric: "logical vector vs R for maxgap 0 and 1000 (conns vs 5000 sampled alternative pairs)", threshold: exact}
+  - {id: 23, name: find_overlapping_coordinates, fixtures: [F1], class: deterministic-strict,  metric: "returned peaks for single and multiple query coordinates, maxgap 0 and 500", threshold: exact}
+  - {id: 24, name: df_for_coords,               fixtures: [F1], class: deterministic-strict,   metric: "chr/bp1/bp2/Peak for all F1 peak ids plus the R help examples", threshold: exact}
