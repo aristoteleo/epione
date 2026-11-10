@@ -59,3 +59,30 @@ here and committed **before** their Python code; gates 1–18 are unchanged.
 ## Results
 
 (appended after the runs; thresholds above unchanged)
+
+Final code (commit after iteration 7), seed 42. F1 = `cicero_data`, F2 = E8.5 heart chr19.
+
+| # | F1 | F2 | Pass |
+|---|---|---|---|
+| 1 | 25 bins and 115 sampled windows identical to R | 3,235 bins, 110 windows identical | ✅ |
+| 2 | 0 cells with a different neighbour set | 0 | ✅ |
+| 3 | matrix 0, size factors 0 | 0, 0 | ✅ |
+| 4 | w 2.7e-15, wi 5.4e-9 (\|wi\| ≤ 5e3), zero pattern identical, iterations identical | 4.4e-15, 1.0e-15, identical | ✅ |
+| 5 | 2.6e-15 | 1.3e-15 | ✅ |
+| 6 | 0 (bit-identical mean) | 0 | ✅ |
+| 7 | identical | identical | ✅ |
+| 8 | 543,286 rows, same order; NA identical | 1,240,298 rows, same order; NA identical | ✅ |
+| 9 | 8.0e-16 | 4.4e-16 | ✅ |
+| 10 | Pearson 1 − 1e-14, Spearman 1 − 2e-12 | 1.0, 1 − 2e-13 | ✅ |
+| 11 | 1.0 | 1.0 | ✅ |
+| 12 | 8.0e-16 | 4.4e-16 | ✅ |
+| 13 | ✅ | ✅ | ✅ |
+| 14 | 8.9e-16; annotation identical | — | ✅ |
+| 15 | 6.7e-16 | — | ✅ |
+| 16 | ARI 1.0 (tables identical for seeds 42, 2017, 7, 11, 23); R-vs-R median 0.964 | ARI 1.0 (identical, 5 seeds); R-vs-R median 0.995 | ✅ |
+| 17 | 0.46 = R | 0.27 = R | ✅ |
+| 18 | — | see below | |
+| 19–24 | all identical (21: size factor 1.1e-16) | — | ✅ |
+
+Gate 16 with the earlier python-igraph Louvain (iterations 0–6): F1 ARI 0.935 < 0.95 (**fail**),
+F2 0.995. Fixed by iteration 7 (igraph Louvain on R's RNG + R's `round`), threshold unchanged.

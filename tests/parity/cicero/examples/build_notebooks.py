@@ -201,7 +201,22 @@ order_r = ct.max(1).sort_values(ascending=False).index[:40]; order_p = ct.loc[or
 plt.figure(figsize=(5, 4.5)); plt.imshow(np.log1p(ct.loc[order_r, order_p].to_numpy()), cmap="magma", aspect="auto")
 plt.xlabel("Python CCAN"); plt.ylabel("R CCAN (seed 42)"); plt.title("F2: 40 largest R CCANs, log(1 + peaks)"); plt.colorbar(); plt.show()
 """)
-md("### 4.7 Exported utilities (gates 19–24, F1)")
+md(r"""
+### 4.7 Free-running numpy RNG (gate 18, stochastic)
+
+With `rng="numpy"` the bins and windows are drawn by numpy instead of R's generator, so the port
+can only agree with R in distribution. Pre-registered rule: Pearson and Jaccard(> 0.25) of
+Python(numpy, seed 42) vs R(seed 42) must reach the median R(seed 42)-vs-R(seed s) agreement over
+s ∈ {2017, 7, 11, 23} minus 0.02.
+""")
+code(r"""
+g18 = subprocess.run([sys.executable, str(PARITY / "gate18_numpy_rng.py"), str(D / "fixtures/F2"), str(D / "ref"),
+                      str(tmp / "gate18.json"), "8"], capture_output=True, text=True, cwd=PARITY)
+res18 = json.loads((tmp / "gate18.json").read_text())
+pd.DataFrame({**{"Py(numpy) vs R42": res18["py_numpy_vs_r42"]}, **{f"R42 vs R{k}": v for k, v in res18["r42_vs_r_seed"].items()}}).T.assign(
+    threshold_pearson=res18["threshold_pearson"], threshold_jaccard=res18["threshold_jaccard"])
+""")
+md("### 4.8 Exported utilities (gates 19–24, F1)")
 code(r"""
 pd.DataFrame([{"gate": k, "pass": v["pass"]} for k, v in resu["gates"].items()] + [{"gate": "find_overlapping_ccans (info)", "pass": resu["informational"].get("find_overlapping_ccans_identical")}])
 """)
@@ -250,6 +265,10 @@ for fx, res in (("F1", res1), ("F2", res2)):
             rows.append({"fixture": fx, "gate": int(g), "threshold": thr(g), "pass": v["pass"]})
 for g, v in resu["gates"].items():
     rows.append({"fixture": "F1", "gate": int(g), "threshold": thr(g), "pass": v["pass"]})
+rows.append({"fixture": "F2", "gate": 18, "threshold": thr("18"), "pass": res18["pass"]})
+f3 = D / "results/F3_compare.json"
+if f3.exists():
+    print("F3 (genome, informational):", json.loads(f3.read_text()))
 ver = pd.DataFrame(rows).sort_values(["gate", "fixture"]).reset_index(drop=True)
 display(ver.pivot_table(index="gate", columns="fixture", values="pass", aggfunc="first"))
 failed = ver[~ver["pass"]]
