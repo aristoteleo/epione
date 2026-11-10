@@ -109,11 +109,11 @@ The threshold was not changed.
 | F3 E8.5 heart genome | 16,787 × 331,372 (10,911 windows) | 328 s + > 4 h (unfinished: `generate_cicero_models` still running after 3 h 46 min; `assemble_connections` not reached) | 72.8 s + 666 s = 12.3 min | 70.3 s + 153 s = 3.7 min |
 
 R step breakdown (F2): `estimate_distance_parameter` 917 s, `generate_cicero_models` 80 s,
-`assemble_connections` 91 s; F3: 645 s, > 13,500 s (unfinished), not reached. R subsets the whole 331k-peak × 3,235-bin object for every one of the 10,911 windows, which dominates its genome-wide run; it also received only ~55 % of a core (the allocation was shared with other jobs), so its wall-clock is inflated — but even its CPU time (2 h 13 min so far) exceeds the Python single-thread wall-clock 18-fold. The Python gains come mostly from the
+`assemble_connections` 91 s; F3: 645 s, > 13,500 s (unfinished), not reached. R subsets the whole 331k-peak × 3,235-bin object for every one of the 10,911 windows, most likely what dominates its genome-wide run; it also received only ~55 % of a core (the allocation was shared with other jobs), so its wall-clock is inflated — but even its CPU time (2 h 13 min so far) is already ~11× the Python single-thread wall-clock. The Python gains come mostly from the
 distance-parameter search (numba glasso, each distinct window bisected once) and from
 `assemble_connections` (vectorised grouping instead of data.table melt/by).
 
-F3 parity (light mode, no gate pre-registered for F3): pending — the R run had not finished when this report was written (it keeps running in the allocation and writes `ref/F3_seed42`; `cicero_port/scripts/compare_F3.py` then compares the 44,004,472-row tables). What is known: R and Python sampled the same windows and reached the same mean distance parameter (0.32355466609419303, identical to 17 digits); Python fits 10,102 windows and skips 809.
+F3 parity (light mode, no gate pre-registered for F3): pending — the R run had not finished when this report was written (it keeps running in the allocation and writes `ref/F3_seed42`; `cicero_port/scripts/compare_F3.py` then compares the 44,004,472-row tables). What is known: R and Python reached the same mean distance parameter (0.32355466609419303, identical to 17 digits); Python fits 10,102 windows and skips 809.
 
 ### 3.3 Reproduce
 
