@@ -81,7 +81,7 @@ Final code (commit after iteration 7), seed 42. F1 = `cicero_data`, F2 = E8.5 he
 | 15 | 6.7e-16 | — | ✅ |
 | 16 | ARI 1.0 (tables identical for seeds 42, 2017, 7, 11, 23); R-vs-R median 0.964 | ARI 1.0 (identical, 5 seeds); R-vs-R median 0.995 | ✅ |
 | 17 | 0.46 = R | 0.27 = R | ✅ |
-| 18 | — | see below | |
+| 18 | — | Py(`rng="numpy"`) vs R(42): Pearson 0.9913, Jaccard 0.858; R(42) vs R(2017/7/11/23): Pearson 0.989–0.993 (median 0.9916), Jaccard 0.833–0.871 (median 0.868); thresholds 0.9716 / 0.8478 | ✅ |
 | 19–24 | all identical (21: size factor 1.1e-16) | — | ✅ |
 
 Gate 16 with the earlier python-igraph Louvain (iterations 0–6): F1 ARI 0.935 < 0.95 (**fail**),
