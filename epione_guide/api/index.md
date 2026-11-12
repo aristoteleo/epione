@@ -249,6 +249,9 @@ epiAneufinder (Ramakrishnan et al., *Nat. Commun.* 2023), ported from the R pack
 | Polymer-contact links / gene activity | {func}`epione.tl.contact_links`, {func}`epione.tl.contact_gene_score`, {func}`epione.tl.fit_contact_gamma`, {func}`epione.tl.powerlaw_contact` |
 | ArchR marker / peak-to-gene heatmaps | {func}`epione.pl.marker_heatmap`, {func}`epione.pl.marker_heatmap_matrix`, {func}`epione.pl.peak2gene_heatmap`, {func}`epione.pl.prepare_peak2gene_heatmap` |
 | Peak co-accessibility | {func}`epione.tl.coaccessibility` |
+| Cicero co-accessibility (port of R cicero 1.3.9 for Monocle 3): kNN aggregation, distance parameter, windowed graphical lasso, CCANs | {func}`epione.tl.make_cicero_cds`, {func}`epione.tl.estimate_distance_parameter`, {func}`epione.tl.generate_cicero_models`, {func}`epione.tl.assemble_connections`, {func}`epione.tl.run_cicero`, {func}`epione.tl.generate_ccans`, {func}`epione.tl.find_overlapping_ccans`, {func}`epione.tl.glasso` |
+| Cicero gene activities and utilities | {func}`epione.tl.annotate_cds_by_site`, {func}`epione.tl.build_gene_activity_matrix`, {func}`epione.tl.normalize_gene_activities`, {func}`epione.tl.make_atac_cds`, {func}`epione.tl.aggregate_nearby_peaks`, {func}`epione.tl.aggregate_by_cell_bin`, {func}`epione.tl.compare_connections`, {func}`epione.tl.find_overlapping_coordinates`, {func}`epione.tl.df_for_coords` |
+| Cicero connections → CellOracle base-GRN input (`Peak1`, `Peak2`, `coaccess`) | {func}`epione.tl.cicero_connections_to_celloracle` |
 | Gene-activity score matrix | {func}`epione.tl.add_gene_score_matrix` |
 | ArchR-style pseudo-time trajectory | {func}`epione.tl.add_trajectory`, {func}`epione.tl.get_trajectory`, {func}`epione.tl.trajectory_heatmap_matrix`, {func}`epione.tl.correlate_trajectories`, {func}`epione.pl.plot_trajectory`, {func}`epione.pl.plot_trajectory_heatmap` |
 

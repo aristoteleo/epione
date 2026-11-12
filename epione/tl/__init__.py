@@ -161,6 +161,14 @@ from ._joint_embedding import joint_embedding
 from ._peak_to_gene import peak_to_gene
 
 from ._coaccessibility import coaccessibility
+from ._cicero import (
+    make_cicero_cds, estimate_distance_parameter, generate_cicero_models,
+    assemble_connections, run_cicero, generate_ccans, find_overlapping_ccans,
+    annotate_cds_by_site, build_gene_activity_matrix, normalize_gene_activities,
+    cicero_connections_to_celloracle, make_atac_cds, df_for_coords, aggregate_nearby_peaks,
+    aggregate_by_cell_bin, compare_connections, find_overlapping_coordinates,
+)
+from ._glasso import glasso
 from ._e2g import e2g_links, e2g_features, count_insertions, link_peaks_to_genes
 from ._contact import (
     contact_links, contact_gene_score, fit_contact_gamma, powerlaw_contact,
@@ -252,6 +260,24 @@ __all__ = [
     "joint_embedding",
     "peak_to_gene",
     "coaccessibility",
+    "make_cicero_cds",
+    "estimate_distance_parameter",
+    "generate_cicero_models",
+    "assemble_connections",
+    "run_cicero",
+    "generate_ccans",
+    "find_overlapping_ccans",
+    "annotate_cds_by_site",
+    "build_gene_activity_matrix",
+    "normalize_gene_activities",
+    "cicero_connections_to_celloracle",
+    "make_atac_cds",
+    "df_for_coords",
+    "aggregate_nearby_peaks",
+    "aggregate_by_cell_bin",
+    "compare_connections",
+    "find_overlapping_coordinates",
+    "glasso",
     "contact_links",
     "e2g_links",
     "link_peaks_to_genes",
