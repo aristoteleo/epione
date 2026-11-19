@@ -175,6 +175,21 @@ def _entries() -> List[dict]:
             source={"type": "url", "base_url": _PRINT_ZENODO, "label": "zenodo:15224770",
                     "legacy_flat_env": True},
             files={fname: f"md5:{md5}"}, size_mb=mb, extra={"key": key}))
+    for key, fname, md5, head in [
+        ("count", "TFBS_0_conv_v2.pt", "2284373c8c24ac94ff874755a9e18108", "count"),
+        ("footprint", "TFBS_1_conv_v2.pt", "c7ab928fb61641a5b6b61087db9b055f", "footprint"),
+    ]:
+        out.append(dict(
+            _PRINT, name=f"seq2print_tfbs_{key}", aliases=[], task="TF binding score",
+            biosample="cell-type agnostic",
+            description=(f"scPrinter's sequence TF-binding network on seq2PRINT {head}-head "
+                         "attributions (TorchScript); epi.models.seq2print.tf_binding."),
+            citation=("Hu et al. scPrinter / seq2PRINT, bioRxiv 2025. "
+                      "Weights: Zenodo 10.5281/zenodo.15085406."),
+            homepage="https://zenodo.org/records/15085406",
+            source={"type": "url", "base_url": "https://zenodo.org/records/15085406/files/",
+                    "label": "zenodo:15085406"},
+            files={fname: f"md5:{md5}"}, size_mb=0.39, extra={"key": key}))
     out.append(dict(
         _HINT, name="hint_atac_bias_tables", task="Tn5 sequence bias (8-mer tables)",
         biosample="ATAC-seq (RGT estimate)",

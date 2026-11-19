@@ -1,0 +1,91 @@
+# Pre-registered parity gate for the Cicero port inside epione (epione.tl.*cicero*).
+#
+# COMMITTED BEFORE ANY ALGORITHMIC PYTHON CODE WAS WRITTEN (see git log).
+# Thresholds are READ-ONLY afterwards. Results are appended to MANIFEST.md / RECONSTRUCTION_REPORT.md,
+# never written back into this file.
+
+package: epione (epione.tl Cicero port)
+upstream:
+  name: cicero
+  version: "1.3.9"                      # Cicero for Monocle 3
+  source: GitHub
+  url: https://github.com/cole-trapnell-lab/cicero-release/tree/monocle3
+  commit: 495ef0da13cc9ffe55516bfd34f48b671ad55aba
+  glasso: "1.11"                        # CRAN, Fortran solver ported line by line
+  r: "4.3.3"
+  monocle3: "1.3.1"
+
+# Cicero has outputs of several classes; one gate per output, ALL must pass.
+algorithm_class: multi
+
+seed: 42                                # set.seed(42) immediately before make_cicero_cds AND before run_cicero
+extra_seeds: [2017, 7, 11, 23]          # R-vs-R noise floor for the stochastic gates (17, 18)
+
+# Two modes for the stochastic parts (sample() in make_cicero_cds and estimate_distance_parameter):
+#   rrng     : Python draws from epione.tl._rrng.RRandom(seed) == R's Mersenne-Twister set.seed(seed)
+#   injected : Python is handed R's draws (aggregation bins from return_agg_info=TRUE, sampled window ids)
+#   numpy    : Python draws from numpy.random.default_rng(seed) (free-running; distributional gate only)
+
+fixtures:
+  - id: F1
+    name: cicero_data
+    source: "cicero::cicero_data (HSMM sci-ATAC-seq, hg19 chr18), make_atac_cds(binarize = TRUE)"
+    reduced_coordinates: "monocle3 preprocess_cds(LSI) + reduce_dimension(UMAP) computed ONCE in R, dumped, fed to both sides"
+    genomic_coords: "hg19 chr18 full length (78,077,248 bp)"
+    expected_shape: [200, null]           # cells x peaks
+  - id: F2
+    name: e85_chr19
+    source: "grn_multiome/export/e85/atac_counts.h5ad restricted to chr19, binarized, all-zero peaks dropped"
+    reduced_coordinates: "grn_multiome/export/e85/emb_umap.harmony.rna.csv (2-D), identical file on both sides"
+    genomic_coords: "mm10 chr19 (61,431,566 bp)"
+    expected_shape: [16787, null]        # chr19 peaks (~8,900)
+  - id: F3
+    name: e85_genome
+    source: "same as F2, all chromosomes"
+    purpose: "runtime R vs Python; parity gates reported, run once"
+
+reference_command: tests/parity/cicero/r_reference_driver.R
+
+outputs:
+  # --- deterministic core ---------------------------------------------------------------
+  - {id: 1,  name: r_rng_draws,           fixtures: [F1, F2], mode: rrng,     class: deterministic-strict,   metric: exact equality of chosen aggregation bins (ids and order) and sampled window ids, threshold: exact}
+  - {id: 2,  name: knn_index,             fixtures: [F1, F2], mode: -,        class: deterministic-strict,   metric: per-cell set equality of the k-1 neighbours (FNN::knn.index vs Python), threshold: exact}
+  - {id: 3,  name: cicero_cds_matrix,     fixtures: [F1, F2], mode: injected, class: deterministic-standard, metric: max abs err of size-factor-normalised aggregated matrix and size factors, threshold: 1.0e-8}
+  - {id: 4,  name: glasso_unit,           fixtures: [F1, F2, synthetic], mode: same S and rho, class: deterministic-standard, metric: max abs err of w and wi; zero pattern of wi, threshold: "1.0e-8; zero pattern exact"}
+  - {id: 5,  name: distance_parameters,   fixtures: [F1, F2], mode: injected, class: deterministic-bounded,  metric: max relative err per sampled window, threshold: 1.0e-6}
+  - {id: 6,  name: mean_distance_parameter, fixtures: [F1, F2], mode: rrng,   class: deterministic-bounded,  metric: relative err, threshold: 1.0e-6}
+  - {id: 7,  name: window_status,         fixtures: [F1, F2], mode: rrng,     class: deterministic-strict,   metric: per-window model status (glasso / 'Zero or one element in range' / 'Too many elements in range') identical, threshold: exact}
+  - {id: 8,  name: coaccess_pairs,        fixtures: [F1, F2], mode: rrng,     class: deterministic-strict,   metric: set of (Peak1, Peak2) rows identical; NA pattern identical, threshold: exact}
+  - {id: 9,  name: coaccess_values,       fixtures: [F1, F2], mode: rrng,     class: deterministic-standard, metric: max abs err on matched non-NA pairs, threshold: 1.0e-8}
+  - {id: 10, name: coaccess_values_corr,  fixtures: [F1, F2], mode: rrng,     class: ordinal,                metric: Pearson and Spearman on matched non-NA pairs, threshold: 0.9999}
+  - {id: 11, name: coaccess_jaccard_025,  fixtures: [F1, F2], mode: rrng,     class: ranked,                 metric: Jaccard of pairs with coaccess > 0.25, threshold: 0.999}
+  - {id: 12, name: coaccess_injected,     fixtures: [F1, F2], mode: injected, class: deterministic-standard, metric: max abs err on matched pairs (same as 9 with R draws injected), threshold: 1.0e-8}
+  - {id: 13, name: celloracle_format,     fixtures: [F1, F2], mode: -,        class: deterministic-strict,   metric: "columns == [Peak1, Peak2, coaccess]; peak ids chr_start_end; both orientations present", threshold: exact}
+  - {id: 14, name: gene_activity_raw,     fixtures: [F1],     mode: same connections and annotation, class: deterministic-standard, metric: max abs err of build_gene_activity_matrix, threshold: 1.0e-8}
+  - {id: 15, name: gene_activity_norm,    fixtures: [F1],     mode: same input,  class: deterministic-standard, metric: max err relative to max |R value| of normalize_gene_activities, threshold: 1.0e-8}
+  # --- stochastic parts (Louvain RNG / free-running RNG) ---------------------------------
+  - {id: 16, name: ccan_membership,       fixtures: [F1, F2], mode: same connections + coaccess_cutoff_override = R cutoff, class: clustering, metric: ARI over peaks in any CCAN (non-members labelled 0), threshold: "0.95; if the median R-vs-R ARI across extra_seeds is itself < 0.95 the gate becomes ARI(Py, R) >= min R-vs-R ARI (rule fixed now, not after seeing Python)"}
+  - {id: 17, name: ccan_cutoff,           fixtures: [F1, F2], mode: same connections, class: deterministic-bounded, metric: "|cutoff_py - cutoff_R| (find_ccan_cutoff, tolerance_digits = 2)", threshold: "0.02, or within the R-vs-R range across extra_seeds"}
+  - {id: 18, name: coaccess_numpy_rng,    fixtures: [F2],     mode: numpy,    class: stochastic,             metric: Pearson on matched pairs and Jaccard(>0.25), threshold: ">= (median R-vs-R value across extra_seeds) - 0.02"}
+
+acceleration:
+  enabled: true
+  max_iterations: 20
+  must_pass_gate: true
+  admissible: [E, C]                    # no (B) approximations planned; any (B) would need MATH.md
+
+audit_class: null
+created_by: Claude (agent) for steorra
+created_at: 2026-11-09
+
+# ---------------------------------------------------------------------------------------------
+# ADDENDUM 1 (2026-11-09, committed before the Python code of these functions was written).
+# The coverage audit listed six more exported R utilities; they are ported with these gates.
+# Gates 1-18 above are unchanged.
+addendum_1_outputs:
+  - {id: 19, name: make_atac_cds,               fixtures: [F1], class: deterministic-strict,   metric: "identical peak order, cell order, matrix values, var chr/bp1/bp2, obs num_genes_expressed", threshold: exact}
+  - {id: 20, name: aggregate_nearby_peaks,      fixtures: [F1], class: deterministic-strict,   metric: "distance 1000 and 10000: identical merged-peak names, cells and summed matrix", threshold: exact}
+  - {id: 21, name: aggregate_by_cell_bin,       fixtures: [F1], class: deterministic-standard, metric: "group = timepoint of cell_data: summed matrix, Size_Factor, num_genes_expressed", threshold: 1.0e-8}
+  - {id: 22, name: compare_connections,         fixtures: [F1], class: deterministic-strict,   metric: "logical vector vs R for maxgap 0 and 1000 (conns vs 5000 sampled alternative pairs)", threshold: exact}
+  - {id: 23, name: find_overlapping_coordinates, fixtures: [F1], class: deterministic-strict,  metric: "returned peaks for single and multiple query coordinates, maxgap 0 and 500", threshold: exact}
+  - {id: 24, name: df_for_coords,               fixtures: [F1], class: deterministic-strict,   metric: "chr/bp1/bp2/Peak for all F1 peak ids plus the R help examples", threshold: exact}

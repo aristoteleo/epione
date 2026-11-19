@@ -23,3 +23,11 @@ the PyTorch Geometric parts).
   https://github.com/pyg-team/pytorch_geometric, Copyright (c) 2023 PyG Team. MIT.
 * SpatialGlue (epione/tl/_spatialglue.py) - https://github.com/JinmiaoChenLab/SpatialGlue.
   AGPL-3.0-or-later (see the file header).
+* Cicero (epione/tl/_cicero.py) - https://github.com/cole-trapnell-lab/cicero-release
+  (branch monocle3, v1.3.9). Copyright (c) 2018 Hannah Pliner and Cole Trapnell. MIT
+  (epione/tl/_licenses/CICERO.LICENSE).
+* glasso (epione/tl/_glasso.py, translated from glasso.f of the CRAN package glasso 1.11) -
+  Jerome Friedman, Trevor Hastie and Rob Tibshirani. The CRAN DESCRIPTION states "GPL-2".
+* igraph (epione/tl/_louvain_r.py, translated from the C core 0.10 vendored in R igraph 2.1.4:
+  community/louvain.c, random/random.c, internal/qsort.c, rrandom.c) - The igraph development
+  team; qsort.c is BSD-3-Clause (The Regents of the University of California). GPL-2.0-or-later.

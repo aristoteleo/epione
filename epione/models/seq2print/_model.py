@@ -21,6 +21,7 @@ assembly:
 """
 from __future__ import annotations
 
+import copy
 import math
 from typing import Iterable, Optional, Sequence
 
@@ -192,6 +193,49 @@ class Seq2PRINT(nn.Module):
     @property
     def n_states(self) -> int:
         return 0 if self.embeddings is None else self.embeddings.weight.shape[0]
+
+    def collapse(self, state: int) -> "Seq2PRINT":
+        """A plain (LoRA-free) copy of the model for one cell state.
+
+        Every LoRA layer is replaced by a convolution whose weight already
+        includes that state's low-rank update, and a coverage-adjusted
+        head by its collapsed form -- scPrinter's ``seq2PRINT.collapse``.
+        The copy predicts what the LoRA model predicts for ``state`` but
+        takes no ``cells`` argument, which is what attribution methods
+        need. Gradients are switched on for all its parameters, as in
+        scPrinter.
+        """
+        if self.embeddings is None:
+            raise ValueError("collapse needs a LoRA model (call add_lora first)")
+        clone = copy.deepcopy(self)
+        dev = self.embeddings.weight.device
+        cell = torch.tensor([int(state)], dtype=torch.long, device=dev)
+        with torch.no_grad():
+            A = B = self.embeddings(cell)
+            cov = self.coverages(cell) if self.coverages is not None else None
+            if self.coverage_in_lora:
+                A = B = torch.cat([A, cov], dim=-1)
+
+        def fold(owner, attr):
+            layer = getattr(owner, attr)
+            if isinstance(layer, Conv1dLoRA):
+                setattr(owner, attr, layer.collapse_layer(A, B))
+
+        fold(clone.dna_cnn_model, "conv")
+        for block in clone.hidden_layer_model.layers:
+            fold(block.module, "conv1")
+            fold(block.module, "conv2")
+        head = clone.profile_cnn_model
+        if isinstance(head, BiasAdjustedFootprintsHead):
+            head.collapse_layer(cov)
+            head = head.footprints_head
+        fold(head, "conv_layer")
+        fold(head, "linear")
+        clone.embeddings = clone.coverages = None
+        clone.coverage_in_lora = False
+        for p in clone.parameters():
+            p.requires_grad = True
+        return clone
 
     # -- forward -------------------------------------------------------------
 

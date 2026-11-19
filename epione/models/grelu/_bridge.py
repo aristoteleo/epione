@@ -79,12 +79,22 @@ def _kind(model) -> str:
 
 #: Available heads per model kind. Log-scale heads (log counts, log
 #: coverage, logits) suit ``compare_func="subtract"`` (log fold change).
+#: seq2PRINT's ``footprint_tf`` is scPrinter's footprint attribution target
+#: (``JustSumWrapper(nth_output=0-29, threshold=0.301)``): the TF-sized
+#: footprints (scales 0-29, radius 2-31 bp) as -log10 p after removing each
+#: window's mean, minus 0.301, rectified and summed to one number. Its
+#: z-score -> p-value step (normal CDF, log, clamp) has no DeepLIFT rule and
+#: is treated as linear, as in scPrinter's own DeepSHAP; attributions of this
+#: head are therefore not additive, and tangermeme's convergence warnings for
+#: it are silenced.
 HEADS = {
     "bpnet": ("counts", "profile", "profile_logits", "expected_counts"),
     "chrombpnet": ("counts", "profile", "profile_logits", "expected_counts"),
-    "seq2print": ("coverage", "footprints"),
+    "seq2print": ("coverage", "footprints", "footprint_tf"),
     "module": ("output",),
 }
+_TF_SCALES = slice(0, 30)     # scPrinter's "0-30": footprint radius 2-31 bp
+_TF_THRESHOLD = 0.301         # -log10(0.5)
 _DEFAULT_HEAD = {"bpnet": "counts", "chrombpnet": "counts", "seq2print": "coverage",
                  "module": "output"}
 
@@ -116,6 +126,9 @@ def _adapter(model, head: Union[str, Callable], cells=None):
         def __init__(self, m):
             super().__init__()
             self.m = m
+            # a module, not torch.relu, so DeepLIFT/SHAP applies its
+            # nonlinearity rule here as scPrinter's wrapper does
+            self.relu = nn.ReLU()
 
         def forward(self, x):
             if kind == "seq2print":
@@ -139,6 +152,12 @@ def _adapter(model, head: Union[str, Callable], cells=None):
                 fp, cov = out
                 if head == "coverage":
                     return cov.reshape(-1, 1, 1)
+                if head == "footprint_tf":
+                    from epione.models.seq2print._interpret import zscore2pval_torch
+
+                    z = fp[:, _TF_SCALES].reshape(fp.shape[0], -1)
+                    p = zscore2pval_torch(z - z.mean(dim=-1, keepdim=True))
+                    return self.relu(p - _TF_THRESHOLD).sum(-1).reshape(-1, 1, 1)
                 return fp  # (N, modes, L)
             y = out
             return y if y.ndim == 3 else y.reshape(y.shape[0], -1, 1)
@@ -288,20 +307,67 @@ def ism(model, seqs, *, genome=None, head=None, start_pos: int = 0,
                            devices=devices, batch_size=batch_size, return_df=return_df)
 
 
+def _has_n(seqs) -> bool:
+    import torch
+
+    return isinstance(seqs, torch.Tensor) and seqs.ndim in (2, 3) and seqs.shape[-2] == 4 \
+        and bool((seqs.sum(-2) == 0).any())
+
+
+def _seqs_arg(seqs):
+    """gReLU reads a numpy array as index-encoded DNA; pass a one-hot
+    ``(N, 4, L)`` / ``(4, L)`` float array as the float32 tensor it expects."""
+    if isinstance(seqs, np.ndarray) and seqs.ndim in (2, 3) and seqs.shape[-2] == 4 \
+            and np.issubdtype(seqs.dtype, np.floating):
+        import torch
+
+        return torch.as_tensor(seqs, dtype=torch.float32)
+    return seqs
+
+
 def attributions(model, seqs, *, genome=None, head=None, method: str = "deepshap",
                  device="cpu", n_shuffles: int = 20, seed: Optional[int] = 0,
-                 hypothetical: bool = False, **wrap_kwargs) -> np.ndarray:
+                 hypothetical: bool = False, batch_size: Optional[int] = None,
+                 deepshap_kwargs: Optional[dict] = None, **wrap_kwargs) -> np.ndarray:
     """Base-level attributions through gReLU's ``get_attributions``
     (``deepshap``, ``saliency``, ``inputxgradient``,
-    ``integratedgradients``). Returns ``(N, 4, L)``."""
+    ``integratedgradients``). Returns ``(N, 4, L)``.
+
+    ``batch_size`` (sequence-reference pairs per pass) and
+    ``deepshap_kwargs`` go to tangermeme's ``deep_lift_shap``
+    (``method='deepshap'`` only). One-hot input with unknown bases
+    (all-zero columns) is accepted: they are shuffled as a character of
+    their own and get zero attribution."""
     _grelu()
     from grelu.interpret.score import get_attributions
 
+    kw = dict(deepshap_kwargs or {})
+    if batch_size is not None:
+        kw["batch_size"] = int(batch_size)
+    if kw and method != "deepshap":
+        raise ValueError("batch_size / deepshap_kwargs apply to method='deepshap' only")
+    seqs = _seqs_arg(seqs)
+    if method == "deepshap" and "references" not in kw and _has_n(seqs):
+        # Unknown bases (all-zero columns, e.g. N near assembly gaps): shuffle
+        # them as a character of their own and let tangermeme accept them.
+        import functools
+        import warnings
+
+        from tangermeme.ersatz import dinucleotide_shuffle
+
+        kw["references"] = functools.partial(dinucleotide_shuffle, allow_N=True)
+        kw.setdefault("only_warn", True)
+        warnings.filterwarnings("ignore", message=".*cannot have unknown characters.*")
     lm = wrap(model, head=head, **wrap_kwargs)
-    with _no_lightning_logs():
-        return get_attributions(lm, seqs, genome=None if genome is None else _genome_arg(genome),
+    import warnings
+
+    with _no_lightning_logs(), warnings.catch_warnings():
+        if head == "footprint_tf":          # see HEADS: not additive by construction
+            warnings.filterwarnings("ignore", message="Convergence deltas", category=RuntimeWarning)
+        return get_attributions(lm, seqs,
+                                genome=None if genome is None else _genome_arg(genome),
                                 device=device, method=method, n_shuffles=n_shuffles,
-                                seed=seed, hypothetical=hypothetical)
+                                seed=seed, hypothetical=hypothetical, **kw)
 
 
 def pseudobulk_anndata(adata, groupby: str, *, layer: Optional[str] = None,
