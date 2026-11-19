@@ -30,6 +30,24 @@ The format roughly follows Keep a Changelog.
   evaluation of the occupancy score is now `tests/parity/tf_binding/`). Validation and parity
   cells of the PRINT, seq2PRINT, ChromBPNet, scooby and gReLU tutorials moved to
   `tests/parity/<tool>/`.
+- ACESO training, both published generations, in `epione.models.aceso`. v1 (one reference multiome):
+  `V1EncoderConfig` / `train_v1_encoder` — scGPT distilled onto the EpiAgent chromatin state with
+  mixed gene panels and depth thinning — and `V1DecoderConfig` / `train_v1_decoder` — AlphaGenome or
+  Borzoi trunk, linear per-cell read-out, with the specificity, within-type, classifier-free-guidance
+  and axis-contrast terms. v2 (a 2,038,905-nucleus human corpus): `StoreConfig` /
+  `build_training_store` / `TrainingStore` for the store contract, `V2EncoderConfig` /
+  `train_v2_encoder` for the two-view encoder (subset plus wide stop-gradient teacher), and
+  `V2DecoderConfig` / `train_v2_decoder` for the joint 32 bp ATAC and per-gene RNA heads. Supporting
+  inputs: `build_axes` / `AXES` (named within-type RNA axes with a tissue mask), `build_exon_masks` /
+  `ExonMasks` (exonic pooling domains for the RNA head), `site_path` / `require_sites` /
+  `register_site` (external resources resolved by existence and checked before a GPU is taken).
+  Both trainers keep their command-line form: `python -m epione.models.aceso._v2_decoder --out ...`,
+  `torchrun --standalone --nproc_per_node=4 -m epione.models.aceso._v2_encoder ...`.
+- `epione.models.aceso` figures in the paper's typography (12 pt text, 13 pt titles, one font name in
+  the SVG): `paper_style`, `plot_tracks` (measured and predicted profiles over a locus with the
+  elements and the gene model), `plot_benchmark`, `plot_panel_size`, `plot_state_embedding`,
+  `plot_training_curve`, `read_training_log`, `save_figure`, `PALETTE`, `celltype_colors`.
+- Tutorials `t_aceso` (v1 end to end) and `t_aceso_corpus` (v2: the store, the axes, the two heads).
 - `epi.pl.add_arrow` (now exported) draws small corner coordinate arrows ("UMAP 1 →", "UMAP 2 ↑") in axes
   coordinates: equal physical length on both axes whatever the data range, labels from the basis and plotted
   components (UMAP, t-SNE, PC, LSI, BiRMT, ...), `loc` = any corner (arrows always point to +x/+y), `length`, `lw`,
