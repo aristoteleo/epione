@@ -294,6 +294,13 @@ Imported on demand, never by `import epione`; listed here without autodoc pages 
 | gReLU bridge: an Epione model as a gReLU `LightningModel` (needs `epione[grelu]`) | `epione.models.grelu.wrap`, `HEADS` |
 | Variant effects, ISM and attributions for Epione or gReLU models | `epione.models.grelu.predict_variant_effects`, `ism`, `attributions` |
 | Groups × peaks training data for gReLU | `epione.models.grelu.pseudobulk_anndata` |
+| ACESO: a sparse RNA panel -> single-cell accessibility at 32 bp, through sequence | `epione.models.aceso.predict_profiles`, `aggregate_regions`, `PanelSpace`, `PanelSampler`, `thin_counts` |
+| ACESO v1 training: panel-agnostic encoder, then the sequence decoder | `epione.models.aceso.V1EncoderConfig`, `train_v1_encoder`, `V1DecoderConfig`, `train_v1_decoder` |
+| ACESO v2 training on a corpus: the store, the two-view encoder, the ATAC + RNA decoder | `epione.models.aceso.StoreConfig`, `build_training_store`, `TrainingStore`, `V2EncoderConfig`, `train_v2_encoder`, `V2DecoderConfig`, `train_v2_decoder` |
+| ACESO conditioning inputs: named within-type RNA axes, exonic pooling masks for the RNA head | `epione.models.aceso.AXES`, `build_axes`, `build_exon_masks`, `ExonMasks` |
+| ACESO decoder variants kept as ablations, and the state space they condition on | `epione.models.aceso.build_aceso_decoder`, `build_film_decoder`, `AlphaGenomeScooby`, `finetune_ufe`, `embed_cells` |
+| Where the external resources live on this machine, checked at start-up | `epione.models.aceso.site_path`, `require_sites`, `register_site` |
+| ACESO figures in the paper's typography | `epione.models.aceso.paper_style`, `plot_tracks`, `plot_benchmark`, `plot_panel_size`, `plot_state_embedding`, `plot_training_curve`, `save_figure` |
 
 ### BigWig matrix tooling (bulk)
 

@@ -146,8 +146,17 @@ class AlphaGenomeScooby(nn.Module):
                 trunk, pair = ag.tower._forward_block(blk, trunk, pair, ag.dtype_policy.compute_dtype)
         return trunk, pair, inter, L
 
-    def upper(self, trunk, pair, inter, L: int, from_block: int):
-        """remaining transformer blocks + cropped decoder/embedders -> [B, 1536, 6144] (32 bp)"""
+    def upper(self, trunk, pair, inter, L: int, from_block: int, pool: bool = True):
+        """remaining transformer blocks + cropped decoder/embedders -> [B, 1536, 6144] (32 bp)
+
+        ``pool=False`` returns the embedding **before** the final average pool, i.e. [B, 1536, 196608] at 1 bp.
+        AlphaGenome's decoder and ``embedder_1bp`` genuinely run at base resolution; the 32 bp output is only
+        that last ``avg_pool1d``. The read-out was trained against 32 bp targets, so a 1 bp profile taken this
+        way is **not calibrated in absolute terms** -- softplus is convex, so pooling the 1 bp rate exceeds the
+        pooled-embedding rate by Jensen. It is exposed because footprint depth is a RATIO (flank over motif
+        span), in which a monotone distortion largely cancels, which makes "is the dip there at all" testable
+        without any fine-tuning.
+        """
         ag = self.ag
         ck = _grad_ckpt(ag)
         for blk in ag.tower.blocks[from_block:]:
@@ -165,13 +174,15 @@ class AlphaGenomeScooby(nn.Module):
         dec = _ck(lambda t_, *v: ag.decoder(t_, dict(zip(ik, v))), t, *[inter[k] for k in ik], on=ck)
         e1 = _ck(lambda d_, s_: ag.embedder_1bp(d_, org, skip_x=s_, channels_last=False), dec, e128, on=ck)
         e1 = e1[:, :, MARGIN_BP:MARGIN_BP + TARGET_BP]                            # [B, 1536, crop bp]
+        if not pool:
+            return e1                                                             # [B, 1536, 196608] at 1 bp
         return F.avg_pool1d(e1, BIN_BP, BIN_BP)                                   # [B, 1536, 6144]
 
     # ---- scooby interface
-    def forward_seq_to_emb(self, sequence):
+    def forward_seq_to_emb(self, sequence, pool: bool = True):
         n = len(self.ag.tower.blocks)
         trunk, pair, inter, L = self.lower(sequence, n)
-        return self.upper(trunk, pair, inter, L, n)
+        return self.upper(trunk, pair, inter, L, n, pool=pool)
 
     def forward_cell_embs_only(self, cell_emb):                      # upstream Scooby verbatim
         bs, n, _ = cell_emb.shape
